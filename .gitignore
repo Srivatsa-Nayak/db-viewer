@@ -1,0 +1,16 @@
+# IDEs
+.vscode/
+.idea/
+.DS_Store
+
+# OS Files
+Thumbs.db
+
+# Dependencies 
+node_modules/
+vendor/
+
+# Environment Variables (Security Risk!)
+.env
+.env.local
+*.db

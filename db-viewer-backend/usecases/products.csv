@@ -1,0 +1,5 @@
+id,product_name,price,is_active,stock_count
+101,Gaming Mouse,59.99,true,450
+102,Mechanical Keyboard,120.50,true,120
+103,USB Cable,5,false,0
+104,Monitor,299.99,TRUE,15

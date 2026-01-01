@@ -1,0 +1,76 @@
+basePath: /
+definitions:
+  main.QueryRequest:
+    properties:
+      query:
+        example: SELECT * FROM users
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: A simple API to upload CSVs to SQLite and run queries.
+  title: Database Visualizer API
+  version: "1.0"
+paths:
+  /db-info:
+    get:
+      description: Returns all tables, their rows, and inferred relationships based
+        on column names (e.g., user_id -> users)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get Database Schema & Data
+      tags:
+      - handleDBInfo
+  /query:
+    post:
+      consumes:
+      - application/json
+      description: Executes a raw SQL query against the in-memory database
+      parameters:
+      - description: SQL Query
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/main.QueryRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Run SQL Query
+      tags:
+      - QueryExecuter
+  /upload:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Uploads a CSV file and creates a table in SQLite
+      parameters:
+      - description: CSV File
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Upload CSV
+      tags:
+      - DataFileUpload
+swagger: "2.0"
