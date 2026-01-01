@@ -7,6 +7,12 @@ const api = axios.create({
     baseURL: API_URL,
 });
 
+interface AddColumnParams {
+    tableName: string;
+    columnName: string;
+    columnType: string;
+}
+
 export const dbService = {
     // Upload CSV
     uploadFile: async (file: File) => {
@@ -15,9 +21,17 @@ export const dbService = {
         return api.post('/upload', formData);
     },
 
+    addColumn: async (params: AddColumnParams) => {
+        return api.post('/alter-table', {
+            table_name: params.tableName,
+            column_name: params.columnName,
+            column_type: params.columnType
+        });
+    },
+
     // Get Schema & Relationships
     getSchema: async (): Promise<SchemaResponse> => {
-        const res = await api.get<SchemaResponse>('/db-info');
+        const res = await api.get<SchemaResponse>(`/db-info?_t=${new Date().getTime()}`);
         return res.data;
     },
 
@@ -25,5 +39,9 @@ export const dbService = {
     runQuery: async (query: string): Promise<QueryResponse> => {
         const res = await api.post<QueryResponse>('/query', { query });
         return res.data;
+    },
+
+    getDownloadUrl: (tableName: string) => {
+        return `${API_URL}/export/${tableName}`;
     }
 };
