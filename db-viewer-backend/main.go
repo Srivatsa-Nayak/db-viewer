@@ -39,6 +39,13 @@ type Relationship struct {
 	SourceColumn string `json:"source_column"`
 }
 
+// Request body for adding a column
+type AddColumnRequest struct {
+	TableName  string `json:"table_name"`
+	ColumnName string `json:"column_name"`
+	ColumnType string `json:"column_type"` // e.g., "TEXT", "INT"
+}
+
 // @title           Database Visualizer API
 // @version         1.0
 // @description     A simple API to upload CSVs to SQLite and run queries.
@@ -58,9 +65,12 @@ func main() {
 	// --- SWAGGER ROUTE ---
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
+	// Endpoints
 	r.POST("/upload", handleFileUpload)
 	r.POST("/query", handleQuery)
 	r.GET("/db-info", handleGetDBInfo)
+	r.POST("/alter-table", handleAddColumn)
+	r.GET("/export/:tableName", handleExportCSV)
 
 	fmt.Println("Application running on http://localhost:8080")
 	r.Run(":8080")
@@ -232,7 +242,7 @@ func insertData(tableName string, rows [][]string) error {
 // @Success      200  {object}  map[string]interface{}
 // @Router       /db-info [get]
 func handleGetDBInfo(c *gin.Context) {
-	// 1. Get all table names (Same as before)
+	// 1. Get all table names
 	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type='table'")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -240,7 +250,7 @@ func handleGetDBInfo(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	tables := []TableInfo{}
+	var tables []TableInfo
 	var tableNames []string
 
 	for rows.Next() {
@@ -250,77 +260,85 @@ func handleGetDBInfo(c *gin.Context) {
 	}
 	rows.Close()
 
-	// 2. Loop through tables to get Columns and Data
+	// 2. Loop through tables
 	for _, tbl := range tableNames {
-		// Get Data
-		dataRows, err := db.Query(fmt.Sprintf("SELECT * FROM %s", tbl))
+
+		// --- STEP A: Get Exact Schema (Metadata) ---
+		// We use PRAGMA to get the real types (INT, DECIMAL) even if the column is empty
+		schemaRows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", tbl))
 		if err != nil {
 			continue
 		}
 
-		colNames, _ := dataRows.Columns()
+		var fullColumns []ColumnInfo
+
+		for schemaRows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt interface{}
+
+			schemaRows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk)
+
+			// Fallback if SQLite returns empty type
+			if ctype == "" {
+				ctype = "VARCHAR"
+			}
+
+			fullColumns = append(fullColumns, ColumnInfo{
+				Name: name,
+				Type: ctype, // This now comes from the DB definition, not a guess!
+			})
+		}
+		schemaRows.Close()
+
+		// --- STEP B: Get Data (Rows) ---
+		dataRows, err := db.Query(fmt.Sprintf("SELECT * FROM %s", tbl))
 		var tableData []map[string]interface{}
 
-		// We need to store raw string values column-wise to perform inference
-		// Map: ColumnName -> List of values
-		columnValues := make(map[string][]string)
-
-		for dataRows.Next() {
-			// ... (Scanning logic same as before) ...
-			values := make([]interface{}, len(colNames))
-			valuePtrs := make([]interface{}, len(colNames))
-			for i := range colNames {
-				valuePtrs[i] = &values[i]
-			}
-			dataRows.Scan(valuePtrs...)
-
-			entry := make(map[string]interface{})
-			for i, col := range colNames {
-				val := values[i]
-				var strVal string
-
-				b, ok := val.([]byte)
-				if ok {
-					strVal = string(b)
-				} else if val != nil {
-					strVal = fmt.Sprintf("%v", val)
+		if err == nil {
+			colNames, _ := dataRows.Columns()
+			for dataRows.Next() {
+				values := make([]interface{}, len(colNames))
+				valuePtrs := make([]interface{}, len(colNames))
+				for i := range colNames {
+					valuePtrs[i] = &values[i]
 				}
+				dataRows.Scan(valuePtrs...)
 
-				entry[col] = strVal
-				// Collect values for inference
-				columnValues[col] = append(columnValues[col], strVal)
+				entry := make(map[string]interface{})
+				for i, col := range colNames {
+					val := values[i]
+					if val != nil {
+						// Convert bytes to string for JSON safety
+						if b, ok := val.([]byte); ok {
+							entry[col] = string(b)
+						} else {
+							entry[col] = val
+						}
+					} else {
+						entry[col] = nil
+					}
+				}
+				tableData = append(tableData, entry)
 			}
-			tableData = append(tableData, entry)
-		}
-		dataRows.Close()
-
-		// 3. Build Column Info with Inferred Types
-		var fullColumns []ColumnInfo
-		for _, colName := range colNames {
-			inferred := inferColumnType(columnValues[colName])
-			fullColumns = append(fullColumns, ColumnInfo{
-				Name: colName,
-				Type: inferred,
-			})
+			dataRows.Close()
 		}
 
 		tables = append(tables, TableInfo{
 			Name:    tbl,
-			Columns: fullColumns, // Now sending Typed columns
+			Columns: fullColumns, // Uses the PRAGMA types
 			Rows:    tableData,
 		})
 	}
 
-	// ... (Relationship logic stays the same) ...
-	// Note: Ensure you update your relationship logic if it relied on 'Columns' being []string.
-	// Since we changed TableInfo.Columns to []ColumnInfo, you might need to loop differently.
-
-	// UPDATED RELATIONSHIP LOOP:
+	// --- STEP C: Calculate Relationships (Foreign Keys) ---
 	relationships := []Relationship{}
 	for _, sourceTbl := range tables {
 		for _, col := range sourceTbl.Columns {
-			if strings.HasSuffix(col.Name, "_id") { // changed col -> col.Name
+			if strings.HasSuffix(col.Name, "_id") {
 				targetTblName := strings.TrimSuffix(col.Name, "_id")
+				// Check if target table actually exists
 				for _, targetTbl := range tableNames {
 					if targetTbl == targetTblName || targetTbl == targetTblName+"s" {
 						relationships = append(relationships, Relationship{
@@ -340,6 +358,7 @@ func handleGetDBInfo(c *gin.Context) {
 	})
 }
 
+// inferColumnType analyzes a list of values to guess the SQL type
 func inferColumnType(values []string) string {
 	if len(values) == 0 {
 		return "VARCHAR"
@@ -348,6 +367,7 @@ func inferColumnType(values []string) string {
 	isInt := true
 	isFloat := true
 	isBool := true
+	hasData := false // <--- NEW: Track if we actually saw data
 
 	// Regex for checking formats
 	intRegex := regexp.MustCompile(`^-?\d+$`)
@@ -357,13 +377,14 @@ func inferColumnType(values []string) string {
 		if v == "" {
 			continue
 		} // Skip empty cells
+		hasData = true // <--- Mark that we found a value
 
 		// Check Integer
 		if !intRegex.MatchString(v) {
 			isInt = false
 		}
 
-		// Check Float (if it's already not an int, it might be a float)
+		// Check Float
 		if !floatRegex.MatchString(v) && !intRegex.MatchString(v) {
 			isFloat = false
 		}
@@ -373,6 +394,11 @@ func inferColumnType(values []string) string {
 		if lowerV != "true" && lowerV != "false" && lowerV != "0" && lowerV != "1" && lowerV != "yes" && lowerV != "no" {
 			isBool = false
 		}
+	}
+
+	// FIX: If the column is completely empty, default to Text (VARCHAR)
+	if !hasData {
+		return "VARCHAR"
 	}
 
 	if isBool {
@@ -385,4 +411,89 @@ func inferColumnType(values []string) string {
 		return "DECIMAL"
 	}
 	return "VARCHAR"
+}
+
+// handleAddColumn executes ALTER TABLE
+func handleAddColumn(c *gin.Context) {
+	var req AddColumnRequest
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	// Sanitize inputs to prevent SQL Injection (Basic)
+	tableName := strings.ReplaceAll(req.TableName, " ", "_")
+	colName := strings.ReplaceAll(req.ColumnName, " ", "_")
+	colType := strings.ToUpper(req.ColumnType)
+
+	// Validate Type (Allow only safe types)
+	validTypes := map[string]bool{"VARCHAR": true, "INT": true, "DECIMAL": true, "REAL": true, "BOOLEAN": true}
+	if !validTypes[colType] {
+		// Default to TEXT if invalid
+		colType = "VARCHAR"
+	}
+
+	query := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", tableName, colName, colType)
+
+	if _, err := db.Exec(query); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Column added successfully"})
+}
+
+// handleExportCSV streams the table data as a CSV file
+func handleExportCSV(c *gin.Context) {
+	tableName := c.Param("tableName")
+
+	// Query all data
+	rows, err := db.Query(fmt.Sprintf("SELECT * FROM %s", tableName))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Table not found"})
+		return
+	}
+	defer rows.Close()
+
+	// Set headers for file download
+	c.Header("Content-Description", "File Transfer")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s.csv", tableName))
+	c.Header("Content-Type", "text/csv")
+
+	// Create CSV Writer pointing to the response writer
+	writer := csv.NewWriter(c.Writer)
+
+	// 1. Write Header
+	cols, _ := rows.Columns()
+	writer.Write(cols)
+
+	// 2. Write Rows
+	count := len(cols)
+	values := make([]interface{}, count)
+	valuePtrs := make([]interface{}, count)
+	for i := range cols {
+		valuePtrs[i] = &values[i]
+	}
+
+	for rows.Next() {
+		rows.Scan(valuePtrs...)
+		record := make([]string, count)
+
+		for i, val := range values {
+			if val != nil {
+				// Convert everything to string for CSV
+				switch v := val.(type) {
+				case []byte:
+					record[i] = string(v)
+				default:
+					record[i] = fmt.Sprintf("%v", v)
+				}
+			} else {
+				record[i] = ""
+			}
+		}
+		writer.Write(record)
+	}
+
+	writer.Flush()
 }
