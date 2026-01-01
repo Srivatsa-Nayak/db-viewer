@@ -40,10 +40,3 @@ Before running the project, ensure you have the following installed:
 -   **npm**: (Comes with Node.js)
 
 ---
-
-## 🏃‍♂️ Getting Started
-
-### 1. Clone the Repository
-```bash
-git clone [https://github.com/YOUR_USERNAME/sql-visualizer.git](https://github.com/YOUR_USERNAME/sql-visualizer.git)
-cd sql-visualizer
