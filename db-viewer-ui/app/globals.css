@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+/* 1. OVERRIDE DEFAULT DARK MODE BEHAVIOR
+   This tells Tailwind v4: "Only apply 'dark:' styles if the class .dark is present." 
+*/
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -12,11 +17,13 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* 2. UPDATE CSS VARIABLES
+   Changed from "@media (prefers-color-scheme: dark)" to ".dark".
+   Now, when your React code adds the class "dark" to HTML, these colors apply.
+*/
+.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
 }
 
 body {
