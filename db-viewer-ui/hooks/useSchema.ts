@@ -11,7 +11,7 @@ import {
 } from "reactflow";
 import { dbService } from "@/services/api";
 
-export const useSchema = () => {
+export const useSchema = (onEditTable: (name: string) => void) => {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [isUploading, setIsUploading] = useState(false);
@@ -34,6 +34,7 @@ export const useSchema = () => {
           label: tbl.name,
           columns: tbl.columns,
           onRefresh: refreshSchema,
+          onEdit: onEditTable
         },
       }));
 

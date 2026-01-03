@@ -13,6 +13,13 @@ interface AddColumnParams {
     columnType: string;
 }
 
+interface UpdateCellParams {
+    tableName: string;
+    recordId: string | number;
+    columnName: string;
+    newValue: string;
+}
+
 export const dbService = {
     // Upload CSV
     uploadFile: async (file: File) => {
@@ -42,6 +49,35 @@ export const dbService = {
     },
 
     getDownloadUrl: (tableName: string) => {
-        return `${API_URL}/export/${tableName}`;
-    }
+        // We append ?t=TIMESTAMP to bust the cache
+        return `${API_URL}/export/${tableName}?t=${new Date().getTime()}`;
+    },
+
+    // Get fresh data for a single table
+    getTableData: async (tableName: string) => {
+        const res = await api.get<any[]>(`/table-data/${tableName}?_t=${new Date().getTime()}`);
+        return res.data;
+    },
+
+    // Update a specific cell
+    updateCell: async (params: UpdateCellParams) => {
+        return api.post('/update-cell', {
+            table_name: params.tableName,
+            record_id: String(params.recordId),
+            column_name: params.columnName,
+            new_value: params.newValue
+        });
+    },
+
+    // insert a new cell 
+    insertRow: async (tableName: string) => {
+        return api.post('/insert-row', { table_name: tableName });
+    },
+
+    deleteRow: async (tableName: string, recordId: string | number) => {
+        return api.post('/delete-row', { 
+            table_name: tableName, 
+            record_id: String(recordId) 
+        });
+    },
 };

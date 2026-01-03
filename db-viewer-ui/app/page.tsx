@@ -11,18 +11,18 @@ import { SqlEditor } from "@/components/SqlEditor";
 // Hooks
 import { useSchema } from "@/hooks/useSchema";
 import { useQuery } from "@/hooks/useQuery";
+import { DataEditor } from "@/components/DataEditor";
 
 export default function Home() {
+    const [editingTable, setEditingTable] = useState<string | null>(null);
+    const { query, setQuery, results, error, runQuery } = useQuery();
+    const [theme, setTheme] = useState<'dark' | 'light' | 'system'>('dark');
+
     // 1. Logic Hooks
     const { 
         nodes, edges, onNodesChange, onEdgesChange, onConnect, 
         handleFileUpload, refreshSchema, isUploading 
-    } = useSchema();
-
-    const { query, setQuery, results, error, runQuery } = useQuery();
-
-    // 2. Global Theme State
-    const [theme, setTheme] = useState<'dark' | 'light' | 'system'>('dark');
+    } = useSchema(setEditingTable);
 
     // Handle Theme Class on Document Root
     useEffect(() => {
@@ -70,6 +70,12 @@ export default function Home() {
                     <ResultsTable data={results} error={error} />
                 </div>
             </div>
+            {editingTable && (
+                <DataEditor 
+                    tableName={editingTable} 
+                    onClose={() => setEditingTable(null)} 
+                />
+             )}
         </div>
     );
 }

@@ -1,12 +1,13 @@
 import React, { memo, useState } from 'react';
 import { Handle, Position } from 'reactflow';
-import { Database, KeyRound, Plus, Download, X, Check } from 'lucide-react';
+import { Database, KeyRound, Plus, Download, X, Check, Edit3 } from 'lucide-react';
 import { dbService } from '@/services/api';
 
 interface TableNodeData {
   label: string;
   columns: ColumnData[];
   onRefresh: () => void; 
+  onEdit: (tableName: string) => void;
 }
 
 interface ColumnData {
@@ -60,6 +61,13 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
             <span className="text-sm">{data.label}</span>
         </div>
         <div className="flex gap-1">
+            <button 
+                onClick={() => data.onEdit(data.label)}
+                className="p-1 hover:bg-indigo-500 rounded transition-colors"
+                title="Edit Data"
+            >
+                <Edit3 size={14} />
+            </button>
             <button 
                 onClick={() => setIsAdding(!isAdding)} 
                 className="p-1 hover:bg-indigo-500 rounded transition-colors"
