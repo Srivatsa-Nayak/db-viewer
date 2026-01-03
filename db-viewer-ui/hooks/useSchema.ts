@@ -11,7 +11,8 @@ import {
 } from "reactflow";
 import { dbService } from "@/services/api";
 
-export const useSchema = (onEditTable: (name: string) => void) => {
+export const useSchema = (onEditTable: (name: string) => void,
+                          onError: (message: string) => void) => {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [isUploading, setIsUploading] = useState(false);
@@ -52,7 +53,7 @@ export const useSchema = (onEditTable: (name: string) => void) => {
     } catch (err) {
       console.error("Failed to fetch schema", err);
     }
-  }, []);
+  }, [onEditTable]);
 
   // Initial load
   useEffect(() => {
@@ -71,7 +72,7 @@ export const useSchema = (onEditTable: (name: string) => void) => {
       await dbService.uploadFile(file);
       await refreshSchema();
     } catch (err) {
-      alert("Upload failed");
+      onError("Upload failed. Please check your CSV file format and try again.");
     } finally {
       setIsUploading(false);
     }
