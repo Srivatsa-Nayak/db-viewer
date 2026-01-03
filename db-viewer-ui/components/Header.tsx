@@ -10,7 +10,7 @@ export const Header = ({ onUpload, onRefresh, isUploading }: HeaderProps) => {
     return (
         <header className="h-16 border-b border-slate-800 flex items-center justify-between px-6 bg-slate-900">
             <h1 className="font-bold text-xl text-indigo-400 flex items-center gap-2">
-                <Database size={20} /> Database Visualizer
+                <Database size={20} /> SQL Visualizer
             </h1>
             <div className="flex gap-4">
                 <input
