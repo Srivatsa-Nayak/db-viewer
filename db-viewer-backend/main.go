@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 
 	"db-viewer/database" // REPLACE WITH YOUR MODULE NAME
 	"db-viewer/handlers" // REPLACE WITH YOUR MODULE NAME
@@ -45,8 +46,13 @@ func main() {
 	r.DELETE("/clear", handlers.HandleClearDatabase)
 	r.GET("/export-sql", handlers.HandleExportDatabaseSQL)
 
-	fmt.Println("Application running on http://localhost:8080")
-	if err := r.Run(":8080"); err != nil {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080" // local fallback
+	}
+
+	fmt.Println("Application running on port", port)
+	if err := r.Run(":" + port); err != nil {
 		log.Fatal(err)
 	}
 }
