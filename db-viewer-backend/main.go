@@ -42,6 +42,7 @@ func main() {
 	r.GET("/table-data/:tableName", handlers.HandleGetTableData)
 	r.POST("/insert-row", handlers.HandleInsertRow)
 	r.POST("/delete-row", handlers.HandleDeleteRow)
+	r.DELETE("/clear", handlers.HandleClearDatabase)
 
 	fmt.Println("Application running on http://localhost:8080")
 	if err := r.Run(":8080"); err != nil {

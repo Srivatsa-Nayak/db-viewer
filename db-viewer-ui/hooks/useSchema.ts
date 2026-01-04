@@ -8,14 +8,18 @@ import {
   Connection,
   NodeChange,
   EdgeChange,
+  MarkerType,
 } from "reactflow";
 import { dbService } from "@/services/api";
 
-export const useSchema = (onEditTable: (name: string) => void,
-                          onError: (message: string) => void) => {
+export const useSchema = (
+  onEditTable: (name: string) => void,
+  onError: (message: string) => void
+) => {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [fileName, setFileName] = useState<string | null>(null);
 
   const refreshSchema = useCallback(async () => {
     try {
@@ -28,25 +32,40 @@ export const useSchema = (onEditTable: (name: string) => void,
         id: tbl.name,
         type: "tableNode",
         position: {
-          x: 250 * (index % 3),
+           x: 250 * (index % 3),
           y: 100 + Math.floor(index / 3) * 300,
         },
         data: {
           label: tbl.name,
           columns: tbl.columns,
           onRefresh: refreshSchema,
-          onEdit: onEditTable
+          onEdit: onEditTable,
         },
       }));
 
       // Transform API relationships into Edges
-      const newEdges: Edge[] = relationships.map((rel, i) => ({
-        id: `e-${i}`,
-        source: rel.source_table,
-        target: rel.target_table,
-        animated: true,
-        style: { stroke: "#6366f1", strokeWidth: 2 },
-      }));
+      const newEdges: Edge[] = (response.relationships || []).map((rel: any, index: number) => ({
+                id: `e-${index}`,
+                
+                // FLIP DIRECTION: Parent (TargetTable) -> Child (SourceTable)
+                source: rel.target_table, 
+                target: rel.source_table,
+
+                // CONNECT TO SPECIFIC ROWS
+                // Source Handle: The PK on the Parent (Right side)
+                sourceHandle: `${rel.target_column}-right`,
+                // Target Handle: The FK on the Child (Left side)
+                targetHandle: `${rel.source_column}-left`,
+
+                // STYLING
+                type: 'smoothstep', // Makes neat 90-degree lines
+                animated: true,
+                style: { stroke: '#6366f1', strokeWidth: 1.5 },
+                markerEnd: {
+                    type: MarkerType.ArrowClosed, // The Arrow Head
+                    color: '#6366f1',
+                },
+            }));
 
       setNodes(newNodes);
       setEdges(newEdges);
@@ -68,15 +87,36 @@ export const useSchema = (onEditTable: (name: string) => void,
 
   const handleFileUpload = async (file: File) => {
     setIsUploading(true);
+    setFileName(file.name);
     try {
       await dbService.uploadFile(file);
       await refreshSchema();
     } catch (err) {
-      onError("Upload failed. Please check your CSV file format and try again.");
+      console.error("Upload error:", err);
+
+      // 1. Try to get the specific message from the Backend (Go)
+      const backendMessage = (err as any).response?.data?.error;
+
+      // 2. Fallback to generic message if backend didn't send one
+      const displayMessage =
+        backendMessage || "Upload failed. Check console for details.";
+
+      onError(displayMessage);
     } finally {
       setIsUploading(false);
     }
   };
+
+  const clearCanvas = async () => {
+        try {
+            await dbService.clearDatabase();
+            setFileName(null);
+            setNodes([]);
+            setEdges([]);
+        } catch (err) {
+            onError("Failed to clear database");
+        }
+    };
 
   // React Flow Event Handlers
   const onNodesChange = useCallback(
@@ -100,6 +140,8 @@ export const useSchema = (onEditTable: (name: string) => void,
     isUploading,
     handleFileUpload,
     refreshSchema,
+    clearCanvas,
+    fileName,
     onNodesChange,
     onEdgesChange,
     onConnect,

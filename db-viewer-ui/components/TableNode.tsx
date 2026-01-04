@@ -19,7 +19,7 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
   // Local state for "Add Column"
   const [isAdding, setIsAdding] = useState(false);
   const [newColName, setNewColName] = useState("");
-  const [newColType, setNewColType] = useState("TEXT");
+  const [newColType, setNewColType] = useState("VARCHAR");
   const [isLoading, setIsLoading] = useState(false);
 
   const handleAddColumn = async () => {
@@ -104,9 +104,9 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
                     onClick={(e) => e.stopPropagation()}
                     onChange={(e) => setNewColType(e.target.value)}
                   >
-                      <option value="VARCHAR">TEXT</option>
+                      <option value="VARCHAR">VARCHAR</option>
                       <option value="INT">INT</option>
-                      <option value="DECIMAL">DEC</option>
+                      <option value="DECIMAL">DECIMAL</option>
                       <option value="BOOLEAN">BOOL</option>
                   </select>
                   <button 

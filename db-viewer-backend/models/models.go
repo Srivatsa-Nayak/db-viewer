@@ -18,6 +18,7 @@ type Relationship struct {
 	SourceTable  string `json:"source_table"`
 	TargetTable  string `json:"target_table"`
 	SourceColumn string `json:"source_column"`
+	TargetColumn string `json:"target_column"`
 }
 
 // AddColumnRequest is the payload for adding a column

@@ -39,6 +39,7 @@ export const dbService = {
     // Get Schema & Relationships
     getSchema: async (): Promise<SchemaResponse> => {
         const res = await api.get<SchemaResponse>(`/db-info?_t=${new Date().getTime()}`);
+        console.log("Schema Response:", res.data);
         return res.data;
     },
 
@@ -70,8 +71,11 @@ export const dbService = {
     },
 
     // insert a new cell 
-    insertRow: async (tableName: string) => {
-        return api.post('/insert-row', { table_name: tableName });
+    insertRow: async (tableName: string, rowData?: any) => {
+        return api.post('/insert-row', { 
+            table_name: tableName,
+            data: rowData || {} // Send data if present
+        });
     },
 
     deleteRow: async (tableName: string, recordId: string | number) => {
@@ -79,5 +83,10 @@ export const dbService = {
             table_name: tableName, 
             record_id: String(recordId) 
         });
+    },
+
+    async clearDatabase() {
+        const response = await api.delete('/clear');
+        return response.data;
     },
 };
