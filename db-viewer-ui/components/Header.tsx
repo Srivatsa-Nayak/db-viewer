@@ -1,4 +1,5 @@
-import { Upload, RefreshCw, FileText, Trash2, Database } from 'lucide-react';
+import { dbService } from '@/services/api';
+import { Upload, RefreshCw, FileText, Trash2, Database, Download } from 'lucide-react';
 
 interface HeaderProps {
     onUpload: (file: File) => void;
@@ -6,10 +7,17 @@ interface HeaderProps {
     onClear: () => void;
     isUploading: boolean;
     fileName: string | null;
-    hasData: boolean; // <--- NEW PROP to control Trash visibility
+    hasData: boolean; 
 }
 
+
 export const Header = ({ onUpload, onRefresh, onClear, isUploading, fileName, hasData }: HeaderProps) => {
+
+    const handleDownloadSQL = () => {
+        const url = dbService.getDatabaseExportUrl(fileName);
+        window.open(url, '_blank');
+    };
+    
     return (
         <div className="h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-6 shadow-md z-50">
             {/* Logo */}
@@ -66,7 +74,17 @@ export const Header = ({ onUpload, onRefresh, onClear, isUploading, fileName, ha
                 >
                     <RefreshCw size={18} />
                 </button>
-
+                {/* 3. DOWNLOAD SQL BUTTON */}
+                {hasData && (
+                    <button 
+                        onClick={handleDownloadSQL} 
+                        className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-indigo-400 border border-slate-700 px-3 py-2 rounded-md text-sm font-medium transition-colors"
+                        title="Download Modified SQL"
+                    >
+                        <Download size={16} />
+                        <span className="hidden sm:inline">Export SQL</span>
+                    </button>
+                )}
                 {/* 4. CLEAR DATABASE BUTTON (Only visible if there is data) */}
                 {hasData && (
                     <button 

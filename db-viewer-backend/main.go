@@ -43,6 +43,7 @@ func main() {
 	r.POST("/insert-row", handlers.HandleInsertRow)
 	r.POST("/delete-row", handlers.HandleDeleteRow)
 	r.DELETE("/clear", handlers.HandleClearDatabase)
+	r.GET("/export-sql", handlers.HandleExportDatabaseSQL)
 
 	fmt.Println("Application running on http://localhost:8080")
 	if err := r.Run(":8080"); err != nil {

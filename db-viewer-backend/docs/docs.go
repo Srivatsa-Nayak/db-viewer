@@ -15,27 +15,6 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
-        "/db-info": {
-            "get": {
-                "description": "Returns all tables, their rows, and inferred relationships based on column names (e.g., user_id -\u003e users)",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "handleDBInfo"
-                ],
-                "summary": "Get Database Schema \u0026 Data",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    }
-                }
-            }
-        },
         "/query": {
             "post": {
                 "description": "Executes a raw SQL query against the in-memory database",
@@ -56,7 +35,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/main.QueryRequest"
+                            "$ref": "#/definitions/models.QueryRequest"
                         }
                     }
                 ],
@@ -106,7 +85,7 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "main.QueryRequest": {
+        "models.QueryRequest": {
             "type": "object",
             "properties": {
                 "query": {

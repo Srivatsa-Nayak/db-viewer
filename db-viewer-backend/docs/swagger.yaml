@@ -1,6 +1,6 @@
 basePath: /
 definitions:
-  main.QueryRequest:
+  models.QueryRequest:
     properties:
       query:
         example: SELECT * FROM users
@@ -13,21 +13,6 @@ info:
   title: Database Visualizer API
   version: "1.0"
 paths:
-  /db-info:
-    get:
-      description: Returns all tables, their rows, and inferred relationships based
-        on column names (e.g., user_id -> users)
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get Database Schema & Data
-      tags:
-      - handleDBInfo
   /query:
     post:
       consumes:
@@ -39,7 +24,7 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/main.QueryRequest'
+          $ref: '#/definitions/models.QueryRequest'
       produces:
       - application/json
       responses:

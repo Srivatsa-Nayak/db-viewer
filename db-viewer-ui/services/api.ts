@@ -89,4 +89,9 @@ export const dbService = {
         const response = await api.delete('/clear');
         return response.data;
     },
+
+    getDatabaseExportUrl: (fileName: string | null) => {
+        const name = fileName || "database.sql";
+        return `${API_URL}/export-sql?filename=${name}&t=${new Date().getTime()}`;
+    },
 };
