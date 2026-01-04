@@ -16,6 +16,13 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 )
 
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
 // @title           Database Visualizer API
 // @version         1.0
 // @description     A simple API to upload CSVs to SQLite and run queries.
@@ -46,13 +53,13 @@ func main() {
 	r.DELETE("/clear", handlers.HandleClearDatabase)
 	r.GET("/export-sql", handlers.HandleExportDatabaseSQL)
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080" // local fallback
-	}
+	port := envOrDefault("PORT", "8080")
+	addr := ":" + port
 
-	fmt.Println("Application running on port", port)
-	if err := r.Run(":" + port); err != nil {
+	fmt.Println("🚀 Starting server on", addr)
+
+	// 5. Start server (blocking call)
+	if err := r.Run(addr); err != nil {
 		log.Fatal(err)
 	}
 }
