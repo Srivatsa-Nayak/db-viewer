@@ -54,7 +54,7 @@ func main() {
 	r.GET("/export-sql", handlers.HandleExportDatabaseSQL)
 
 	port := envOrDefault("PORT", "8080")
-	addr := ":" + port
+	addr := "0.0.0.0:" + port
 
 	fmt.Println("🚀 Starting server on", addr)
 
