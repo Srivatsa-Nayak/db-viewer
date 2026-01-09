@@ -53,7 +53,7 @@ func main() {
 	r.DELETE("/clear", handlers.HandleClearDatabase)
 	r.GET("/export-sql", handlers.HandleExportDatabaseSQL)
 
-	port := envOrDefault("PORT", "8080")
+	port := envOrDefault("PORT", "4000")
 	addr := "0.0.0.0:" + port
 
 	fmt.Println("🚀 Starting server on", addr)
