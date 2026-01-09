@@ -5,8 +5,8 @@ import (
 	"log"
 	"os"
 
-	_ "github.com/go-sql-driver/mysql" // Import mysql driver
-	_ "modernc.org/sqlite"             // Import driver here
+	_ "github.com/go-sql-driver/mysql"
+	_ "modernc.org/sqlite"
 )
 
 // DB is a global variable accessible by other packages

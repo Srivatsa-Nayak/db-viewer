@@ -5,8 +5,8 @@ import (
 	"log"
 	"os"
 
-	"db-viewer/database" // REPLACE WITH YOUR MODULE NAME
-	"db-viewer/handlers" // REPLACE WITH YOUR MODULE NAME
+	"db-viewer/database"
+	"db-viewer/handlers"
 
 	_ "db-viewer/docs" // Swagger docs
 
