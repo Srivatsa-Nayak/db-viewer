@@ -1,24 +1,41 @@
 import { dbService } from '@/services/api';
-import { Upload, RefreshCw, FileText, Trash2, Database, Download } from 'lucide-react';
+import { Upload, RefreshCw, FileText, Trash2, Database, Download, HelpCircle } from 'lucide-react';
+import { useState } from 'react';
+import { ExportModal } from '@/components/ExportModal';
 
 interface HeaderProps {
     onUpload: (file: File) => void;
     onRefresh: () => void;
     onClear: () => void;
+    onShowInfo: () => void;
     isUploading: boolean;
     fileName: string | null;
     hasData: boolean; 
 }
 
 
-export const Header = ({ onUpload, onRefresh, onClear, isUploading, fileName, hasData }: HeaderProps) => {
+export const Header = ({ onUpload, onRefresh, onClear, onShowInfo, isUploading, fileName, hasData }: HeaderProps) => {
 
-    const handleDownloadSQL = () => {
-        const url = dbService.getDatabaseExportUrl(fileName);
-        window.open(url, '_blank');
+    const [isExportModalOpen, setExportModalOpen] = useState(false);
+
+    // This function runs AFTER the user clicks "Export" in the modal
+    const executeDownload = (userFilename: string) => {
+        try {
+            const url = dbService.getDatabaseExportUrl(userFilename);
+            
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', userFilename);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        } catch (e) {
+            console.error("Download failed", e);
+        }
     };
     
     return (
+        <>
         <div className="h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-6 shadow-md z-50">
             {/* Logo */}
             <div className="flex items-center gap-3">
@@ -77,12 +94,12 @@ export const Header = ({ onUpload, onRefresh, onClear, isUploading, fileName, ha
                 {/* 3. DOWNLOAD SQL BUTTON */}
                 {hasData && (
                     <button 
-                        onClick={handleDownloadSQL} 
-                        className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-indigo-400 border border-slate-700 px-3 py-2 rounded-md text-sm font-medium transition-colors"
+                        onClick={() => setExportModalOpen(true)}  
+                        className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-indigo-400 hover:text-indigo-300 border border-slate-700 px-3 py-2 rounded-md text-sm font-medium transition-colors"
                         title="Download Modified SQL"
                     >
                         <Download size={16} />
-                        <span className="hidden sm:inline">Export SQL</span>
+                        <span className="hidden sm:inline">Export</span>
                     </button>
                 )}
                 {/* 4. CLEAR DATABASE BUTTON (Only visible if there is data) */}
@@ -95,7 +112,22 @@ export const Header = ({ onUpload, onRefresh, onClear, isUploading, fileName, ha
                         <Trash2 size={18} />
                     </button>
                 )}
+                {/* 6. INFO / HELP (NEW) */}
+                <button 
+                    onClick={onShowInfo}
+                    className="p-2 text-slate-500 hover:text-slate-300 transition-colors ml-1"
+                    title="Help & Info"
+                >
+                    <HelpCircle size={20} />
+                </button>
             </div>
         </div>
+        <ExportModal 
+        isOpen={isExportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        onConfirm={executeDownload}
+        defaultName={fileName || ""}
+    />
+    </>
     );
 };

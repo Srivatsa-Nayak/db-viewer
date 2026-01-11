@@ -11,6 +11,8 @@ interface AddColumnParams {
     tableName: string;
     columnName: string;
     columnType: string;
+    length?: number;   
+    notNull?: boolean; 
 }
 
 interface UpdateCellParams {
@@ -18,6 +20,16 @@ interface UpdateCellParams {
     recordId: string | number;
     columnName: string;
     newValue: string;
+}
+
+export interface NewTableColumn {
+    name: string;
+    type: string;
+    length?: number;
+    is_pk: boolean;
+    not_null: boolean;
+    ref_table?: string;
+    ref_col?: string;
 }
 
 export const dbService = {
@@ -32,7 +44,9 @@ export const dbService = {
         return api.post('/alter-table', {
             table_name: params.tableName,
             column_name: params.columnName,
-            column_type: params.columnType
+            column_type: params.columnType,
+            length: params.length,   
+            not_null: params.notNull   
         });
     },
 
@@ -93,5 +107,12 @@ export const dbService = {
     getDatabaseExportUrl: (fileName: string | null) => {
         const name = fileName || "database.sql";
         return `${API_URL}/export-sql?filename=${name}&t=${new Date().getTime()}`;
+    },
+
+    createTable: async (tableName: string, columns: NewTableColumn[]) => {
+        return api.post('/create-table', {
+            table_name: tableName,
+            columns: columns
+        });
     },
 };

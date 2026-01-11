@@ -52,6 +52,7 @@ func main() {
 	r.POST("/delete-row", handlers.HandleDeleteRow)
 	r.DELETE("/clear", handlers.HandleClearDatabase)
 	r.GET("/export-sql", handlers.HandleExportDatabaseSQL)
+	r.POST("/create-table", handlers.HandleCreateTable)
 
 	port := envOrDefault("PORT", "4000")
 	addr := "0.0.0.0:" + port

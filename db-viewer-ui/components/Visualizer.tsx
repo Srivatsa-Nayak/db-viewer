@@ -14,8 +14,9 @@ import ReactFlow, {
     BackgroundVariant
 } from 'reactflow';
 import "reactflow/dist/style.css";
-import { Sun, Moon, Monitor, ZoomIn, ChevronRight, ChevronLeft } from "lucide-react";
+import { Sun, Moon, Monitor, ZoomIn, ChevronRight, ChevronLeft, Info, X, Plus} from "lucide-react";
 import TableNode from "@/components/TableNode";
+import { CreateTableModal } from "@/components/CreateTableModal";
 
 const nodeTypes = { tableNode: TableNode };
 
@@ -31,6 +32,7 @@ interface VisualizerProps {
     setTheme: (theme: 'dark' | 'light' | 'system') => void;
     isSidebarOpen: boolean;
     onToggleSidebar: () => void;
+    onRefreshRequest: () => void;
 }
 
 export const Visualizer = ({
@@ -42,10 +44,13 @@ export const Visualizer = ({
     theme,
     setTheme,
     isSidebarOpen,
-    onToggleSidebar
+    onToggleSidebar,
+    onRefreshRequest
 }: VisualizerProps) => {
     const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null);
     const [zoomLevel, setZoomLevel] = useState(1);
+    const [isCreateModalOpen, setCreateModalOpen] = useState(false);
+    const [isInfoModalOpen, setInfoModalOpen] = useState(false);
 
     const handleZoomChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
         const zoom = parseFloat(e.target.value);
@@ -53,6 +58,13 @@ export const Visualizer = ({
         if (rfInstance) {
             rfInstance.zoomTo(zoom, { duration: 800 });
         }
+    };
+
+    const getExistingTables = () => {
+        const names = nodes
+            .map(n => n.data?.name || n.data?.label || "")
+            .filter(name => name !== "");
+        return Array.from(new Set(names)); // Remove duplicates
     };
 
     return (
@@ -82,6 +94,27 @@ export const Visualizer = ({
                 <Controls className={`${theme === 'light' ? 'bg-white border-slate-200 fill-slate-700' : 'bg-slate-800 border-slate-700 fill-black'
                     }`} />
 
+                <Panel position="top-left" className="flex gap-2">
+                    <div className={`flex p-1 rounded-lg shadow-lg border ${theme === 'light' ? 'bg-white border-slate-200' : 'bg-slate-800 border-slate-700'}`}>
+                        <button 
+                            onClick={() => setCreateModalOpen(true)}
+                            className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded transition-all"
+                        >
+                            <Plus size={14} /> New Table
+                        </button>
+                        
+                        <div className="w-px bg-slate-700 mx-1 my-1" />
+
+                        <button 
+                            onClick={() => setInfoModalOpen(true)}
+                            className={`p-1.5 rounded ${theme === 'light' ? 'text-slate-600 hover:bg-slate-100' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}
+                            title="Help & Info"
+                        >
+                            <Info size={16} />
+                        </button>
+                    </div>
+                </Panel>
+                
                 {/* --- CUSTOM TOOLBAR --- */}
                 <Panel position="top-right" className="flex gap-2">
 
@@ -136,6 +169,41 @@ export const Visualizer = ({
                     {isSidebarOpen ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}
                 </button>
             </ReactFlow>
+            <CreateTableModal 
+                isOpen={isCreateModalOpen} 
+                onClose={() => setCreateModalOpen(false)}
+                onSuccess={() => {
+                    // Trigger parent to re-fetch/update nodes
+                    if(onRefreshRequest) onRefreshRequest();
+                }}
+                // Pass existing table names for Foreign Key support
+                existingTables={getExistingTables()}
+            />
+
+            {isInfoModalOpen && (
+                <div className="fixed inset-0 bg-black/60 z-[110] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+                    <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-md shadow-2xl">
+                        <div className="p-4 border-b border-slate-800 flex justify-between items-center">
+                            <h3 className="font-bold text-white flex items-center gap-2">
+                                <Info size={18} className="text-indigo-400" /> 
+                                Help & Guide
+                            </h3>
+                            <button onClick={() => setInfoModalOpen(false)}><X className="text-slate-400 hover:text-white" /></button>
+                        </div>
+                        <div className="p-6 space-y-4 text-sm text-slate-300">
+                             <p>This Visualizer allows you to design schemas interactively.</p>
+                            <ul className="list-disc pl-5 space-y-2 text-slate-400">
+                                <li><strong>Create Table:</strong> Use the top-left button to add new entities.</li>
+                                <li><strong>Connect:</strong> Drag from one table handle to another to create relationships.</li>
+                                <li><strong>Export:</strong> Click the Download icon to get the raw .sql file.</li>
+                            </ul>
+                        </div>
+                        <div className="p-4 bg-slate-800/50 rounded-b-xl flex justify-end">
+                            <button onClick={() => setInfoModalOpen(false)} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded text-sm">Close</button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

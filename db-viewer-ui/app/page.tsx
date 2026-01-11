@@ -13,6 +13,7 @@ import { SqlEditor } from "@/components/SqlEditor";
 import { useSchema } from "@/hooks/useSchema";
 import { useQuery } from "@/hooks/useQuery";
 import { DataEditor } from "@/components/DataEditor";
+import { InfoModal } from '@/components/InfoModal';
 
 export default function Home() {
     const [editingTable, setEditingTable] = useState<string | null>(null);
@@ -24,7 +25,7 @@ export default function Home() {
         message: ""
     });
     const [showClearConfirm, setShowClearConfirm] = useState(false);
-
+    const [isInfoOpen, setInfoOpen] = useState(false);
     // 1. Logic Hooks
     const {
         nodes, edges, onNodesChange, onEdgesChange, onConnect,
@@ -79,6 +80,7 @@ export default function Home() {
                 fileName={fileName}
                 onClear={handleClearRequest}
                 hasData={nodes.length > 0}
+                onShowInfo={() => setInfoOpen(true)}
             />
 
             <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
@@ -94,7 +96,14 @@ export default function Home() {
                     setTheme={setTheme}
                     isSidebarOpen={isSidebarOpen}
                     onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+                    onRefreshRequest={refreshSchema}
                 />
+                {isInfoOpen && (
+                    <InfoModal
+                        isOpen={isInfoOpen}
+                        onClose={() => setInfoOpen(false)}
+                    />
+                )}
 
                 {/* RIGHT: Editor & Results */}
                 {/* RIGHT: Editor & Results (Collapsible) */}
