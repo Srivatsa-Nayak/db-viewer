@@ -33,7 +33,6 @@ func HandleFileUpload(c *gin.Context) {
 		return
 	}
 
-	// 1. Identify File Type
 	filename := strings.ToLower(fileHeader.Filename)
 	isSQL := strings.HasSuffix(filename, ".sql")
 	isCSV := strings.HasSuffix(filename, ".csv")
@@ -50,9 +49,6 @@ func HandleFileUpload(c *gin.Context) {
 	}
 	defer file.Close()
 
-	// -------------------------------------------
-	// PATH A: SQL FILE IMPORT
-	// -------------------------------------------
 	if isSQL {
 		content, err := io.ReadAll(file)
 		if err != nil {
@@ -62,12 +58,10 @@ func HandleFileUpload(c *gin.Context) {
 
 		sqlString := string(content)
 
-		// Clean up MySQL syntax if we are running on SQLite
 		if database.CurrentDriver == "sqlite" || database.CurrentDriver == "sqlite3" {
 			sqlString = cleanSQLForSQLite(sqlString)
 		}
 
-		// Execute the SQL
 		if _, err := database.DB.Exec(sqlString); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "SQL Execution Error: " + err.Error()})
 			return
@@ -77,9 +71,6 @@ func HandleFileUpload(c *gin.Context) {
 		return
 	}
 
-	// -------------------------------------------
-	// PATH B: CSV FILE IMPORT (Restored)
-	// -------------------------------------------
 	reader := csv.NewReader(file)
 	records, err := reader.ReadAll()
 	if err != nil {
@@ -92,16 +83,13 @@ func HandleFileUpload(c *gin.Context) {
 		return
 	}
 
-	// 1. Sanitize Table Name
 	tableName := strings.TrimSuffix(fileHeader.Filename, ".csv")
 	tableName = strings.TrimSuffix(tableName, ".CSV") // Handle uppercase too
 	tableName = strings.ReplaceAll(tableName, " ", "_")
 	tableName = strings.ReplaceAll(tableName, "-", "_")
 
-	// 2. Extract Headers and Types
 	headers := records[0]
 
-	// Sanitize Headers (Remove spaces, special chars)
 	for i, h := range headers {
 		h = strings.TrimSpace(h)
 		h = strings.ReplaceAll(h, " ", "_")
@@ -117,14 +105,12 @@ func HandleFileUpload(c *gin.Context) {
 
 	columnTypes := guessColumnTypes(headers, dataRows)
 
-	// 3. Create Table
 	createSQL := buildSmartCreateTableSQL(tableName, headers, columnTypes)
 	if _, err := database.DB.Exec(createSQL); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create table: " + err.Error()})
 		return
 	}
 
-	// 4. Insert Data
 	if len(dataRows) > 0 {
 		if err := insertData(tableName, headers, dataRows); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert data: " + err.Error()})
@@ -196,13 +182,11 @@ func HandleQuery(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": tableData})
 }
 
-// HandleGetDBInfo returns Schema + Data + Relationships
 func HandleGetDBInfo(c *gin.Context) {
 	var tables []models.TableInfo
 	var tableNames []string
-	var relationships []models.Relationship // Store real relationships here
+	var relationships []models.Relationship
 
-	// 1. GET TABLE NAMES
 	if database.CurrentDriver == "mysql" {
 		rows, err := database.DB.Query("SHOW TABLES")
 		if err != nil {
@@ -216,7 +200,7 @@ func HandleGetDBInfo(c *gin.Context) {
 			tableNames = append(tableNames, name)
 		}
 	} else {
-		// SQLite
+
 		rows, err := database.DB.Query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -230,13 +214,10 @@ func HandleGetDBInfo(c *gin.Context) {
 		}
 	}
 
-	// 2. GET COLUMNS, DATA, AND *REAL* RELATIONSHIPS
 	for _, tbl := range tableNames {
 		var fullColumns []models.ColumnInfo
 
-		// --- A. GET COLUMNS ---
 		if database.CurrentDriver == "mysql" {
-			// MySQL Column Logic
 			schemaRows, err := database.DB.Query("DESCRIBE " + tbl)
 			if err == nil {
 				defer schemaRows.Close()
@@ -247,9 +228,6 @@ func HandleGetDBInfo(c *gin.Context) {
 				}
 			}
 
-			// MySQL Relationship Logic (Query Information Schema)
-			// Note: We use the current DB connection.
-			// In a production app, we should filter by TABLE_SCHEMA = DATABASE()
 			relQuery := `
 				SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME 
 				FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
@@ -272,7 +250,6 @@ func HandleGetDBInfo(c *gin.Context) {
 			}
 
 		} else {
-			// --- SQLite Column Logic ---
 			schemaRows, err := database.DB.Query(fmt.Sprintf("PRAGMA table_info(%s)", tbl))
 			if err == nil {
 				defer schemaRows.Close()
@@ -289,20 +266,17 @@ func HandleGetDBInfo(c *gin.Context) {
 				}
 			}
 
-			// --- SQLite Relationship Logic (PRAGMA foreign_key_list) ---
-			// This asks SQLite: "Who is this table connected to?"
 			fkRows, err := database.DB.Query(fmt.Sprintf("PRAGMA foreign_key_list(%s)", tbl))
 			if err == nil {
 				defer fkRows.Close()
 				for fkRows.Next() {
 					var id, seq int
 					var table, from, to, on_update, on_delete, match string
-					// SQLite returns: id, seq, table, from, to, on_update, on_delete, match
 					if err := fkRows.Scan(&id, &seq, &table, &from, &to, &on_update, &on_delete, &match); err == nil {
 						relationships = append(relationships, models.Relationship{
 							SourceTable:  tbl,
-							SourceColumn: from,  // The column in *this* table
-							TargetTable:  table, // The table it points to
+							SourceColumn: from,
+							TargetTable:  table,
 							TargetColumn: to,
 						})
 					}
@@ -310,7 +284,6 @@ func HandleGetDBInfo(c *gin.Context) {
 			}
 		}
 
-		// --- B. GET SAMPLE DATA (Limit 100) ---
 		dataRows, err := database.DB.Query(fmt.Sprintf("SELECT * FROM %s LIMIT 100", tbl))
 		var tableData []map[string]interface{}
 
@@ -352,14 +325,13 @@ func HandleGetDBInfo(c *gin.Context) {
 	})
 }
 
-// HandleAddColumn executes ALTER TABLE
 func HandleAddColumn(c *gin.Context) {
 	var req struct {
 		TableName  string `json:"table_name"`
 		ColumnName string `json:"column_name"`
 		ColumnType string `json:"column_type"`
-		Length     int    `json:"length"`   // e.g., 64, 128, 256
-		NotNull    bool   `json:"not_null"` // e.g., true = NOT NULL
+		Length     int    `json:"length"`
+		NotNull    bool   `json:"not_null"`
 	}
 
 	if err := c.BindJSON(&req); err != nil {
@@ -377,38 +349,35 @@ func HandleAddColumn(c *gin.Context) {
 	case "VARCHAR":
 		length := req.Length
 		if length == 0 {
-			length = 128 // Default per your request
+			length = 128
 		}
 		typeDef = fmt.Sprintf("VARCHAR(%d)", length)
 
 	case "INT":
 		if database.CurrentDriver == "sqlite" {
-			typeDef = "INTEGER" // SQLite prefers INTEGER for auto-increment logic etc.
+			typeDef = "INTEGER"
 		} else {
 			typeDef = "INT"
 		}
 
 	default:
-		// For DATE, TIME, BOOLEAN, DECIMAL, etc.
 		typeDef = baseType
 	}
 
 	if req.NotNull {
 		typeDef += " NOT NULL"
 
-		// Auto-add default values so the ALTER command doesn't fail on populated tables
 		if baseType == "VARCHAR" || baseType == "TEXT" {
 			typeDef += " DEFAULT ''"
 		} else if baseType == "INT" || baseType == "INTEGER" || baseType == "DECIMAL" {
 			typeDef += " DEFAULT 0"
 		} else if baseType == "BOOLEAN" {
-			typeDef += " DEFAULT 0" // 0 is False
+			typeDef += " DEFAULT 0"
 		} else if strings.Contains(baseType, "DATE") || strings.Contains(baseType, "TIME") {
 			typeDef += " DEFAULT '1970-01-01'"
 		}
 	}
 
-	// 3. Execute
 	query := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", tableName, colName, typeDef)
 	if _, err := database.DB.Exec(query); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add column: " + err.Error()})
@@ -418,7 +387,6 @@ func HandleAddColumn(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Column added successfully"})
 }
 
-// HandleExportCSV streams the table data
 func HandleExportCSV(c *gin.Context) {
 	tableName := c.Param("tableName")
 	rows, err := database.DB.Query(fmt.Sprintf("SELECT * FROM %s", tableName))
@@ -463,12 +431,9 @@ func HandleExportCSV(c *gin.Context) {
 	writer.Flush()
 }
 
-// HandleGetTableData fetches only the rows
-// Replace existing HandleGetTableData
 func HandleGetTableData(c *gin.Context) {
 	tableName := c.Param("tableName")
 
-	// Define a struct to hold Name AND Type
 	type ColInfo struct {
 		Name string `json:"name"`
 		Type string `json:"type"`
@@ -476,7 +441,6 @@ func HandleGetTableData(c *gin.Context) {
 
 	var columns []ColInfo
 
-	// 1. GET COLUMNS with TYPES
 	if database.CurrentDriver == "mysql" {
 		rows, err := database.DB.Query("DESCRIBE " + tableName)
 		if err != nil {
@@ -490,7 +454,6 @@ func HandleGetTableData(c *gin.Context) {
 			columns = append(columns, ColInfo{Name: field.String, Type: typ.String})
 		}
 	} else {
-		// SQLite Logic
 		rows, err := database.DB.Query(fmt.Sprintf("PRAGMA table_info(%s)", tableName))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -502,7 +465,6 @@ func HandleGetTableData(c *gin.Context) {
 			var name, ctype string
 			var rest interface{}
 			rows.Scan(&cid, &name, &ctype, &rest, &rest, &rest)
-			// SQLite types can be empty, default to TEXT
 			if ctype == "" {
 				ctype = "TEXT"
 			}
@@ -510,7 +472,6 @@ func HandleGetTableData(c *gin.Context) {
 		}
 	}
 
-	// 2. GET DATA
 	rows, err := database.DB.Query(fmt.Sprintf("SELECT * FROM %s LIMIT 100", tableName))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -542,12 +503,11 @@ func HandleGetTableData(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"columns": columns, // Now sends [{name: "dob", type: "DATE"}, ...]
+		"columns": columns,
 		"rows":    tableRows,
 	})
 }
 
-// HandleUpdateCell executes the SQL Update
 func HandleUpdateCell(c *gin.Context) {
 	var req models.UpdateCellRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -568,9 +528,7 @@ func HandleUpdateCell(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Updated successfully"})
 }
 
-// HandleInsertRow inserts a new row
 func HandleInsertRow(c *gin.Context) {
-	// We accept a "data" map to handle other columns
 	var req struct {
 		TableName string                 `json:"table_name"`
 		Data      map[string]interface{} `json:"data"`
@@ -581,15 +539,12 @@ func HandleInsertRow(c *gin.Context) {
 		return
 	}
 
-	// 1. Sanitize Data: Remove 'id' and empty strings
 	cleanData := make(map[string]interface{})
 	for k, v := range req.Data {
-		// CRITICAL: Always skip 'id' so the DB auto-increments it
 		if strings.EqualFold(k, "id") {
 			continue
 		}
 
-		// Skip empty strings (treat as NULL/Default)
 		if str, ok := v.(string); ok && strings.TrimSpace(str) == "" {
 			continue
 		}
@@ -599,21 +554,16 @@ func HandleInsertRow(c *gin.Context) {
 		cleanData[k] = v
 	}
 
-	// 2. Determine Quote Style
 	q := "\""
 	if database.CurrentDriver == "mysql" {
 		q = "`"
 	}
 
-	// 3. Construct Query
-	// If cleanData is empty (e.g., user sent only ID or empty strings), insert a default row
 	if len(cleanData) == 0 {
 		var query string
 		if database.CurrentDriver == "mysql" {
-			// MySQL: INSERT INTO table () VALUES ()
 			query = fmt.Sprintf("INSERT INTO %s%s%s () VALUES ()", q, req.TableName, q)
 		} else {
-			// SQLite: INSERT INTO table DEFAULT VALUES
 			query = fmt.Sprintf("INSERT INTO %s%s%s DEFAULT VALUES", q, req.TableName, q)
 		}
 
@@ -627,7 +577,6 @@ func HandleInsertRow(c *gin.Context) {
 		return
 	}
 
-	// 4. Dynamic Insert with specific columns
 	var cols []string
 	var vals []interface{}
 	var placeholders []string
@@ -638,7 +587,6 @@ func HandleInsertRow(c *gin.Context) {
 		placeholders = append(placeholders, "?")
 	}
 
-	// Quote column names
 	quotedCols := make([]string, len(cols))
 	for i, col := range cols {
 		quotedCols[i] = fmt.Sprintf("%s%s%s", q, col, q)
@@ -659,7 +607,6 @@ func HandleInsertRow(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Row added successfully", "id": id})
 }
 
-// HandleDeleteRow deletes a row
 func HandleDeleteRow(c *gin.Context) {
 	var req models.DeleteRowRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -678,8 +625,6 @@ func HandleDeleteRow(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Row deleted successfully"})
 }
 
-// --- HELPER FUNCTIONS ---
-
 func buildCreateTableSQL(tableName string, headers []string) string {
 	var cols []string
 	for _, h := range headers {
@@ -695,26 +640,21 @@ func insertData(tableName string, headers []string, rows [][]string) error {
 		return err
 	}
 
-	// Determine Quote Style
 	q := "\""
 	if database.CurrentDriver == "mysql" {
 		q = "`"
 	}
 
-	// Build placeholders (?,?,?)
 	placeholders := make([]string, len(rows[0]))
 	for i := range placeholders {
 		placeholders[i] = "?"
 	}
 
-	// Build Column Names list: "col1", "col2", "col3"
 	quotedHeaders := make([]string, len(headers))
 	for i, h := range headers {
 		quotedHeaders[i] = fmt.Sprintf("%s%s%s", q, h, q)
 	}
 
-	// Explicit Insert: INSERT INTO table (col1, col2) VALUES (?,?)
-	// This is much safer than implicit INSERT INTO table VALUES (?,?)
 	stmtStr := fmt.Sprintf("INSERT INTO %s%s%s (%s) VALUES (%s)",
 		q, tableName, q,
 		strings.Join(quotedHeaders, ","),
@@ -739,7 +679,6 @@ func insertData(tableName string, headers []string, rows [][]string) error {
 	return tx.Commit()
 }
 
-// inferColumnType (Private helper, currently unused but preserved)
 func inferColumnType(values []string) string {
 	if len(values) == 0 {
 		return "VARCHAR"
@@ -788,24 +727,20 @@ func guessColumnTypes(headers []string, rows [][]string) []string {
 	colTypes := make([]string, len(headers))
 
 	for i := range headers {
-		// Extract all values for this specific column
 		var colValues []string
 		for _, row := range rows {
 			if i < len(row) {
 				colValues = append(colValues, row[i])
 			}
 		}
-		// Use our existing logic to guess
 		colTypes[i] = inferColumnType(colValues)
 	}
 	return colTypes
 }
 
-// buildSmartCreateTableSQL constructs the SQL with REAL types (INT, BOOL) instead of just TEXT
 func buildSmartCreateTableSQL(tableName string, headers []string, types []string) string {
 	var builder strings.Builder
 
-	// 1. Check if "id" already exists
 	hasID := false
 	for _, h := range headers {
 		if strings.EqualFold(h, "id") {
@@ -814,15 +749,13 @@ func buildSmartCreateTableSQL(tableName string, headers []string, types []string
 		}
 	}
 
-	// 2. Determine Quote Style
-	q := "\"" // Default SQLite quotes
+	q := "\""
 	if database.CurrentDriver == "mysql" {
 		q = "`" // MySQL Backticks
 	}
 
 	builder.WriteString(fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s%s%s (", q, tableName, q))
 
-	// 3. If ID does NOT exist, create a dedicated one
 	if !hasID {
 		if database.CurrentDriver == "mysql" {
 			builder.WriteString(fmt.Sprintf("%sid%s INT AUTO_INCREMENT PRIMARY KEY, ", q, q))
@@ -831,26 +764,22 @@ func buildSmartCreateTableSQL(tableName string, headers []string, types []string
 		}
 	}
 
-	// 4. Add CSV Columns
 	for i, header := range headers {
 		colType := types[i]
 
-		// FIX: If CSV has an 'id' column, make sure it is AUTO_INCREMENT
 		if strings.EqualFold(header, "id") {
-			if database.CurrentDriver == "sqlite" {
-				// SQLite auto-increments INTEGER PRIMARY KEY by default
+			switch database.CurrentDriver {
+			case "sqlite":
 				if colType == "INTEGER" || colType == "INT" {
 					colType = "INTEGER PRIMARY KEY"
 				}
-			} else if database.CurrentDriver == "mysql" {
-				// MySQL needs explicit AUTO_INCREMENT
+			case "mysql":
 				if colType == "INT" || colType == "INTEGER" {
 					colType = "INT AUTO_INCREMENT PRIMARY KEY"
 				}
 			}
 		}
 
-		// MySQL prefers VARCHAR over TEXT
 		if database.CurrentDriver == "mysql" && colType == "TEXT" {
 			colType = "VARCHAR(255)"
 		}
@@ -858,7 +787,6 @@ func buildSmartCreateTableSQL(tableName string, headers []string, types []string
 		builder.WriteString(fmt.Sprintf("%s%s%s %s, ", q, header, q, colType))
 	}
 
-	// Remove trailing comma and close
 	sql := builder.String()
 	sql = strings.TrimSuffix(sql, ", ")
 	sql += ");"
@@ -873,7 +801,6 @@ func cleanSQLForSQLite(sqlContent string) string {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
-		// Skip commands that SQLite doesn't support
 		if strings.HasPrefix(trimmed, "SET") ||
 			strings.HasPrefix(trimmed, "LOCK TABLES") ||
 			strings.HasPrefix(trimmed, "UNLOCK TABLES") ||
@@ -890,11 +817,9 @@ func cleanSQLForSQLite(sqlContent string) string {
 
 	result := strings.Join(cleanLines, "\n")
 
-	// Regex looks for ") ENGINE=..." up to the semicolon
 	reEngine := regexp.MustCompile(`\) ENGINE=[^;]+;`)
 	result = reEngine.ReplaceAllString(result, ");")
 
-	// Easier to just remove it for visualization purposes).
 	result = strings.ReplaceAll(result, "AUTO_INCREMENT", "")
 
 	// result = strings.ReplaceAll(result, "`", "\"")
@@ -917,9 +842,8 @@ func HandleClearDatabase(c *gin.Context) {
 			rows.Scan(&name)
 			tableNames = append(tableNames, name)
 		}
-		rows.Close() // <--- CRITICAL: Close before executing drops
+		rows.Close()
 
-		// MySQL Drop Logic
 		database.DB.Exec("SET FOREIGN_KEY_CHECKS = 0")
 		for _, table := range tableNames {
 			_, err := database.DB.Exec("DROP TABLE IF EXISTS " + table)
@@ -930,7 +854,6 @@ func HandleClearDatabase(c *gin.Context) {
 		database.DB.Exec("SET FOREIGN_KEY_CHECKS = 1")
 
 	} else {
-		// SQLite Logic
 		rows, err := database.DB.Query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tables"})
@@ -942,43 +865,34 @@ func HandleClearDatabase(c *gin.Context) {
 			rows.Scan(&name)
 			tableNames = append(tableNames, name)
 		}
-		rows.Close() // <--- CRITICAL FIX: Release the read lock immediately
+		rows.Close()
 
-		// SQLite Drop Logic
-		// 1. Disable Foreign Keys to allow dropping in any order
 		if _, err := database.DB.Exec("PRAGMA foreign_keys = OFF"); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "DB Busy: " + err.Error()})
 			return
 		}
 
-		// 2. Drop Tables
 		for _, table := range tableNames {
-			// Use quotes \"%s\" to handle tables with spaces or special chars
 			_, err := database.DB.Exec(fmt.Sprintf("DROP TABLE IF EXISTS \"%s\"", table))
 			if err != nil {
-				// If database is still locked, this will tell us
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to drop " + table + ": " + err.Error()})
 				return
 			}
 		}
 
-		// 3. Re-enable Foreign Keys
 		database.DB.Exec("PRAGMA foreign_keys = ON")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Database cleared successfully"})
 }
 
-// HandleExportDatabaseSQL generates a full SQL dump
 func HandleExportDatabaseSQL(c *gin.Context) {
 	userFilename := c.Query("filename")
 
-	// Default if empty
 	if userFilename == "" {
 		userFilename = "database_export.sql"
 	}
 
-	// Ensure it ends with .sql
 	if !strings.HasSuffix(strings.ToLower(userFilename), ".sql") {
 		userFilename += ".sql"
 	}
@@ -1020,7 +934,6 @@ func HandleExportDatabaseSQL(c *gin.Context) {
 		}
 	}
 
-	// 2. Generate SQL
 	for _, table := range tables {
 		var createSQL string
 
@@ -1029,13 +942,8 @@ func HandleExportDatabaseSQL(c *gin.Context) {
 			database.DB.QueryRow("SHOW CREATE TABLE "+table).Scan(&dummyName, &createSQL)
 		} else {
 			database.DB.QueryRow("SELECT sql FROM sqlite_master WHERE type='table' AND name = ?", table).Scan(&createSQL)
-
-			// --- FIX: CLEAN UP SQLITE FORMATTING ---
 			reFormat := regexp.MustCompile(`\s*[\r\n]+\s*,`)
-
-			// Replace with: "," and a newline + indentation
 			createSQL = reFormat.ReplaceAllString(createSQL, ",\n    ")
-			// ---------------------------------------
 		}
 
 		if createSQL != "" {
@@ -1044,7 +952,6 @@ func HandleExportDatabaseSQL(c *gin.Context) {
 			dumpBuilder.WriteString(createSQL + ";\n\n")
 		}
 
-		// Dump Data
 		dumpBuilder.WriteString(fmt.Sprintf("-- Data for table `%s`\n", table))
 		rows, err := database.DB.Query(fmt.Sprintf("SELECT * FROM %s", table))
 		if err == nil {
@@ -1096,12 +1003,12 @@ func HandleCreateTable(c *gin.Context) {
 		TableName string `json:"table_name"`
 		Columns   []struct {
 			Name     string `json:"name"`
-			Type     string `json:"type"`   // INT, VARCHAR, DATE...
-			Length   int    `json:"length"` // for VARCHAR
-			IsPK     bool   `json:"is_pk"`  // Primary Key
+			Type     string `json:"type"`
+			Length   int    `json:"length"`
+			IsPK     bool   `json:"is_pk"`
 			NotNull  bool   `json:"not_null"`
-			RefTable string `json:"ref_table"` // Optional: FK Table
-			RefCol   string `json:"ref_col"`   // Optional: FK Column
+			RefTable string `json:"ref_table"`
+			RefCol   string `json:"ref_col"`
 		} `json:"columns"`
 	}
 
@@ -1114,7 +1021,6 @@ func HandleCreateTable(c *gin.Context) {
 	var colDefs []string
 	var fkDefs []string
 
-	// Determine Quote Style
 	q := "\""
 	if database.CurrentDriver == "mysql" {
 		q = "`"
@@ -1124,7 +1030,6 @@ func HandleCreateTable(c *gin.Context) {
 		colName := strings.ReplaceAll(col.Name, " ", "_")
 		colType := strings.ToUpper(col.Type)
 
-		// 1. Build Type String
 		typeDef := colType
 		if colType == "VARCHAR" {
 			len := col.Length
@@ -1133,10 +1038,9 @@ func HandleCreateTable(c *gin.Context) {
 			}
 			typeDef = fmt.Sprintf("VARCHAR(%d)", len)
 		} else if colType == "INT" && database.CurrentDriver == "sqlite" {
-			typeDef = "INTEGER" // SQLite preference
+			typeDef = "INTEGER"
 		}
 
-		// 2. Handle Primary Key
 		if col.IsPK {
 			if database.CurrentDriver == "sqlite" {
 				typeDef += " PRIMARY KEY AUTOINCREMENT"
@@ -1144,7 +1048,6 @@ func HandleCreateTable(c *gin.Context) {
 				typeDef += " AUTO_INCREMENT PRIMARY KEY"
 			}
 		} else {
-			// 3. Handle Not Null (Only if not PK)
 			if col.NotNull {
 				typeDef += " NOT NULL"
 			}
@@ -1159,20 +1062,16 @@ func HandleCreateTable(c *gin.Context) {
 
 		colDefs = append(colDefs, fmt.Sprintf("%s%s%s %s", q, colName, q, typeDef))
 
-		// 4. Handle Foreign Key
 		if col.RefTable != "" && col.RefCol != "" {
 			fkStr := fmt.Sprintf("FOREIGN KEY (%s%s%s) REFERENCES %s%s%s(%s%s%s)",
 				q, colName, q,
 				q, col.RefTable, q,
 				q, col.RefCol, q)
-
-			// Optional: Add ON DELETE CASCADE for cleaner cleanup
 			fkStr += " ON DELETE CASCADE"
 			fkDefs = append(fkDefs, fkStr)
 		}
 	}
 
-	// Combine Everything
 	fullDefs := append(colDefs, fkDefs...)
 	query := fmt.Sprintf("CREATE TABLE %s (%s);", tableName, strings.Join(fullDefs, ", "))
 
