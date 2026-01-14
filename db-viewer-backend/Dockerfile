@@ -1,50 +1,29 @@
-# --- Stage 1: Build the Application ---
-    FROM golang:1.25-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
-    # Install CGO dependencies (Required for sqlite3)
-    RUN apk add --no-cache gcc musl-dev
-    
-    WORKDIR /app
-    
-    COPY go.mod ./
+WORKDIR /app
 
-    RUN go mod download
-    RUN go mod tidy
-    
-    # Copy the rest of the source code
-    COPY . .
-    
-    # Build the binary
-    # -o server: output file name
-    # CGO_ENABLED=1: Required for go-sqlite3
-    ENV CGO_ENABLED=1
-    ENV GOOS=linux
-    RUN go build -o server main.go
-    
-    # --- Stage 2: Run the Application ---
-    FROM alpine:latest
-    
-    WORKDIR /root/
-    
-    # Copy the binary from the builder stage
-    COPY --from=builder /app/server .
-    
-    # Install certificates (needed if you make external API calls)
-    RUN apk --no-cache add ca-certificates
-    
-    # Create a directory for your SQLite DB
-    RUN mkdir -p /data
-    
-    # Set environment variables
-    # Tell your code to look for the DB in the /data folder
-    ENV DB_PATH=/data/visualizer.db
-    # Tell Gin to run in production mode
-    ENV GIN_MODE=release
-    # Tell your app which port to use
-    ENV PORT=8080
-    
-    # Expose the port so Render can find it
-    EXPOSE 8080
-    
-    # Command to run the app
-    CMD ["./server"]
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ENV CGO_ENABLED=0 
+ENV GOOS=linux
+
+RUN go build -o server main.go
+
+FROM alpine:latest
+
+WORKDIR /root/
+
+COPY --from=builder /app/server .
+
+RUN mkdir -p /data
+
+ENV DB_PATH=/data/visualizer.db
+ENV PORT=8080
+ENV GIN_MODE=release
+
+EXPOSE 8080
+
+CMD ["./server"]

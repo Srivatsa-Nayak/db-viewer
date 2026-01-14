@@ -20,7 +20,7 @@ func InitDB() {
 	if dbPath == "" {
 		dbPath = "/tmp/visualizer.db"
 	}
-	DB, err = sql.Open("sqlite3", dbPath)
+	DB, err = sql.Open("sqlite", dbPath)
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
