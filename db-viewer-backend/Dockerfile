@@ -6,9 +6,10 @@
     
     WORKDIR /app
     
-    # Copy dependency files first (better caching)
-    COPY go.mod go.sum ./
+    COPY go.mod ./
+
     RUN go mod download
+    RUN go mod tidy
     
     # Copy the rest of the source code
     COPY . .
@@ -47,4 +48,3 @@
     
     # Command to run the app
     CMD ["./server"]
-    
