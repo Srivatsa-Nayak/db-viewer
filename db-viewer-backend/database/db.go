@@ -2,10 +2,8 @@ package database
 
 import (
 	"database/sql"
-	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "modernc.org/sqlite"
@@ -21,15 +19,7 @@ func InitDB() {
 	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
 		dbPath = "/tmp/visualizer.db"
-		fmt.Println("DB_PATH not set. Using ephemeral storage: /tmp/visualizer.db")
 	}
-
-	dir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		log.Fatalf("Failed to create database directory '%s': %v", dir, err)
-	}
-
-	log.Printf("Connecting to SQLite at: %s", dbPath)
 	DB, err = sql.Open("sqlite3", dbPath)
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
