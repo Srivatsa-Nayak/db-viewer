@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/gofiber/fiber/v2"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 )
@@ -32,6 +33,8 @@ func main() {
 	// 1. Initialize Database
 	database.InitDB()
 	defer database.DB.Close()
+
+	app := fiber.New()
 
 	// 2. Setup Router
 	r := gin.Default()
@@ -54,10 +57,14 @@ func main() {
 	r.GET("/export-sql", handlers.HandleExportDatabaseSQL)
 	r.POST("/create-table", handlers.HandleCreateTable)
 
+	app.Get("/env", func(c *fiber.Ctx) error {
+		return c.SendString("env: " + os.Getenv("TEST_ENV"))
+	})
+
 	port := envOrDefault("PORT", "4000")
 	addr := "0.0.0.0:" + port
 
-	fmt.Println("🚀 Starting server on", addr)
+	fmt.Println("Starting server on", addr)
 
 	// 5. Start server (blocking call)
 	if err := r.Run(addr); err != nil {
