@@ -47,3 +47,4 @@
     
     # Command to run the app
     CMD ["./server"]
+    
