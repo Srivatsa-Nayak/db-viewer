@@ -2,14 +2,15 @@ package database
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "modernc.org/sqlite"
 )
 
-// DB is a global variable accessible by other packages
 var DB *sql.DB
 var CurrentDriver string
 
@@ -17,25 +18,36 @@ var CurrentDriver string
 func InitDB() {
 	var err error
 
-	driver := os.Getenv("DB_DRIVER")
-	dsn := os.Getenv("DB_DSN") // Data Source Name (connection string)
-
-	if driver == "" {
-		driver = "sqlite"
-		dsn = "./data.db"
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "/tmp/visualizer.db"
+		fmt.Println("DB_PATH not set. Using ephemeral storage: /tmp/visualizer.db")
 	}
 
-	CurrentDriver = driver
+	dir := filepath.Dir(dbPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Fatalf("Failed to create database directory '%s': %v", dir, err)
+	}
 
-	// 2. Open Connection
-	DB, err = sql.Open(driver, dsn)
+	log.Printf("Connecting to SQLite at: %s", dbPath)
+	DB, err = sql.Open("sqlite3", dbPath)
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		log.Fatalf("Failed to open database: %v", err)
 	}
 
 	if err = DB.Ping(); err != nil {
-		log.Fatal("Database unreachable:", err)
+		log.Fatalf("Failed to ping database: %v", err)
 	}
 
-	log.Printf("Connected to %s database successfully", driver)
+	createTableQuery := `
+	CREATE TABLE IF NOT EXISTS users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT
+	);`
+	if _, err := DB.Exec(createTableQuery); err != nil {
+		log.Printf("Warning: Failed to initialize default tables: %v", err)
+	}
+
+	CurrentDriver = "sqlite"
+	log.Println("Database initialized successfully.")
 }
