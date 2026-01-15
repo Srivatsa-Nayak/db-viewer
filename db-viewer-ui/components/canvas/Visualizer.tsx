@@ -15,8 +15,8 @@ import ReactFlow, {
 } from 'reactflow';
 import "reactflow/dist/style.css";
 import { Sun, Moon, Monitor, ZoomIn, ChevronRight, ChevronLeft, Info, X, Plus} from "lucide-react";
-import TableNode from "@/components/TableNode";
-import { CreateTableModal } from "@/components/CreateTableModal";
+import TableNode from "@/components/tables/TableNode";
+import { CreateTableModal } from "@/components/modal/CreateTableModal";
 
 const nodeTypes = { tableNode: TableNode };
 

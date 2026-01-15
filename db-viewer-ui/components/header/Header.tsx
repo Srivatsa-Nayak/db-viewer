@@ -1,7 +1,7 @@
 import { dbService } from '@/services/api';
 import { Upload, RefreshCw, FileText, Trash2, Database, Download, HelpCircle } from 'lucide-react';
 import { useState } from 'react';
-import { ExportModal } from '@/components/ExportModal';
+import { ExportModal } from '@/components/modal/ExportModal';
 
 interface HeaderProps {
     onUpload: (file: File) => void;
