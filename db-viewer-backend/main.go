@@ -52,6 +52,13 @@ func main() {
 	r.GET("/export-sql", handlers.HandleExportDatabaseSQL)
 	r.POST("/create-table", handlers.HandleCreateTable)
 
+	// check if the service is up and running in render
+	r.GET("/", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"status": "Service is up and running",
+		})
+	})
+
 	port := envOrDefault("PORT", "8080")
 	addr := "0.0.0.0:" + port
 
