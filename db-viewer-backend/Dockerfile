@@ -1,29 +1,29 @@
-FROM golang:1.25-alpine AS builder
+# ─── Build Stage ────────────────────────────────────────────────────────────────
+FROM maven:3.9-eclipse-temurin-17 AS builder
 
 WORKDIR /app
 
-COPY go.mod go.sum ./
-RUN go mod download
+# Cache dependencies
+COPY pom.xml .
+RUN mvn dependency:go-offline -B
 
-COPY . .
+# Build
+COPY src ./src
+RUN mvn clean package -DskipTests -B
 
-ENV CGO_ENABLED=0 
-ENV GOOS=linux
+# ─── Runtime Stage ───────────────────────────────────────────────────────────────
+FROM eclipse-temurin:17-jre-alpine
 
-RUN go build -o server main.go
-
-FROM alpine:latest
-
-WORKDIR /root/
-
-COPY --from=builder /app/server .
+WORKDIR /app
 
 RUN mkdir -p /data
 
+COPY --from=builder /app/target/db-viewer-*.jar app.jar
+
 ENV DB_PATH=/data/visualizer.db
 ENV PORT=8080
-ENV GIN_MODE=release
+ENV SPRING_PROFILES_ACTIVE=prod
 
 EXPOSE 8080
 
-CMD ["./server"]
+ENTRYPOINT ["java", "-jar", "app.jar", "--server.port=${PORT}"]

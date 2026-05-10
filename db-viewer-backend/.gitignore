@@ -1,0 +1,9 @@
+target/
+*.db
+*.class
+.idea/
+*.iml
+.mvn/
+!.mvn/wrapper/
+.DS_Store
+*.log
