@@ -1,0 +1,42 @@
+name: Deploy Frontend to Azure
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'db-viewer-ui/**'
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: db-viewer-ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        env:
+          NEXT_PUBLIC_API_URL: https://db-viewer-api-srivatsa.azurewebsites.net
+        run: npm run build
+
+      - name: Assemble standalone output
+        run: |
+          cp -r public .next/standalone/public
+          cp -r .next/static .next/standalone/.next/static
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: db-viewer-ui-srivatsa
+          publish-profile: ${{ secrets.AZURE_FRONTEND_PUBLISH_PROFILE }}
+          package: db-viewer-ui/.next/standalone
