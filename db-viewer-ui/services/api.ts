@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { SchemaResponse, QueryResponse } from '@/types';
+import { RowData, SchemaResponse, TableDataResponse } from '@/types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
@@ -32,6 +32,16 @@ export interface NewTableColumn {
     ref_col?: string;
 }
 
+const toBackendColumn = (column: NewTableColumn) => ({
+    name: column.name,
+    type: column.type,
+    length: column.length,
+    isPk: column.is_pk,
+    notNull: column.not_null,
+    refTable: column.ref_table,
+    refCol: column.ref_col,
+});
+
 export const dbService = {
     // Upload CSV
     uploadFile: async (file: File) => {
@@ -42,11 +52,11 @@ export const dbService = {
 
     addColumn: async (params: AddColumnParams) => {
         return api.post('/alter-table', {
-            table_name: params.tableName,
-            column_name: params.columnName,
-            column_type: params.columnType,
+            tableName: params.tableName,
+            columnName: params.columnName,
+            columnType: params.columnType,
             length: params.length,   
-            not_null: params.notNull   
+            notNull: params.notNull   
         });
     },
 
@@ -57,45 +67,39 @@ export const dbService = {
         return res.data;
     },
 
-    // Run SQL Query
-    runQuery: async (query: string): Promise<QueryResponse> => {
-        const res = await api.post<QueryResponse>('/query', { query });
-        return res.data;
-    },
-
     getDownloadUrl: (tableName: string) => {
         // We append ?t=TIMESTAMP to bust the cache
         return `${API_URL}/export/${tableName}?t=${new Date().getTime()}`;
     },
 
     // Get fresh data for a single table
-    getTableData: async (tableName: string) => {
-        const res = await api.get<any[]>(`/table-data/${tableName}?_t=${new Date().getTime()}`);
+    getTableData: async (tableName: string): Promise<TableDataResponse | RowData[]> => {
+        const res = await api.get<TableDataResponse | RowData[]>(`/table-data/${tableName}?_t=${new Date().getTime()}`);
         return res.data;
     },
 
     // Update a specific cell
     updateCell: async (params: UpdateCellParams) => {
         return api.post('/update-cell', {
-            table_name: params.tableName,
-            record_id: String(params.recordId),
-            column_name: params.columnName,
-            new_value: params.newValue
+            tableName: params.tableName,
+            recordId: String(params.recordId),
+            columnName: params.columnName,
+            newValue: params.newValue
         });
     },
 
     // insert a new cell 
-    insertRow: async (tableName: string, rowData?: any) => {
+    insertRow: async (tableName: string, rowData?: RowData) => {
         return api.post('/insert-row', { 
-            table_name: tableName,
+            tableName,
             data: rowData || {} // Send data if present
         });
     },
 
     deleteRow: async (tableName: string, recordId: string | number) => {
         return api.post('/delete-row', { 
-            table_name: tableName, 
-            record_id: String(recordId) 
+            tableName, 
+            recordId: String(recordId) 
         });
     },
 
@@ -111,8 +115,8 @@ export const dbService = {
 
     createTable: async (tableName: string, columns: NewTableColumn[]) => {
         return api.post('/create-table', {
-            table_name: tableName,
-            columns: columns
+            tableName,
+            columns: columns.map(toBackendColumn)
         });
     },
 };

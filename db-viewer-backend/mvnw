@@ -1,0 +1,27 @@
+#!/bin/sh
+# ----------------------------------------------------------------------------
+# Maven Wrapper startup script - Unix/macOS
+# ----------------------------------------------------------------------------
+# Find the project base directory
+MAVEN_WRAPPER_JAR=".mvn/wrapper/maven-wrapper.jar"
+MAVEN_WRAPPER_PROPERTIES=".mvn/wrapper/maven-wrapper.properties"
+
+# Detect the directory where this script lives
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "$SCRIPT_DIR" || exit 1
+
+# Read the Maven distribution URL from wrapper properties
+if [ -r "$MAVEN_WRAPPER_PROPERTIES" ]; then
+    MAVEN_DISTRIBUTION_URL=$(grep distributionUrl "$MAVEN_WRAPPER_PROPERTIES" | cut -d= -f2 | tr -d '\r')
+fi
+
+# If the wrapper JAR exists, use it; otherwise fall back to system mvn
+if [ -r "$MAVEN_WRAPPER_JAR" ]; then
+    exec java -jar "$MAVEN_WRAPPER_JAR" "$@"
+elif command -v mvn > /dev/null 2>&1; then
+    exec mvn "$@"
+else
+    echo "ERROR: No Maven wrapper jar or 'mvn' found on PATH." >&2
+    echo "Install Maven or run: mvn -N wrapper:wrapper" >&2
+    exit 1
+fi

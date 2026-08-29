@@ -11,6 +11,7 @@ import {
   MarkerType,
 } from "reactflow";
 import { dbService } from "@/services/api";
+import { Relationship } from "@/types";
 
 export const useSchema = (
   onEditTable: (name: string) => void,
@@ -25,8 +26,6 @@ export const useSchema = (
     try {
       const response = await dbService.getSchema();
       const tables = response.tables || [];
-      const relationships = response.relationships || [];
-
       // Transform API data into React Flow Nodes
       const newNodes: Node[] = tables.map((tbl, index) => ({
         id: tbl.name,
@@ -44,28 +43,30 @@ export const useSchema = (
       }));
 
       // Transform API relationships into Edges
-      const newEdges: Edge[] = (response.relationships || []).map((rel: any, index: number) => ({
-                id: `e-${index}`,
-                
-                // FLIP DIRECTION: Parent (TargetTable) -> Child (SourceTable)
-                source: rel.target_table, 
-                target: rel.source_table,
+      const newEdges = (response.relationships || [])
+        .flatMap((rel: Relationship, index: number): Edge[] => {
+          const targetTable = rel.target_table ?? rel.targetTable;
+          const sourceTable = rel.source_table ?? rel.sourceTable;
+          const targetColumn = rel.target_column ?? rel.targetColumn ?? "id";
+          const sourceColumn = rel.source_column ?? rel.sourceColumn;
 
-                // CONNECT TO SPECIFIC ROWS
-                // Source Handle: The PK on the Parent (Right side)
-                sourceHandle: `${rel.target_column}-right`,
-                // Target Handle: The FK on the Child (Left side)
-                targetHandle: `${rel.source_column}-left`,
+          if (!targetTable || !sourceTable || !sourceColumn) return [];
 
-                // STYLING
-                type: 'smoothstep', // Makes neat 90-degree lines
-                animated: true,
-                style: { stroke: '#6366f1', strokeWidth: 1.5 },
-                markerEnd: {
-                    type: MarkerType.ArrowClosed, // The Arrow Head
-                    color: '#6366f1',
-                },
-            }));
+          return [{
+            id: `e-${index}`,
+            source: targetTable,
+            target: sourceTable,
+            sourceHandle: `${targetColumn}-right`,
+            targetHandle: `${sourceColumn}-left`,
+            type: 'smoothstep',
+            animated: true,
+            style: { stroke: '#6366f1', strokeWidth: 1.5 },
+            markerEnd: {
+              type: MarkerType.ArrowClosed,
+              color: '#6366f1',
+            },
+          }];
+        });
 
       setNodes(newNodes);
       setEdges(newEdges);
@@ -95,7 +96,9 @@ export const useSchema = (
       console.error("Upload error:", err);
 
       // 1. Try to get the specific message from the Backend (Go)
-      const backendMessage = (err as any).response?.data?.error;
+      const backendMessage = err && typeof err === "object" && "response" in err
+        ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
+        : undefined;
 
       // 2. Fallback to generic message if backend didn't send one
       const displayMessage =
@@ -113,7 +116,7 @@ export const useSchema = (
             setFileName(null);
             setNodes([]);
             setEdges([]);
-        } catch (err) {
+        } catch {
             onError("Failed to clear database");
         }
     };

@@ -13,8 +13,8 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: Arial, Helvetica, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), "Cascadia Mono", Consolas, monospace;
 }
 
 /* 2. UPDATE CSS VARIABLES
@@ -31,3 +31,90 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Design tokens */
+:root {
+  --accent: #06b6d4; /* teal-400 */
+  --muted: #9ca3af; /* zinc-400 */
+  --panel-bg-light: #ffffff;
+  --panel-bg-dark: #111827; /* near zinc-950 but adjustable */
+  --shadow-1: 0 1px 2px rgba(2,6,23,0.6);
+  --shadow-2: 0 6px 18px rgba(2,6,23,0.5);
+}
+
+/* Utility UI classes to provide consistent panels, borders and shadows */
+.card {
+  border-radius: 0.5rem; /* rounded-lg */
+  border: 1px solid rgba(148,163,184,0.12);
+  box-shadow: var(--shadow-1);
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent);
+}
+
+.panel {
+  border-radius: 0.5rem;
+  border: 1px solid rgba(148,163,184,0.06);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+}
+
+.soft-border {
+  border: 1px solid rgba(148,163,184,0.06);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: white;
+  padding: 0.45rem 0.75rem;
+  border-radius: 0.375rem;
+  font-weight: 600;
+  box-shadow: 0 6px 14px rgba(6,182,212,0.12);
+}
+
+/* Minor focus ring for keyboard navigation */
+:focus {
+  outline: 2px solid rgba(6,182,212,0.18);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
+}
+
+/* Animations and micro-interactions */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-up {
+  animation: fadeInUp 360ms cubic-bezier(.22,.9,.31,1) both;
+}
+
+/* Soft hover lift for cards and buttons */
+.card-hover {
+  transition: transform 180ms cubic-bezier(.22,.9,.31,1), box-shadow 180ms ease;
+}
+.card-hover:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 18px 40px rgba(2,6,23,0.55);
+}
+
+.btn-animated {
+  transition: transform 160ms ease, box-shadow 160ms ease, background-color 120ms ease;
+}
+.btn-animated:hover {
+  transform: translateY(-3px) scale(1.02);
+  box-shadow: 0 10px 30px rgba(6,182,212,0.12);
+}
+
+/* Subtle table row hover */
+.table-row-anim {
+  transition: background-color 160ms ease, transform 160ms ease;
+}
+.table-row-anim:hover {
+  background-color: rgba(255,255,255,0.02);
+  transform: translateY(-2px);
+}
+
+/* Smooth width transition for sidebars */
+.sidebar-width-transition {
+  transition: width 260ms cubic-bezier(.22,.9,.31,1), opacity 220ms ease;
+}
+
