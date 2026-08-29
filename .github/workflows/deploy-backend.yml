@@ -23,7 +23,9 @@ jobs:
           distribution: 'temurin'
 
       - name: Build with Maven
-        run: ./mvnw clean package -DskipTests
+        run: |
+          chmod +x mvnw
+          ./mvnw clean package -DskipTests
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
