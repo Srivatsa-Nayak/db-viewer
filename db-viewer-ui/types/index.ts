@@ -3,6 +3,9 @@ export interface ColumnInfo {
     type: string;
     is_pk?: boolean;
     isPk?: boolean;
+    /** True when the column is declared NOT NULL. Used to pre-fill the edit-column form. */
+    notNull?: boolean;
+    not_null?: boolean;
 }
 
 export type RowData = Record<string, string | number | boolean | null>;

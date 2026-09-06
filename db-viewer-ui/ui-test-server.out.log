@@ -1,0 +1,12 @@
+
+> db-viewer-ui@0.1.0 dev
+> next dev --port 3100
+
+▲ Next.js 16.1.1 (Turbopack)
+- Local:         http://localhost:3100
+- Network:       http://192.168.0.3:3100
+- Environments: .env.local
+
+✓ Starting...
+  Suggestion: If you intended to restart next dev, terminate the other process, and then try again.
+[?25h

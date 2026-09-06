@@ -7,6 +7,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -28,12 +29,27 @@ public class DatabaseController {
 
     private final DatabaseServiceImpl databaseServiceImpl;
 
+    /** Maven's project version, filtered into application.properties at build time. */
+    @Value("${app.version:unknown}")
+    private String appVersion;
+
     // ─── Health Check ─────────────────────────────────────────────────────────────
 
     @GetMapping("/")
-    @Operation(summary = "Health Check", description = "Returns service status")
+    @Operation(summary = "Health Check", description = "Returns service status and version")
     public ResponseEntity<Map<String, String>> healthCheck() {
-        return ResponseEntity.ok(Map.of("status", "Service is up and running"));
+        return ResponseEntity.ok(Map.of(
+                "status", "Service is up and running",
+                "version", appVersion));
+    }
+
+    // ─── Version ──────────────────────────────────────────────────────────────────
+
+    @GetMapping("/version")
+    @Operation(summary = "Application Version",
+            description = "Returns the version declared in pom.xml. Displayed in the UI's info modal.")
+    public ResponseEntity<Map<String, String>> version() {
+        return ResponseEntity.ok(Map.of("version", appVersion));
     }
 
     // ─── File Upload ─────────────────────────────────────────────────────────────
@@ -110,6 +126,25 @@ public class DatabaseController {
         }
     }
 
+    // ─── Update Column ────────────────────────────────────────────────────────────
+
+    @PostMapping("/update-column")
+    @Operation(summary = "Edit Column",
+            description = "Renames an existing column and/or changes its type or nullability. "
+                    + "Omit a field to leave it unchanged.")
+    public ResponseEntity<?> updateColumn(@RequestBody UpdateColumnRequest request) {
+        try {
+            databaseServiceImpl.updateColumn(request);
+            return ResponseEntity.ok(Map.of("message", "Column updated successfully"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Update column error", e);
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("error", "Failed to update column: " + e.getMessage()));
+        }
+    }
+
     // ─── Update Cell ─────────────────────────────────────────────────────────────
 
     @PostMapping("/update-cell")
@@ -176,6 +211,39 @@ public class DatabaseController {
             return ResponseEntity.ok(Map.of("message", "Database cleared successfully"));
         } catch (Exception e) {
             log.error("Clear DB error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    // ─── List Workspaces ──────────────────────────────────────────────────────────
+
+    @GetMapping("/workspaces")
+    @Operation(summary = "List Workspaces",
+            description = "Ids of every workspace that still has a database. The UI uses this to "
+                    + "restore the files that were open before a browser refresh.")
+    public ResponseEntity<?> listWorkspaces() {
+        try {
+            return ResponseEntity.ok(Map.of("workspaces", databaseServiceImpl.listWorkspaces()));
+        } catch (Exception e) {
+            log.error("List workspaces error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    // ─── Delete Workspace ─────────────────────────────────────────────────────────
+
+    @DeleteMapping("/workspace")
+    @Operation(summary = "Delete Workspace",
+            description = "Deletes the database backing the workspace named by the X-Workspace-Id "
+                    + "header. Without that header this clears the default database instead.")
+    public ResponseEntity<?> deleteWorkspace() {
+        try {
+            databaseServiceImpl.deleteWorkspace();
+            return ResponseEntity.ok(Map.of("message", "Workspace deleted successfully"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Delete workspace error", e);
             return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
         }
     }
