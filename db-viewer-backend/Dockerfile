@@ -16,11 +16,12 @@ FROM eclipse-temurin:17-jre-alpine
 
 WORKDIR /app
 
-RUN mkdir -p /data
+RUN mkdir -p /data/workspaces
 
 COPY --from=builder /app/target/db-viewer-*.jar app.jar
 
 ENV DB_PATH=/data/visualizer.db
+ENV WORKSPACE_DIR=/data/workspaces
 ENV PORT=8080
 ENV SPRING_PROFILES_ACTIVE=prod
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { X, Loader2, Plus, Trash2, AlertTriangle, Save, AlertCircle } from 'lucide-react';
+import { X, Loader2, Plus, Trash2, AlertTriangle, Save, AlertCircle, Pencil, Check } from 'lucide-react';
 import { dbService } from '@/services/api';
 import { ColumnInfo, RowData } from '@/types';
 
@@ -21,7 +21,9 @@ const getInputType = (sqlType: string) => {
 
 // Helper to format values for Date Pickers (YYYY-MM-DD)
 const formatValueForInput = (val: RowData[string] | undefined, type: string) => {
-    if (!val) return "";
+    // Checked against null/undefined rather than falsiness so a literal 0 or false
+    // still reaches the input instead of being blanked out.
+    if (val === null || val === undefined) return "";
     const strVal = String(val);
     // datetime-local expects "YYYY-MM-DDTHH:mm", SQL often gives "YYYY-MM-DD HH:mm:ss"
     if (type === 'datetime-local' && strVal.includes(' ')) {
@@ -35,15 +37,22 @@ const getRowId = (row: RowData): string | number | null => {
     return typeof value === 'string' || typeof value === 'number' ? value : null;
 };
 
+const isIdColumn = (name: string) => name.toLowerCase() === 'id';
+
 export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
     const [data, setData] = useState<RowData[]>([]);
     // Store objects { name: "id", type: "INT" } instead of just strings
     const [columns, setColumns] = useState<ColumnInfo[]>([]);
     const [loading, setLoading] = useState(false);
 
-    // Edit State
+    // Quick edit: a single cell, committed on blur or Enter.
     const [editingCell, setEditingCell] = useState<{rowId: string | number, col: string} | null>(null);
     const [editValue, setEditValue] = useState("");
+
+    // Row edit: every editable field in one row at once, committed with Save.
+    const [editingRowId, setEditingRowId] = useState<string | number | null>(null);
+    const [rowDraft, setRowDraft] = useState<RowData>({});
+    const [isSavingRow, setIsSavingRow] = useState(false);
 
     // Modal States
     const [deleteConfirm, setDeleteConfirm] = useState<{isOpen: boolean, rowId: string | number | null}>({ isOpen: false, rowId: null });
@@ -112,33 +121,86 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
         }
     };
 
+    // --- Row edit ---------------------------------------------------------------
+
+    const startRowEdit = (row: RowData) => {
+        const rowId = getRowId(row);
+        if (rowId === null) return;
+        setEditingCell(null);
+        setEditingRowId(rowId);
+        setRowDraft({ ...row });
+    };
+
+    const cancelRowEdit = () => {
+        setEditingRowId(null);
+        setRowDraft({});
+    };
+
+    const handleSaveRow = async () => {
+        if (editingRowId === null || !tableName) return;
+        const original = data.find(r => getRowId(r) === editingRowId);
+        if (!original) return cancelRowEdit();
+
+        // Only push the fields the user actually touched.
+        const changed = columns.filter(col =>
+            !isIdColumn(col.name) &&
+            String(rowDraft[col.name] ?? "") !== String(original[col.name] ?? "")
+        );
+
+        if (changed.length === 0) return cancelRowEdit();
+
+        setIsSavingRow(true);
+        try {
+            for (const col of changed) {
+                await dbService.updateCell({
+                    tableName,
+                    recordId: editingRowId,
+                    columnName: col.name,
+                    newValue: String(rowDraft[col.name] ?? "")
+                });
+            }
+            cancelRowEdit();
+            await loadData();
+        } catch (err: unknown) {
+            const message = err && typeof err === "object" && "response" in err
+                ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
+                : undefined;
+            setErrorModal({ isOpen: true, message: message || "Failed to save row" });
+            loadData();
+        } finally {
+            setIsSavingRow(false);
+        }
+    };
+
+    // --- Single-cell quick edit -------------------------------------------------
+
     const handleSaveCell = async () => {
         if (!editingCell || !tableName) return;
-        const newData = [...data];
-        const rowIndex = newData.findIndex(r => getRowId(r) == editingCell.rowId);
+        const cell = editingCell;
+        const value = editValue;
+        setEditingCell(null);
 
-        if (rowIndex !== -1) {
-            newData[rowIndex][editingCell.col] = editValue;
-            setData(newData);
-        }
+        setData(prev => prev.map(row =>
+            getRowId(row) === cell.rowId ? { ...row, [cell.col]: value } : row
+        ));
 
         try {
             await dbService.updateCell({
                 tableName,
-                recordId: editingCell.rowId,
-                columnName: editingCell.col,
-                newValue: editValue
+                recordId: cell.rowId,
+                columnName: cell.col,
+                newValue: value
             });
         } catch {
             setErrorModal({ isOpen: true, message: "Failed to update cell" });
             loadData();
         }
-        setEditingCell(null);
     };
 
     const confirmDeleteRow = async () => {
         const id = deleteConfirm.rowId;
-        if (!id) return;
+        // Compared against null explicitly: a row with id 0 is still a real row.
+        if (id === null || id === undefined) return;
         setData(prev => prev.filter(row => getRowId(row) !== id));
         setDeleteConfirm({ isOpen: false, rowId: null });
         try {
@@ -154,9 +216,14 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
 
                 {/* Header */}
                 <div className="p-4 border-b border-zinc-200 flex justify-between items-center bg-white rounded-t-lg">
-                    <h2 className="text-lg font-bold text-zinc-900 flex items-center gap-2">
-                        Editing: <span className="text-blue-600 font-mono">{tableName}</span>
-                    </h2>
+                    <div>
+                        <h2 className="text-lg font-bold text-zinc-900 flex items-center gap-2">
+                            Editing: <span className="text-blue-600 font-mono">{tableName}</span>
+                        </h2>
+                        <p className="text-xs text-zinc-400 mt-0.5">
+                            Click a cell to edit it, or use <Pencil size={10} className="inline -mt-0.5" /> to edit the whole row.
+                        </p>
+                    </div>
                     <button onClick={onClose} className="text-zinc-400 hover:text-zinc-900"><X size={20} /></button>
                 </div>
 
@@ -176,7 +243,7 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
                                             </div>
                                         </th>
                                     ))}
-                                    <th className="p-2 border-b border-zinc-200 sticky top-0 bg-white z-10 w-10"></th>
+                                    <th className="p-2 border-b border-zinc-200 sticky top-0 bg-white z-10 w-20"></th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -185,16 +252,42 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
                                 )}
                                 {data.map((row, i) => {
                                     const rowId = getRowId(row);
+                                    const isRowEditing = rowId !== null && rowId === editingRowId;
                                     return (
-                                        <tr key={i} className="hover:bg-zinc-50 transition-colors group">
+                                        <tr key={i} className={`transition-colors group ${isRowEditing ? 'bg-blue-50/60' : 'hover:bg-zinc-50'}`}>
                                             {columns.map(col => {
                                                 const inputType = getInputType(col.type);
                                                 const isEditing = editingCell?.rowId === rowId && editingCell?.col === col.name;
+                                                const isLocked = isIdColumn(col.name);
+
+                                                // Whole-row edit takes over the cell rendering.
+                                                if (isRowEditing) {
+                                                    return (
+                                                        <td key={col.name} className="p-2 border-b border-zinc-100">
+                                                            {isLocked ? (
+                                                                <span className="text-zinc-400 font-mono">{row[col.name]?.toString()}</span>
+                                                            ) : (
+                                                                <input
+                                                                    type={inputType}
+                                                                    className="w-full bg-white text-zinc-900 p-1 rounded border border-blue-300 outline-none focus:border-blue-500"
+                                                                    value={formatValueForInput(rowDraft[col.name], inputType)}
+                                                                    onChange={e => setRowDraft(prev => ({ ...prev, [col.name]: e.target.value }))}
+                                                                    onKeyDown={e => {
+                                                                        if (e.key === 'Enter') handleSaveRow();
+                                                                        if (e.key === 'Escape') cancelRowEdit();
+                                                                    }}
+                                                                />
+                                                            )}
+                                                        </td>
+                                                    );
+                                                }
+
                                                 return (
                                                 <td key={col.name}
-                                                    className="p-2 border-b border-zinc-100 text-zinc-700 cursor-pointer hover:bg-zinc-50"
+                                                    className={`p-2 border-b border-zinc-100 text-zinc-700 ${isLocked ? '' : 'cursor-text hover:bg-blue-50/50 hover:ring-1 hover:ring-inset hover:ring-blue-200'}`}
+                                                    title={isLocked ? undefined : "Click to edit"}
                                                     onClick={() => {
-                                                        if(rowId !== null && col.name.toLowerCase() !== 'id' && !isEditing) {
+                                                        if(rowId !== null && !isLocked && !isEditing) {
                                                             setEditingCell({ rowId, col: col.name });
                                                             // Format date values for input
                                                             setEditValue(formatValueForInput(row[col.name], inputType));
@@ -208,14 +301,40 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
                                                             value={editValue}
                                                             onChange={e => setEditValue(e.target.value)}
                                                             onBlur={handleSaveCell}
-                                                            onKeyDown={e => e.key === 'Enter' && handleSaveCell()}
+                                                            onKeyDown={e => {
+                                                                if (e.key === 'Enter') handleSaveCell();
+                                                                // Escape abandons the edit without writing.
+                                                                if (e.key === 'Escape') setEditingCell(null);
+                                                            }}
                                                         />
                                                     ) : (row[col.name]?.toString() || <span className="text-zinc-300 italic">null</span>)}
                                                 </td>
                                             )})}
-                                            <td className="p-2 border-b border-zinc-100 text-right">
-                                                <button onClick={(e) => { e.stopPropagation(); setDeleteConfirm({ isOpen: true, rowId }); }}
-                                                    className="text-zinc-400 hover:text-red-500 p-1.5 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14} /></button>
+
+                                            <td className="p-2 border-b border-zinc-100 text-right whitespace-nowrap">
+                                                {isRowEditing ? (
+                                                    <div className="flex gap-1 justify-end">
+                                                        <button onClick={handleSaveRow} disabled={isSavingRow}
+                                                            className="p-1.5 rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-60" title="Save row">
+                                                            {isSavingRow ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                                                        </button>
+                                                        <button onClick={cancelRowEdit} disabled={isSavingRow}
+                                                            className="p-1.5 rounded bg-zinc-200 hover:bg-zinc-300 text-zinc-600" title="Cancel">
+                                                            <X size={14} />
+                                                        </button>
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex gap-1 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+                                                        <button onClick={(e) => { e.stopPropagation(); startRowEdit(row); }}
+                                                            disabled={rowId === null}
+                                                            className="text-zinc-400 hover:text-blue-600 p-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                            title={rowId === null ? "This row has no id column to edit by" : "Edit row"}>
+                                                            <Pencil size={14} />
+                                                        </button>
+                                                        <button onClick={(e) => { e.stopPropagation(); setDeleteConfirm({ isOpen: true, rowId }); }}
+                                                            className="text-zinc-400 hover:text-red-500 p-1.5" title="Delete row"><Trash2 size={14} /></button>
+                                                    </div>
+                                                )}
                                             </td>
                                         </tr>
                                     );
@@ -235,7 +354,7 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
                         <div className="bg-zinc-50 p-3 rounded border border-zinc-200 animate-in slide-in-from-bottom-2">
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
                                 {columns.map(col => {
-                                    if(col.name.toLowerCase() === 'id') return null;
+                                    if(isIdColumn(col.name)) return null;
                                     const inputType = getInputType(col.type);
                                     return (
                                         <div key={col.name}>

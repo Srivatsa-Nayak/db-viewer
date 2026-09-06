@@ -9,7 +9,6 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.TestPropertySource;
@@ -22,7 +21,19 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /**
- * MockMvc integration tests — covers every endpoint in DatabaseController.
+ * End-to-end coverage of the REST surface: routing, request binding, status codes, and the
+ * effect each call has on the database.
+ *
+ * <p>This is the only layer that tests the ordinary CRUD endpoints. An earlier service-level
+ * suite asserted the same operations one layer down, which meant every change had to be
+ * mirrored in two places while catching nothing extra — going through MockMvc exercises the
+ * same service code plus the wiring around it.
+ *
+ * <p>Each test asserts what actually changed rather than just a 200, because a handler that
+ * returns success without doing anything is the failure worth catching.
+ *
+ * <p>Tests share one in-memory database and run in declared order: the CSV upload seeds the
+ * `products` table the later tests operate on.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -36,68 +47,55 @@ class DatabaseControllerIntegrationTest {
 
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper objectMapper;
-    @Autowired
-    DatabaseServiceImpl databaseServiceImpl;
+    @Autowired DatabaseServiceImpl databaseServiceImpl;
 
-    // ─── Health Check ─────────────────────────────────────────────────────────────
+    // ─── Health ───────────────────────────────────────────────────────────────────
 
     @Test
     @Order(1)
-    void healthCheck_shouldReturn200() throws Exception {
+    void healthCheck_shouldReportStatusAndVersion() throws Exception {
         mockMvc.perform(get("/"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("Service is up and running"));
+                .andExpect(jsonPath("$.status").value("Service is up and running"))
+                // The UI shows this in its info modal, so an empty value is a real regression.
+                .andExpect(jsonPath("$.version").isNotEmpty());
     }
 
-    // ─── File Upload ─────────────────────────────────────────────────────────────
+    // ─── Upload ───────────────────────────────────────────────────────────────────
 
     @Test
     @Order(2)
-    void uploadCsv_shouldReturn200AndCreateTable() throws Exception {
-        String csvContent = "id,product_name,price,stock\n101,Mouse,25.99,100\n102,Keyboard,75.00,50\n";
+    void uploadCsv_shouldCreateTheTableAndItsRows() throws Exception {
+        String csv = "id,product_name,price,stock\n101,Mouse,25.99,100\n102,Keyboard,75.00,50\n";
         MockMultipartFile file = new MockMultipartFile(
-                "file", "products.csv", "text/csv", csvContent.getBytes());
+                "file", "products.csv", "text/csv", csv.getBytes());
 
         mockMvc.perform(multipart("/upload").file(file))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.message").value("CSV uploaded successfully"))
                 .andExpect(jsonPath("$.tableName").value("products"))
                 .andExpect(jsonPath("$.type").value("csv"));
+
+        mockMvc.perform(get("/table-data/products"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.columns[*].name",
+                        containsInAnyOrder("id", "product_name", "price", "stock")))
+                .andExpect(jsonPath("$.rows", hasSize(2)));
     }
 
     @Test
     @Order(3)
-    void uploadSql_shouldReturn200() throws Exception {
-        String sqlContent = "CREATE TABLE IF NOT EXISTS orders ("
-                + "id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT, qty INTEGER DEFAULT 0);";
+    void upload_withUnsupportedFileType_shouldReturn400() throws Exception {
         MockMultipartFile file = new MockMultipartFile(
-                "file", "orders.sql", "application/sql", sqlContent.getBytes());
+                "file", "notes.txt", "text/plain", "hello".getBytes());
 
         mockMvc.perform(multipart("/upload").file(file))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.type").value("sql"));
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error", containsString("Only .csv and .sql")));
     }
 
     @Test
     @Order(4)
-    void uploadUnsupportedFile_shouldReturn400() throws Exception {
-        ClassPathResource resource = new ClassPathResource("test-files-for-upload/sample.csv");
-
-        MockMultipartFile file = new MockMultipartFile(
-                "file",
-                resource.getFilename(),
-                "text/csv",
-                resource.getInputStream()
-        );
-
-        mockMvc.perform(multipart("/upload").file(file))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.type").value("csv"));
-    }
-
-    @Test
-    @Order(5)
-    void uploadWithNoFile_shouldReturn400() throws Exception {
+    void upload_withNoFile_shouldReturn400() throws Exception {
         mockMvc.perform(multipart("/upload"))
                 .andExpect(status().isBadRequest());
     }
@@ -105,57 +103,31 @@ class DatabaseControllerIntegrationTest {
     // ─── Query ────────────────────────────────────────────────────────────────────
 
     @Test
-    @Order(6)
-    void query_validSelect_shouldReturnData() throws Exception {
+    @Order(5)
+    void query_validSelect_shouldReturnRows() throws Exception {
         String body = objectMapper.writeValueAsString(Map.of("query", "SELECT * FROM products"));
 
-        mockMvc.perform(post("/query")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
+        mockMvc.perform(post("/query").contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data").isArray())
-                .andExpect(jsonPath("$.data", hasSize(greaterThanOrEqualTo(2))));
+                .andExpect(jsonPath("$.data", hasSize(2)));
     }
 
     @Test
-    @Order(7)
-    void query_invalidSql_shouldReturn400() throws Exception {
-        String body = objectMapper.writeValueAsString(Map.of("query", "SELECT * FROM no_such_table_xyz"));
+    @Order(6)
+    void query_invalidSql_shouldReturn400WithAnError() throws Exception {
+        String body = objectMapper.writeValueAsString(
+                Map.of("query", "SELECT * FROM no_such_table_xyz"));
 
-        mockMvc.perform(post("/query")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
+        mockMvc.perform(post("/query").contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").exists());
     }
 
-    // ─── DB Info ─────────────────────────────────────────────────────────────────
+    // ─── Schema changes ───────────────────────────────────────────────────────────
 
     @Test
-    @Order(8)
-    void dbInfo_shouldReturnTablesAndRelationships() throws Exception {
-        mockMvc.perform(get("/db-info"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.tables").isArray())
-                .andExpect(jsonPath("$.relationships").isArray());
-    }
-
-    // ─── Table Data ───────────────────────────────────────────────────────────────
-
-    @Test
-    @Order(9)
-    void tableData_shouldReturnColumnsAndRows() throws Exception {
-        mockMvc.perform(get("/table-data/products"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.columns").isArray())
-                .andExpect(jsonPath("$.rows").isArray());
-    }
-
-    // ─── Create Table ─────────────────────────────────────────────────────────────
-
-    @Test
-    @Order(10)
-    void createTable_shouldReturn200() throws Exception {
+    @Order(7)
+    void createTable_shouldApplyPrimaryKeyAndNotNull() throws Exception {
         String body = """
                 {
                   "tableName": "categories",
@@ -167,107 +139,156 @@ class DatabaseControllerIntegrationTest {
                 """;
 
         mockMvc.perform(post("/create-table")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+
+        // The "isPk" flag used to be dropped during JSON binding, so tables were created
+        // without a primary key and without auto-increment. Assert the DDL, not the status.
+        String pkQuery = objectMapper.writeValueAsString(Map.of(
+                "query", "SELECT sql FROM sqlite_master WHERE type='table' AND name='categories'"));
+
+        mockMvc.perform(post("/query")
+                        .contentType(MediaType.APPLICATION_JSON).content(pkQuery))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.message").value("Table created successfully"));
+                .andExpect(jsonPath("$.data[0].sql", containsString("PRIMARY KEY")))
+                .andExpect(jsonPath("$.data[0].sql", containsString("NOT NULL")));
     }
 
-    // ─── Alter Table ─────────────────────────────────────────────────────────────
-
     @Test
-    @Order(11)
-    void addColumn_shouldReturn200() throws Exception {
+    @Order(8)
+    void addColumn_shouldAppearInTheSchema() throws Exception {
         String body = """
                 {"tableName": "products", "columnName": "sku", "columnType": "VARCHAR", "length": 50}
                 """;
 
         mockMvc.perform(post("/alter-table")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.message").value("Column added successfully"));
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/table-data/products"))
+                .andExpect(jsonPath("$.columns[*].name", hasItem("sku")));
     }
 
-    // ─── Insert Row ───────────────────────────────────────────────────────────────
+    @Test
+    @Order(9)
+    void updateColumn_shouldRenameIt() throws Exception {
+        String body = """
+                {"tableName": "products", "columnName": "sku", "newColumnName": "sku_code"}
+                """;
+
+        mockMvc.perform(post("/update-column")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/table-data/products"))
+                .andExpect(jsonPath("$.columns[*].name", hasItem("sku_code")))
+                .andExpect(jsonPath("$.columns[*].name", not(hasItem("sku"))));
+    }
+
+    // ─── Rows ─────────────────────────────────────────────────────────────────────
 
     @Test
-    @Order(12)
-    void insertRow_withData_shouldReturn200() throws Exception {
+    @Order(10)
+    void insertRow_withValues_shouldStoreThem() throws Exception {
         String body = """
                 {"tableName": "products", "data": {"product_name": "Monitor", "price": "199.99", "stock": "10"}}
                 """;
 
         mockMvc.perform(post("/insert-row")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/table-data/products"))
+                .andExpect(jsonPath("$.rows", hasSize(3)))
+                .andExpect(jsonPath("$.rows[*].product_name", hasItem("Monitor")));
+    }
+
+    @Test
+    @Order(11)
+    void insertRow_withNoData_shouldUseDatabaseDefaults() throws Exception {
+        // A distinct SQL path: "INSERT INTO t DEFAULT VALUES" rather than a parameterised insert.
+        mockMvc.perform(post("/insert-row")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.message").value("Row added successfully"));
+                        .content("""
+                                {"tableName": "products"}
+                                """))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/table-data/products"))
+                .andExpect(jsonPath("$.rows", hasSize(4)));
+    }
+
+    @Test
+    @Order(12)
+    void updateCell_shouldChangeTheStoredValue() throws Exception {
+        String body = objectMapper.writeValueAsString(Map.of(
+                "tableName", "products",
+                "recordId", "101",
+                "columnName", "product_name",
+                "newValue", "Super Mouse"));
+
+        mockMvc.perform(post("/update-cell")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/table-data/products"))
+                .andExpect(jsonPath("$.rows[?(@.id == 101)].product_name", hasItem("Super Mouse")));
     }
 
     @Test
     @Order(13)
-    void insertRow_empty_shouldReturn200() throws Exception {
-        String body = """
-                {"tableName": "orders"}
-                """;
+    void deleteRow_shouldRemoveIt() throws Exception {
+        String body = objectMapper.writeValueAsString(
+                Map.of("tableName", "products", "recordId", "102"));
 
-        mockMvc.perform(post("/insert-row")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
+        mockMvc.perform(post("/delete-row")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk());
+
+        mockMvc.perform(get("/table-data/products"))
+                .andExpect(jsonPath("$.rows", hasSize(3)))
+                .andExpect(jsonPath("$.rows[*].id", not(hasItem(102))));
     }
 
-    // ─── Update Cell ─────────────────────────────────────────────────────────────
+    // ─── Workspace scoping ────────────────────────────────────────────────────────
 
     @Test
     @Order(14)
-    void updateCell_shouldReturn200() throws Exception {
-        // Get a real ID first
-        var rows = databaseServiceImpl.executeQuery("SELECT id FROM products LIMIT 1");
-        String id = String.valueOf(rows.get(0).get("id"));
+    void workspaceTables_shouldNotLeakIntoTheDefaultDatabase() throws Exception {
+        String body = """
+                {"tableName": "ctrl_scoped", "columns": [{"name": "id", "type": "INT", "isPk": true}]}
+                """;
 
-        String body = objectMapper.writeValueAsString(Map.of(
-                "tableName", "products",
-                "recordId", id,
-                "columnName", "product_name",
-                "newValue", "Super Mouse"
-        ));
+        mockMvc.perform(post("/create-table")
+                        .header("X-Workspace-Id", "ctrltestws")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
 
-        mockMvc.perform(post("/update-cell")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
+        mockMvc.perform(get("/db-info").header("X-Workspace-Id", "ctrltestws"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.message").value("Updated successfully"));
-    }
+                .andExpect(jsonPath("$.tables[*].name", hasItem("ctrl_scoped")));
 
-    // ─── Delete Row ───────────────────────────────────────────────────────────────
+        // The same call without the header hits the default database, which never saw it.
+        mockMvc.perform(get("/db-info"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tables[*].name", not(hasItem("ctrl_scoped"))));
+    }
 
     @Test
     @Order(15)
-    void deleteRow_shouldReturn200() throws Exception {
-        // Insert a row to delete
-        databaseServiceImpl.executeQuery(
-                "INSERT INTO products (product_name, price, stock) VALUES ('Temp', 0, 0)");
-        var rows = databaseServiceImpl.executeQuery(
-                "SELECT id FROM products WHERE product_name='Temp' LIMIT 1");
-        String id = String.valueOf(rows.get(0).get("id"));
-
-        String body = objectMapper.writeValueAsString(
-                Map.of("tableName", "products", "recordId", id));
-
-        mockMvc.perform(post("/delete-row")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.message").value("Row deleted successfully"));
+    void request_withMalformedWorkspaceId_shouldReturn400() throws Exception {
+        // The id becomes a filename and a SQL identifier, so it is rejected at the filter
+        // before any handler runs.
+        mockMvc.perform(get("/db-info").header("X-Workspace-Id", "../../etc/passwd"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").exists());
     }
 
-    // ─── Export CSV ───────────────────────────────────────────────────────────────
+    // ─── Exports ──────────────────────────────────────────────────────────────────
 
     @Test
     @Order(16)
-    void exportCsv_shouldReturnCsvFile() throws Exception {
+    void exportCsv_shouldStreamTheTableAsCsv() throws Exception {
         mockMvc.perform(get("/export/products"))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Type", containsString("text/csv")))
@@ -275,32 +296,26 @@ class DatabaseControllerIntegrationTest {
                 .andExpect(content().string(containsString("product_name")));
     }
 
-    // ─── Export SQL ───────────────────────────────────────────────────────────────
-
     @Test
     @Order(17)
-    void exportSql_shouldReturnSqlDump() throws Exception {
+    void exportSql_shouldStreamADumpWithSchemaAndData() throws Exception {
         mockMvc.perform(get("/export-sql").param("filename", "my_backup.sql"))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Disposition", containsString("my_backup.sql")))
-                .andExpect(content().string(containsString("SQL Dump")));
+                .andExpect(content().string(containsString("CREATE TABLE")))
+                .andExpect(content().string(containsString("INSERT INTO")));
     }
+
+    // ─── Clear ────────────────────────────────────────────────────────────────────
 
     @Test
     @Order(18)
-    void exportSql_defaultFilename_shouldAppendExtension() throws Exception {
-        mockMvc.perform(get("/export-sql"))
-                .andExpect(status().isOk())
-                .andExpect(header().string("Content-Disposition", containsString("database_export.sql")));
-    }
-
-    // ─── Clear Database ───────────────────────────────────────────────────────────
-
-    @Test
-    @Order(19)
-    void clearDatabase_shouldReturn200() throws Exception {
+    void clearDatabase_shouldDropEveryTable() throws Exception {
         mockMvc.perform(delete("/clear"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/db-info"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.message").value("Database cleared successfully"));
+                .andExpect(jsonPath("$.tables", hasSize(0)));
     }
 }

@@ -43,6 +43,12 @@ public interface DatabaseService {
     void addColumn(AddColumnRequest req);
 
     /**
+     * Renames an existing column and/or changes its type or nullability.
+     * On SQLite a type change rebuilds the table, because ALTER COLUMN is unsupported there.
+     */
+    void updateColumn(UpdateColumnRequest req);
+
+    /**
      * Updates a single cell value by record ID.
      * Mirrors HandleUpdateCell in Go.
      */
@@ -83,5 +89,18 @@ public interface DatabaseService {
      * Mirrors HandleExportDatabaseSQL in Go.
      */
     String exportDatabaseSql();
+
+    /**
+     * Ids of every workspace that still has a database, so the UI can restore a previous
+     * session and drop entries whose database no longer exists.
+     */
+    List<String> listWorkspaces();
+
+    /**
+     * Discards the workspace bound to the current request: its database file (SQLite)
+     * or schema (MySQL) is deleted outright. Without a workspace id on the request this
+     * degrades to {@link #clearDatabase()} against the default datasource.
+     */
+    void deleteWorkspace();
 
 }

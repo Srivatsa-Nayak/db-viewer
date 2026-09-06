@@ -1,0 +1,71 @@
+name: Bump Version
+
+# Merges that do not touch the backend still need to increment the version, so that every
+# merge to master produces a new number. Backend merges are bumped inside
+# `deploy-backend.yml` instead, where the bumped jar is also built and deployed -
+# hence the paths-ignore here, which keeps the two from double-bumping.
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - 'db-viewer-backend/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: version-bump-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    # Never react to the bot's own release commit.
+    if: "!startsWith(github.event.head_commit.message, 'chore(release):')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # `paths-ignore` alone is not enough: GitHub runs a workflow when *any* changed file
+      # falls outside the ignore list, so a merge touching both projects would trigger this
+      # AND deploy-backend.yml, and the version would be bumped twice.
+      - name: Check whether the backend deploy already owns this bump
+        id: scope
+        run: |
+          before="${{ github.event.before }}"
+          if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
+            base="$(git rev-parse HEAD^ 2>/dev/null || echo HEAD)"
+          else
+            base="$before"
+          fi
+          if git diff --name-only "$base" "${{ github.sha }}" | grep -q '^db-viewer-backend/'; then
+            echo "Backend files changed - deploy-backend.yml bumps and deploys instead."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump patch version
+        id: version
+        if: steps.scope.outputs.skip != 'true'
+        run: |
+          chmod +x .github/scripts/release-version.sh
+          .github/scripts/release-version.sh
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.scope.outputs.skip }}" = "true" ]; then
+            echo "Skipped - the backend changed, so \`deploy-backend.yml\` bumps and deploys this merge." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Version bumped to **v${{ steps.version.outputs.version }}**" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The backend was not rebuilt, so the live API keeps reporting its current version until the next backend deploy." >> "$GITHUB_STEP_SUMMARY"
+          fi

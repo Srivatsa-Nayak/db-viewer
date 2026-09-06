@@ -7,3 +7,4 @@ target/
 !.mvn/wrapper/
 .DS_Store
 *.log
+data/

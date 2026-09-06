@@ -14,9 +14,10 @@ import ReactFlow, {
     BackgroundVariant
 } from 'reactflow';
 import "reactflow/dist/style.css";
-import { ZoomIn, Info, X, Plus} from "lucide-react";
+import { ZoomIn, Info, Plus } from "lucide-react";
 import TableNode from "@/components/tables/TableNode";
 import { CreateTableModal } from "@/components/modal/CreateTableModal";
+import { NewTableHelpModal } from "@/components/modal/NewTableHelpModal";
 
 const nodeTypes = { tableNode: TableNode };
 
@@ -42,7 +43,7 @@ export const Visualizer = ({
     const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null);
     const [zoomLevel, setZoomLevel] = useState(1);
     const [isCreateModalOpen, setCreateModalOpen] = useState(false);
-    const [isInfoModalOpen, setInfoModalOpen] = useState(false);
+    const [isNewTableHelpOpen, setNewTableHelpOpen] = useState(false);
 
     const handleZoomChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
         const zoom = parseFloat(e.target.value);
@@ -94,9 +95,9 @@ export const Visualizer = ({
                         <div className="w-px mx-1 my-1 bg-zinc-200" />
 
                         <button
-                            onClick={() => setInfoModalOpen(true)}
+                            onClick={() => setNewTableHelpOpen(true)}
                             className="p-1.5 rounded text-zinc-600 hover:bg-zinc-100"
-                            title="Help & Info"
+                            title="What does New Table do?"
                         >
                             <Info size={16} />
                         </button>
@@ -134,30 +135,10 @@ export const Visualizer = ({
             existingTables={getExistingTables()}
         />
 
-        {isInfoModalOpen && (
-            <div className="fixed inset-0 bg-black/60 z-[110] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
-                <div className="bg-white border border-zinc-200 rounded-xl w-full max-w-md shadow-2xl">
-                    <div className="p-4 border-b border-zinc-200 flex justify-between items-center">
-                        <h3 className="font-bold text-zinc-900 flex items-center gap-2">
-                            <Info size={18} className="text-blue-600" />
-                            Help & Guide
-                        </h3>
-                        <button onClick={() => setInfoModalOpen(false)}><X className="text-zinc-400 hover:text-zinc-900" /></button>
-                    </div>
-                    <div className="p-6 space-y-4 text-sm text-zinc-600">
-                         <p>This Visualizer allows you to design schemas interactively.</p>
-                        <ul className="list-disc pl-5 space-y-2 text-zinc-500">
-                            <li><strong>Create Table:</strong> Use the top-left button to add new entities.</li>
-                            <li><strong>Connect:</strong> Drag from one table handle to another to create relationships.</li>
-                            <li><strong>Export:</strong> Click the Download icon to get the raw .sql file.</li>
-                        </ul>
-                    </div>
-                    <div className="p-4 bg-white border-t border-zinc-200 rounded-b-xl flex justify-end">
-                        <button onClick={() => setInfoModalOpen(false)} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-medium">Close</button>
-                    </div>
-                </div>
-            </div>
-        )}
+        {/* Contextual help for the button beside it. The header's info button explains the
+            app as a whole instead - the two are deliberately different. */}
+        <NewTableHelpModal isOpen={isNewTableHelpOpen} onClose={() => setNewTableHelpOpen(false)} />
+
         </>
     );
 };

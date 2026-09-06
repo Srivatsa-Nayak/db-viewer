@@ -3,6 +3,10 @@ package com.dbviewer.service.impl;
 import com.dbviewer.config.DatabaseConfig;
 import com.dbviewer.dto.*;
 import com.dbviewer.service.DatabaseService;
+import com.dbviewer.sql.MySqlToSqliteTranslator;
+import com.dbviewer.sql.SqlScriptSplitter;
+import com.dbviewer.workspace.WorkspaceContext;
+import com.dbviewer.workspace.WorkspaceManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -21,8 +25,17 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class DatabaseServiceImpl implements DatabaseService {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final WorkspaceManager workspaceManager;
     private final DatabaseConfig databaseConfig;
+
+    /**
+     * Every statement below runs against the workspace bound to the current request,
+     * so two SQL files open side by side can each own a table of the same name.
+     * Requests without a workspace id fall back to the default datasource.
+     */
+    private JdbcTemplate jdbc() {
+        return workspaceManager.current();
+    }
 
     /**
      * Handles CSV and SQL file uploads. Mirrors HandleFileUpload in Go.
@@ -41,25 +54,66 @@ public class DatabaseServiceImpl implements DatabaseService {
         }
     }
 
+    /**
+     * Executes an uploaded .sql script one statement at a time, because JdbcTemplate cannot run
+     * a multi-statement string.
+     *
+     * <p>Returns a report rather than a bare success message: a dump is rarely 100% portable, and
+     * silently swallowing what could not be run is how an import ends up looking like it worked
+     * while producing an empty canvas.
+     */
     private Map<String, Object> handleSqlUpload(MultipartFile file) throws Exception {
         String content = new String(file.getBytes(), StandardCharsets.UTF_8);
+
+        List<String> statements = SqlScriptSplitter.split(content);
+        List<String> warnings = new ArrayList<>();
+
         if (isSqlite()) {
-            content = cleanSqlForSQLite(content);
+            MySqlToSqliteTranslator.Result translated = MySqlToSqliteTranslator.translate(statements);
+            statements = translated.statements();
+            warnings.addAll(translated.notes());
         }
-        // Split on semicolons and execute each statement individually
-        // (JdbcTemplate.execute does not support multi-statement strings natively)
-        String[] statements = content.split(";");
-        for (String stmt : statements) {
-            String trimmed = stmt.trim();
-            if (!trimmed.isEmpty() && !trimmed.startsWith("--")) {
-                try {
-                    jdbcTemplate.execute(trimmed);
-                } catch (Exception e) {
-                    log.warn("Skipping statement ({}): {}", e.getMessage(), trimmed.substring(0, Math.min(80, trimmed.length())));
-                }
+
+        int executed = 0;
+        List<String> failures = new ArrayList<>();
+        for (String statement : statements) {
+            try {
+                jdbc().execute(statement);
+                executed++;
+            } catch (Exception e) {
+                String reason = rootCauseMessage(e);
+                failures.add(summarizeStatement(statement) + " - " + reason);
+                log.warn("Skipping statement ({}): {}", reason, summarizeStatement(statement));
             }
         }
-        return Map.of("message", "SQL executed successfully", "type", "sql");
+
+        warnings.addAll(failures);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("message", failures.isEmpty()
+                ? "SQL executed successfully"
+                : "SQL imported with " + failures.size() + " statement(s) skipped");
+        result.put("type", "sql");
+        result.put("statementsExecuted", executed);
+        result.put("statementsSkipped", failures.size());
+        // Capped so a pathological dump cannot return a megabyte of warnings.
+        result.put("warnings", warnings.size() > 25 ? warnings.subList(0, 25) : warnings);
+        result.put("warningCount", warnings.size());
+        return result;
+    }
+
+    private String summarizeStatement(String statement) {
+        String oneLine = statement.replaceAll("\\s+", " ").trim();
+        return oneLine.length() <= 80 ? oneLine : oneLine.substring(0, 80) + "...";
+    }
+
+    private String rootCauseMessage(Throwable error) {
+        Throwable cause = error;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        String message = cause.getMessage();
+        return message == null || message.isBlank() ? cause.getClass().getSimpleName() : message.trim();
     }
 
     private Map<String, Object> handleCsvUpload(MultipartFile file) throws Exception {
@@ -85,7 +139,7 @@ public class DatabaseServiceImpl implements DatabaseService {
 
         String[] columnTypes = guessColumnTypes(headers, dataRows);
         String createSql = buildSmartCreateTableSql(tableName, headers, columnTypes);
-        jdbcTemplate.execute(createSql);
+        jdbc().execute(createSql);
 
         if (!dataRows.isEmpty()) {
             insertData(tableName, headers, dataRows);
@@ -140,10 +194,10 @@ public class DatabaseServiceImpl implements DatabaseService {
     public List<Map<String, Object>> executeQuery(String sql) {
         String trimmed = sql.trim().toUpperCase();
         if (trimmed.startsWith("SELECT") || trimmed.startsWith("PRAGMA") || trimmed.startsWith("SHOW")) {
-            return jdbcTemplate.queryForList(sql);
+            return jdbc().queryForList(sql);
         } else {
             // DML / DDL: execute and return affected rows
-            int affected = jdbcTemplate.update(sql);
+            int affected = jdbc().update(sql);
             return List.of(Map.of("affected_rows", affected));
         }
     }
@@ -173,9 +227,9 @@ public class DatabaseServiceImpl implements DatabaseService {
 
     private List<String> getTableNames() {
         if (isMysql()) {
-            return jdbcTemplate.queryForList("SHOW TABLES", String.class);
+            return jdbc().queryForList("SHOW TABLES", String.class);
         }
-        return jdbcTemplate.queryForList(
+        return jdbc().queryForList(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
                 String.class);
     }
@@ -183,19 +237,24 @@ public class DatabaseServiceImpl implements DatabaseService {
     private List<ColumnInfo> getColumnsForTable(String tableName) {
         List<ColumnInfo> columns = new ArrayList<>();
         if (isMysql()) {
-            jdbcTemplate.query("DESCRIBE " + tableName, rs -> {
+            jdbc().query("DESCRIBE " + tableName, rs -> {
                 columns.add(ColumnInfo.builder()
                         .name(rs.getString("Field"))
                         .type(rs.getString("Type"))
+                        .pk("PRI".equalsIgnoreCase(rs.getString("Key")))
+                        .notNull("NO".equalsIgnoreCase(rs.getString("Null")))
                         .build());
             });
         } else {
-            jdbcTemplate.query("PRAGMA table_info(\"" + tableName + "\")", rs -> {
+            jdbc().query("PRAGMA table_info(\"" + tableName + "\")", rs -> {
                 String type = rs.getString("type");
                 if (type == null || type.isEmpty()) type = "TEXT";
                 columns.add(ColumnInfo.builder()
                         .name(rs.getString("name"))
                         .type(type)
+                        // PRAGMA table_info reports pk as a 1-based position, 0 meaning "not a key".
+                        .pk(rs.getInt("pk") > 0)
+                        .notNull(rs.getInt("notnull") == 1)
                         .build());
             });
         }
@@ -210,7 +269,7 @@ public class DatabaseServiceImpl implements DatabaseService {
                     FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
                     WHERE TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL
                     """;
-            jdbcTemplate.query(sql, rs -> {
+            jdbc().query(sql, rs -> {
                 rels.add(Relationship.builder()
                         .sourceTable(tableName)
                         .sourceColumn(rs.getString("COLUMN_NAME"))
@@ -219,7 +278,7 @@ public class DatabaseServiceImpl implements DatabaseService {
                         .build());
             }, tableName);
         } else {
-            jdbcTemplate.query("PRAGMA foreign_key_list(\"" + tableName + "\")", rs -> {
+            jdbc().query("PRAGMA foreign_key_list(\"" + tableName + "\")", rs -> {
                 rels.add(Relationship.builder()
                         .sourceTable(tableName)
                         .sourceColumn(rs.getString("from"))
@@ -256,30 +315,292 @@ public class DatabaseServiceImpl implements DatabaseService {
 
         String typeDef = resolveTypeDef(baseType, req.getLength(), req.isNotNull());
         String sql = String.format("ALTER TABLE \"%s\" ADD COLUMN \"%s\" %s", tableName, colName, typeDef);
-        jdbcTemplate.execute(sql);
+        jdbc().execute(sql);
     }
 
     private String resolveTypeDef(String baseType, int length, boolean notNull) {
-        String typeDef;
-        switch (baseType) {
-            case "VARCHAR" -> {
-                int len = length == 0 ? 128 : length;
-                typeDef = "VARCHAR(" + len + ")";
-            }
-            case "INT" -> typeDef = isSqlite() ? "INTEGER" : "INT";
-            default -> typeDef = baseType;
-        }
-
+        String typeDef = renderType(baseType, length);
         if (notNull) {
-            typeDef += " NOT NULL";
-            typeDef += switch (baseType) {
-                case "VARCHAR", "TEXT" -> " DEFAULT ''";
-                case "INT", "INTEGER", "DECIMAL" -> " DEFAULT 0";
-                case "BOOLEAN" -> " DEFAULT 0";
-                default -> baseType.contains("DATE") || baseType.contains("TIME") ? " DEFAULT '1970-01-01'" : "";
-            };
+            // An existing table can only take a NOT NULL column if the rows already there
+            // have something to fall back on.
+            typeDef += " NOT NULL" + defaultClauseFor(baseType);
         }
         return typeDef;
+    }
+
+    /** Renders a base type plus length into a concrete column type, e.g. VARCHAR + 128 -> VARCHAR(128). */
+    private String renderType(String baseType, int length) {
+        return switch (baseType) {
+            case "VARCHAR" -> "VARCHAR(" + (length == 0 ? 128 : length) + ")";
+            case "INT" -> isSqlite() ? "INTEGER" : "INT";
+            default -> baseType;
+        };
+    }
+
+    private String defaultClauseFor(String type) {
+        String literal = defaultLiteralFor(type);
+        return literal == null ? "" : " DEFAULT " + literal;
+    }
+
+    /** A type-appropriate default literal, or null when the type has no sensible one. */
+    private String defaultLiteralFor(String type) {
+        String base = type.toUpperCase();
+        if (base.startsWith("VARCHAR") || base.startsWith("TEXT") || base.startsWith("CHAR")) {
+            return "''";
+        }
+        if (base.startsWith("INT") || base.startsWith("DECIMAL") || base.startsWith("NUMERIC")
+                || base.startsWith("REAL") || base.startsWith("FLOAT") || base.startsWith("DOUBLE")
+                || base.startsWith("BOOL") || base.startsWith("BIT")) {
+            return "0";
+        }
+        if (base.contains("DATE") || base.contains("TIME")) {
+            return "'1970-01-01'";
+        }
+        return null;
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    /**
+     * Normalises and validates a client-supplied identifier. Table and column names cannot be
+     * bound as JDBC parameters, so anything outside {@code [A-Za-z0-9_]} is rejected outright
+     * rather than escaped.
+     */
+    private String safeIdentifier(String raw, String what) {
+        if (isBlank(raw)) {
+            throw new IllegalArgumentException("Missing " + what);
+        }
+        String cleaned = raw.trim().replaceAll("[\\s\\-]+", "_");
+        if (!cleaned.matches("[A-Za-z0-9_]+")) {
+            throw new IllegalArgumentException("Invalid " + what + ": \"" + raw + "\"");
+        }
+        return cleaned;
+    }
+
+    // ─── Update Column ────────────────────────────────────────────────────────────
+
+    /**
+     * Renames a column and/or changes its type or nullability.
+     *
+     * <p>A pure rename is a one-statement {@code ALTER TABLE ... RENAME COLUMN} on both engines.
+     * Anything else is engine-specific: MySQL has {@code CHANGE COLUMN}, but SQLite cannot alter
+     * a column's type at all, so the table is rebuilt from its own metadata (the workaround
+     * SQLite itself documents) - see {@link #rebuildSqliteTable}.
+     */
+    @Override
+    public void updateColumn(UpdateColumnRequest req) {
+        String tableName = safeIdentifier(req.getTableName(), "table name");
+        String columnName = safeIdentifier(req.getColumnName(), "column name");
+
+        List<ColumnInfo> columns = getColumnsForTable(tableName);
+        ColumnInfo existing = columns.stream()
+                .filter(c -> c.getName().equalsIgnoreCase(columnName))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Column \"" + columnName + "\" does not exist in \"" + tableName + "\""));
+
+        String newName = isBlank(req.getNewColumnName())
+                ? existing.getName()
+                : safeIdentifier(req.getNewColumnName(), "column name");
+        boolean renaming = !newName.equals(existing.getName());
+
+        if (renaming && columns.stream().anyMatch(c -> c.getName().equalsIgnoreCase(newName))) {
+            throw new IllegalArgumentException(
+                    "Column \"" + newName + "\" already exists in \"" + tableName + "\"");
+        }
+
+        String newType = isBlank(req.getColumnType())
+                ? existing.getType()
+                : renderType(req.getColumnType().toUpperCase(), req.getLength());
+        boolean typeChanged = !newType.equalsIgnoreCase(existing.getType());
+
+        boolean newNotNull = req.getNotNull() == null ? existing.isNotNull() : req.getNotNull();
+        boolean nullabilityChanged = newNotNull != existing.isNotNull();
+
+        if (!renaming && !typeChanged && !nullabilityChanged) {
+            return; // Nothing to do.
+        }
+
+        // A primary key carries identity, auto-increment and implicit NOT NULL. Reshaping it
+        // would silently break row addressing, so only a rename is allowed.
+        if (existing.isPk() && (typeChanged || nullabilityChanged)) {
+            throw new IllegalArgumentException(
+                    "Column \"" + existing.getName() + "\" is the primary key of \"" + tableName
+                            + "\"; it can be renamed but its type and nullability cannot be changed");
+        }
+
+        if (!typeChanged && !nullabilityChanged) {
+            renameColumn(tableName, existing.getName(), newName);
+            return;
+        }
+
+        if (isMysql()) {
+            String typeDef = newType + (newNotNull ? " NOT NULL" + defaultClauseFor(newType) : "");
+            jdbc().execute(String.format("ALTER TABLE `%s` CHANGE COLUMN `%s` `%s` %s",
+                    tableName, existing.getName(), newName, typeDef));
+            return;
+        }
+
+        rebuildSqliteTable(tableName, existing.getName(), newName, newType, newNotNull);
+    }
+
+    private void renameColumn(String tableName, String from, String to) {
+        String q = isMysql() ? "`" : "\"";
+        jdbc().execute(String.format("ALTER TABLE %s%s%s RENAME COLUMN %s%s%s TO %s%s%s",
+                q, tableName, q, q, from, q, q, to, q));
+    }
+
+    /**
+     * Rebuilds a SQLite table so one column can change type or nullability, preserving the
+     * other columns, the primary key, defaults and foreign keys.
+     *
+     * <p>This is the sequence SQLite documents for unsupported ALTERs: create a replacement
+     * table, copy the rows across, drop the original, rename the replacement into place.
+     */
+    private void rebuildSqliteTable(String tableName, String oldColumn, String newColumn,
+                                    String newType, boolean newNotNull) {
+        List<SqliteColumn> columns = readSqliteColumns(tableName);
+        List<String> foreignKeys = readSqliteForeignKeys(tableName);
+        boolean autoIncrement = hasAutoIncrement(tableName);
+        long pkCount = columns.stream().filter(c -> c.pkPosition() > 0).count();
+
+        List<String> definitions = new ArrayList<>();
+        List<String> targetColumns = new ArrayList<>();
+        List<String> sourceExpressions = new ArrayList<>();
+
+        for (SqliteColumn col : columns) {
+            boolean isTarget = col.name().equals(oldColumn);
+            String name = isTarget ? newColumn : col.name();
+            String type = isTarget ? newType : col.type();
+            boolean notNull = isTarget ? newNotNull : col.notNull();
+            String defaultValue = col.defaultValue();
+
+            // A column that is becoming NOT NULL needs a default, both for the column
+            // definition and to fill in rows that are currently null.
+            if (notNull && defaultValue == null) {
+                defaultValue = defaultLiteralFor(type);
+            }
+
+            StringBuilder def = new StringBuilder("\"" + name + "\" " + type);
+            boolean soleKey = pkCount == 1 && col.pkPosition() > 0;
+            if (soleKey) {
+                def.append(" PRIMARY KEY");
+                if (autoIncrement && "INTEGER".equalsIgnoreCase(type)) {
+                    def.append(" AUTOINCREMENT");
+                }
+            } else {
+                if (notNull) def.append(" NOT NULL");
+                if (defaultValue != null) def.append(" DEFAULT ").append(defaultValue);
+            }
+            definitions.add(def.toString());
+
+            targetColumns.add("\"" + name + "\"");
+            sourceExpressions.add(notNull && defaultValue != null
+                    ? "COALESCE(\"" + col.name() + "\", " + defaultValue + ")"
+                    : "\"" + col.name() + "\"");
+        }
+
+        if (pkCount > 1) {
+            String composite = columns.stream()
+                    .filter(c -> c.pkPosition() > 0)
+                    .sorted(Comparator.comparingInt(SqliteColumn::pkPosition))
+                    .map(c -> "\"" + (c.name().equals(oldColumn) ? newColumn : c.name()) + "\"")
+                    .collect(Collectors.joining(", "));
+            definitions.add("PRIMARY KEY (" + composite + ")");
+        }
+        definitions.addAll(foreignKeys);
+
+        String temp = tableName + "__rebuild";
+        // Restore whatever the connection had rather than forcing ON: a workspace holds one
+        // long-lived connection, so flipping this permanently would change how every later
+        // insert behaves.
+        boolean foreignKeysWereOn = sqliteForeignKeysEnabled();
+        jdbc().execute("PRAGMA foreign_keys = OFF");
+        try {
+            jdbc().execute("DROP TABLE IF EXISTS \"" + temp + "\"");
+            jdbc().execute("CREATE TABLE \"" + temp + "\" (" + String.join(", ", definitions) + ")");
+            jdbc().execute(String.format("INSERT INTO \"%s\" (%s) SELECT %s FROM \"%s\"",
+                    temp,
+                    String.join(", ", targetColumns),
+                    String.join(", ", sourceExpressions),
+                    tableName));
+            jdbc().execute("DROP TABLE \"" + tableName + "\"");
+            jdbc().execute("ALTER TABLE \"" + temp + "\" RENAME TO \"" + tableName + "\"");
+        } catch (RuntimeException e) {
+            // Leave the original table untouched rather than half-migrated.
+            try {
+                jdbc().execute("DROP TABLE IF EXISTS \"" + temp + "\"");
+            } catch (Exception ignored) {
+                // The cleanup failing must not mask the real error.
+            }
+            throw e;
+        } finally {
+            jdbc().execute("PRAGMA foreign_keys = " + (foreignKeysWereOn ? "ON" : "OFF"));
+        }
+    }
+
+    /** Reads the connection's current PRAGMA foreign_keys setting (SQLite defaults it to off). */
+    private boolean sqliteForeignKeysEnabled() {
+        try {
+            Integer enabled = jdbc().queryForObject("PRAGMA foreign_keys", Integer.class);
+            return enabled != null && enabled == 1;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private List<SqliteColumn> readSqliteColumns(String tableName) {
+        List<SqliteColumn> columns = new ArrayList<>();
+        jdbc().query("PRAGMA table_info(\"" + tableName + "\")", rs -> {
+            String type = rs.getString("type");
+            if (type == null || type.isEmpty()) type = "TEXT";
+            columns.add(new SqliteColumn(
+                    rs.getString("name"),
+                    type,
+                    rs.getInt("notnull") == 1,
+                    rs.getString("dflt_value"),
+                    rs.getInt("pk")));
+        });
+        return columns;
+    }
+
+    /** Rebuilds each foreign key as a table-level constraint clause, grouping composite keys by id. */
+    private List<String> readSqliteForeignKeys(String tableName) {
+        Map<Integer, List<String>> fromColumns = new LinkedHashMap<>();
+        Map<Integer, List<String>> toColumns = new LinkedHashMap<>();
+        Map<Integer, String> targetTables = new LinkedHashMap<>();
+        Map<Integer, String> onDelete = new LinkedHashMap<>();
+
+        jdbc().query("PRAGMA foreign_key_list(\"" + tableName + "\")", rs -> {
+            int id = rs.getInt("id");
+            fromColumns.computeIfAbsent(id, k -> new ArrayList<>()).add("\"" + rs.getString("from") + "\"");
+            toColumns.computeIfAbsent(id, k -> new ArrayList<>()).add("\"" + rs.getString("to") + "\"");
+            targetTables.putIfAbsent(id, rs.getString("table"));
+            onDelete.putIfAbsent(id, rs.getString("on_delete"));
+        });
+
+        List<String> clauses = new ArrayList<>();
+        for (Integer id : fromColumns.keySet()) {
+            String action = onDelete.get(id);
+            clauses.add(String.format("FOREIGN KEY (%s) REFERENCES \"%s\"(%s)%s",
+                    String.join(", ", fromColumns.get(id)),
+                    targetTables.get(id),
+                    String.join(", ", toColumns.get(id)),
+                    action == null || action.isBlank() || "NO ACTION".equalsIgnoreCase(action)
+                            ? "" : " ON DELETE " + action));
+        }
+        return clauses;
+    }
+
+    private boolean hasAutoIncrement(String tableName) {
+        String ddl = getCreateTableSql(tableName);
+        return ddl != null && ddl.toUpperCase().contains("AUTOINCREMENT");
+    }
+
+    /** Column metadata as reported by {@code PRAGMA table_info}. */
+    private record SqliteColumn(String name, String type, boolean notNull, String defaultValue, int pkPosition) {
     }
 
     // ─── Update Cell ─────────────────────────────────────────────────────────────
@@ -292,7 +613,7 @@ public class DatabaseServiceImpl implements DatabaseService {
         String tableName = req.getTableName().replace(" ", "_");
         String colName = req.getColumnName().replace(" ", "_");
         String sql = String.format("UPDATE \"%s\" SET \"%s\" = ? WHERE id = ?", tableName, colName);
-        jdbcTemplate.update(sql, req.getNewValue(), req.getRecordId());
+        jdbc().update(sql, req.getNewValue(), req.getRecordId());
     }
 
     // ─── Insert Row ───────────────────────────────────────────────────────────────
@@ -318,7 +639,7 @@ public class DatabaseServiceImpl implements DatabaseService {
             String sql = isMysql()
                     ? String.format("INSERT INTO %s%s%s () VALUES ()", q, tableName, q)
                     : String.format("INSERT INTO %s%s%s DEFAULT VALUES", q, tableName, q);
-            jdbcTemplate.execute(sql);
+            jdbc().execute(sql);
             return Map.of("message", "Row created");
         }
 
@@ -329,7 +650,7 @@ public class DatabaseServiceImpl implements DatabaseService {
 
         String sql = String.format("INSERT INTO %s%s%s (%s) VALUES (%s)",
                 q, tableName, q, colsSql, placeholders);
-        jdbcTemplate.update(sql, vals.toArray());
+        jdbc().update(sql, vals.toArray());
         return Map.of("message", "Row added successfully");
     }
 
@@ -341,7 +662,7 @@ public class DatabaseServiceImpl implements DatabaseService {
     @Override
     public void deleteRow(DeleteRowRequest req) {
         String tableName = req.getTableName().replace(" ", "_");
-        jdbcTemplate.update("DELETE FROM \"" + tableName + "\" WHERE id = ?", req.getRecordId());
+        jdbc().update("DELETE FROM \"" + tableName + "\" WHERE id = ?", req.getRecordId());
     }
 
     // ─── Clear Database ───────────────────────────────────────────────────────────
@@ -353,18 +674,50 @@ public class DatabaseServiceImpl implements DatabaseService {
     public void clearDatabase() {
         List<String> tables = getTableNames();
         if (isMysql()) {
-            jdbcTemplate.execute("SET FOREIGN_KEY_CHECKS = 0");
+            jdbc().execute("SET FOREIGN_KEY_CHECKS = 0");
             for (String t : tables) {
-                jdbcTemplate.execute("DROP TABLE IF EXISTS " + t);
+                jdbc().execute("DROP TABLE IF EXISTS " + t);
             }
-            jdbcTemplate.execute("SET FOREIGN_KEY_CHECKS = 1");
+            jdbc().execute("SET FOREIGN_KEY_CHECKS = 1");
         } else {
-            jdbcTemplate.execute("PRAGMA foreign_keys = OFF");
-            for (String t : tables) {
-                jdbcTemplate.execute("DROP TABLE IF EXISTS \"" + t + "\"");
+            boolean foreignKeysWereOn = sqliteForeignKeysEnabled();
+            jdbc().execute("PRAGMA foreign_keys = OFF");
+            try {
+                for (String t : tables) {
+                    jdbc().execute("DROP TABLE IF EXISTS \"" + t + "\"");
+                }
+            } finally {
+                jdbc().execute("PRAGMA foreign_keys = " + (foreignKeysWereOn ? "ON" : "OFF"));
             }
-            jdbcTemplate.execute("PRAGMA foreign_keys = ON");
         }
+    }
+
+    // ─── List Workspaces ──────────────────────────────────────────────────────────
+
+    /**
+     * Lists the workspaces that still have a database. Not workspace-scoped: it is a global
+     * listing used by the UI to restore the set of open files after a browser refresh.
+     */
+    @Override
+    public List<String> listWorkspaces() {
+        return workspaceManager.existingWorkspaceIds();
+    }
+
+    // ─── Delete Workspace ─────────────────────────────────────────────────────────
+
+    /**
+     * Throws the current workspace's database away entirely. Called when a file is
+     * closed in the UI so its tables cannot resurface in a later session.
+     */
+    @Override
+    public void deleteWorkspace() {
+        String workspaceId = WorkspaceContext.get();
+        if (workspaceId == null || workspaceId.isBlank()) {
+            // No workspace scope on this request: the caller means the default database.
+            clearDatabase();
+            return;
+        }
+        workspaceManager.dropWorkspace(workspaceId);
     }
 
     // ─── Create Table ─────────────────────────────────────────────────────────────
@@ -400,7 +753,7 @@ public class DatabaseServiceImpl implements DatabaseService {
         allDefs.addAll(fkDefs);
         String sql = String.format("CREATE TABLE %s%s%s (%s)", q, tableName, q,
                 String.join(", ", allDefs));
-        jdbcTemplate.execute(sql);
+        jdbc().execute(sql);
     }
 
     private String buildColTypeDef(String baseType, int length, boolean isPk, boolean notNull) {
@@ -424,7 +777,7 @@ public class DatabaseServiceImpl implements DatabaseService {
      * Gets all rows from a table for CSV export. Mirrors HandleExportCSV.
      */
     public List<Map<String, Object>> getTableRows(String tableName) {
-        return jdbcTemplate.queryForList("SELECT * FROM \"" + tableName + "\"");
+        return jdbc().queryForList("SELECT * FROM \"" + tableName + "\"");
     }
 
     // ─── Export SQL ───────────────────────────────────────────────────────────────
@@ -472,10 +825,10 @@ public class DatabaseServiceImpl implements DatabaseService {
     private String getCreateTableSql(String table) {
         try {
             if (isMysql()) {
-                return jdbcTemplate.queryForObject("SHOW CREATE TABLE " + table,
+                return jdbc().queryForObject("SHOW CREATE TABLE " + table,
                         (rs, n) -> rs.getString(2));
             } else {
-                return jdbcTemplate.queryForObject(
+                return jdbc().queryForObject(
                         "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?",
                         String.class, table);
             }
@@ -498,7 +851,7 @@ public class DatabaseServiceImpl implements DatabaseService {
         for (String[] row : rows) {
             Object[] args = new Object[row.length];
             for (int i = 0; i < row.length; i++) args[i] = row[i];
-            jdbcTemplate.update(sql, args);
+            jdbc().update(sql, args);
         }
     }
 
@@ -564,28 +917,9 @@ public class DatabaseServiceImpl implements DatabaseService {
                 q, tableName, q, String.join(", ", cols));
     }
 
-    private String cleanSqlForSQLite(String sqlContent) {
-        String[] lines = sqlContent.split("\n");
-        List<String> clean = new ArrayList<>();
-        for (String line : lines) {
-            String trimmed = line.trim();
-            if (trimmed.startsWith("SET") || trimmed.startsWith("LOCK TABLES")
-                    || trimmed.startsWith("UNLOCK TABLES") || trimmed.startsWith("/*!")
-                    || trimmed.startsWith("BEGIN") || trimmed.startsWith("COMMIT")
-                    || trimmed.startsWith("START") || trimmed.startsWith("USE")) {
-                continue;
-            }
-            clean.add(line);
-        }
-        String result = String.join("\n", clean);
-        result = result.replaceAll("\\) ENGINE=[^;]+;", ");");
-        result = result.replace("AUTO_INCREMENT", "");
-        return result;
-    }
-
     private List<Map<String, Object>> safeQueryRows(String sql) {
         try {
-            return jdbcTemplate.queryForList(sql);
+            return jdbc().queryForList(sql);
         } catch (Exception e) {
             log.warn("Failed to query rows: {}", e.getMessage());
             return List.of();

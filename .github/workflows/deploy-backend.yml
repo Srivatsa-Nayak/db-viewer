@@ -7,14 +7,27 @@ on:
       - 'db-viewer-backend/**'
   workflow_dispatch:
 
+# Needed so the version bump can be pushed back to master.
+permissions:
+  contents: write
+
+# If another merge lands while this is deploying, cancel the older run so the newest
+# version is the one that ends up live.
+concurrency:
+  group: deploy-backend-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: db-viewer-backend
+    # Never react to the bot's own release commit. A GITHUB_TOKEN push does not start a new
+    # run today, so this is a safety net rather than the primary guard.
+    if: "!startsWith(github.event.head_commit.message, 'chore(release):')"
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the bump commit can be rebased onto master before pushing.
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -22,7 +35,16 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      # Bump before building, so the deployed jar reports the version this merge produced
+      # rather than the previous one.
+      - name: Bump patch version
+        id: version
+        run: |
+          chmod +x .github/scripts/release-version.sh
+          .github/scripts/release-version.sh
+
       - name: Build with Maven
+        working-directory: db-viewer-backend
         run: |
           chmod +x mvnw
           ./mvnw clean package -DskipTests
@@ -32,4 +54,8 @@ jobs:
         with:
           app-name: db-viewer-api-srivatsa
           publish-profile: ${{ secrets.AZURE_BACKEND_PUBLISH_PROFILE }}
-          package: db-viewer-backend/target/db-viewer-1.0.0.jar
+          package: db-viewer-backend/target/db-viewer-${{ steps.version.outputs.version }}.jar
+
+      - name: Summary
+        run: |
+          echo "Deployed **v${{ steps.version.outputs.version }}**" >> "$GITHUB_STEP_SUMMARY"

@@ -1,11 +1,14 @@
+import { useEffect, useRef, useState } from 'react';
 import { dbService } from '@/services/api';
-import { Upload, RefreshCw, FileText, Trash2, Database, Download, HelpCircle } from 'lucide-react';
+import { Upload, RefreshCw, FileText, Trash2, Database, Download, HelpCircle, FileCode, Image as ImageIcon, ChevronDown } from 'lucide-react';
 
 interface HeaderProps {
     onUpload: (file: File) => void;
     onRefresh: () => void;
     onClear: () => void;
     onShowInfo: () => void;
+    /** Downloads the canvas as a PNG. Owned by the page, which holds the nodes. */
+    onExportImage: () => void;
     isUploading: boolean;
     fileName: string | null;
     isImported: boolean;
@@ -13,7 +16,28 @@ interface HeaderProps {
 }
 
 
-export const Header = ({ onUpload, onRefresh, onClear, onShowInfo, isUploading, fileName, isImported, hasData }: HeaderProps) => {
+export const Header = ({ onUpload, onRefresh, onClear, onShowInfo, onExportImage, isUploading, fileName, isImported, hasData }: HeaderProps) => {
+    const [isExportOpen, setExportOpen] = useState(false);
+    const exportRef = useRef<HTMLDivElement>(null);
+
+    // Close the menu on an outside click or Escape.
+    useEffect(() => {
+        if (!isExportOpen) return;
+        const onPointerDown = (e: MouseEvent) => {
+            if (exportRef.current && !exportRef.current.contains(e.target as Node)) {
+                setExportOpen(false);
+            }
+        };
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') setExportOpen(false);
+        };
+        document.addEventListener('mousedown', onPointerDown);
+        document.addEventListener('keydown', onKeyDown);
+        return () => {
+            document.removeEventListener('mousedown', onPointerDown);
+            document.removeEventListener('keydown', onKeyDown);
+        };
+    }, [isExportOpen]);
 
     const handleExport = () => {
         let downloadName = fileName || 'database_dump.sql';
@@ -94,16 +118,59 @@ export const Header = ({ onUpload, onRefresh, onClear, onShowInfo, isUploading, 
                 >
                     <RefreshCw size={18} />
                 </button>
-                {/* 3. DOWNLOAD SQL BUTTON */}
+                {/* 3. EXPORT MENU: SQL script or a picture of the diagram */}
                 {hasData && (
-                    <button
-                        onClick={handleExport}
-                        className="flex items-center gap-2 bg-blue-700/40 hover:bg-blue-700/70 text-blue-50 hover:text-white border border-blue-400/40 px-3 py-2 rounded-md text-sm font-medium transition-colors btn-animated card-hover"
-                        title="Download Modified SQL"
-                    >
-                        <Download size={16} />
-                        <span className="hidden sm:inline">Export</span>
-                    </button>
+                    <div className="relative" ref={exportRef}>
+                        <button
+                            onClick={() => setExportOpen(v => !v)}
+                            className="flex items-center gap-2 bg-blue-700/40 hover:bg-blue-700/70 text-blue-50 hover:text-white border border-blue-400/40 px-3 py-2 rounded-md text-sm font-medium transition-colors btn-animated card-hover"
+                            title="Export this file"
+                            aria-haspopup="menu"
+                            aria-expanded={isExportOpen}
+                        >
+                            <Download size={16} />
+                            <span className="hidden sm:inline">Export</span>
+                            <ChevronDown size={14} className={`transition-transform ${isExportOpen ? 'rotate-180' : ''}`} />
+                        </button>
+
+                        {isExportOpen && (
+                            <div
+                                role="menu"
+                                className="absolute right-0 mt-2 w-72 bg-white border border-zinc-200 rounded-lg shadow-2xl overflow-hidden z-50 animate-in fade-in slide-in-from-top-1 duration-150"
+                            >
+                                <button
+                                    role="menuitem"
+                                    onClick={() => { setExportOpen(false); handleExport(); }}
+                                    className="w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-zinc-50 transition-colors"
+                                >
+                                    <FileCode size={16} className="text-blue-600 mt-0.5 shrink-0" />
+                                    <span>
+                                        <span className="block text-sm font-medium text-zinc-900">SQL script</span>
+                                        <span className="block text-xs text-zinc-500 mt-0.5">
+                                            Schema and data, ready to re-import or run elsewhere.
+                                        </span>
+                                    </span>
+                                </button>
+
+                                <div className="h-px bg-zinc-100" />
+
+                                <button
+                                    role="menuitem"
+                                    onClick={() => { setExportOpen(false); onExportImage(); }}
+                                    className="w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-zinc-50 transition-colors"
+                                >
+                                    <ImageIcon size={16} className="text-blue-600 mt-0.5 shrink-0" />
+                                    <span>
+                                        <span className="block text-sm font-medium text-zinc-900">Diagram image (PNG)</span>
+                                        <span className="block text-xs text-zinc-500 mt-0.5">
+                                            The whole canvas as a picture - best for reading the
+                                            tables offline or pasting into a doc.
+                                        </span>
+                                    </span>
+                                </button>
+                            </div>
+                        )}
+                    </div>
                 )}
                 {/* 4. CLEAR DATABASE BUTTON (Only visible if there is data) */}
                 {hasData && (
