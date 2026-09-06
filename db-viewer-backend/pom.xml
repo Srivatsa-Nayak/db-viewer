@@ -13,7 +13,7 @@
 
     <groupId>com.dbviewer</groupId>
     <artifactId>db-viewer</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
     <name>db-viewer</name>
     <description>Database Visualizer API - Spring Boot</description>
     <packaging>jar</packaging>
