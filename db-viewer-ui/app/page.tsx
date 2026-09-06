@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Trash2, FileCode, Plus, Loader2 } from 'lucide-react';
+import { Trash2, FileCode, Plus, Loader2, Sparkles, AlertTriangle } from 'lucide-react';
 
 import { Header } from "@/components/header/Header";
 import { Visualizer } from "@/components/canvas/Visualizer";
@@ -10,9 +10,11 @@ import { DataEditor } from "@/components/editor/DataEditor";
 import { InfoModal } from '@/components/modal/InfoModal';
 import { NewFileModal } from '@/components/modal/NewFileModal';
 import { Notice, NoticeModal } from '@/components/modal/NoticeModal';
+import { AuthModal } from '@/components/modal/AuthModal';
+import { ShareModal } from '@/components/modal/ShareModal';
 import { FileExplorer, ExplorerFile } from "@/components/editor/FileExplorer";
 import { Edge, MarkerType, Node, applyNodeChanges, NodeChange } from "reactflow";
-import { dbService, setActiveWorkspace } from "@/services/api";
+import { dbService, setActiveWorkspace, authService, isAuthRequired, AuthUser, TableNote } from "@/services/api";
 import { clearSession, loadSession, saveSession } from "@/services/sessionStorage";
 import { downloadCanvasImage } from "@/services/exportImage";
 import { Relationship, TableInfo } from "@/types";
@@ -45,6 +47,35 @@ export default function Home() {
     // True until the previous session has been restored, so the empty state does not flash
     // and the save effect does not overwrite storage with an empty list on first render.
     const [isRestoring, setIsRestoring] = useState(true);
+    const [user, setUser] = useState<AuthUser | null>(null);
+    // What the user was trying to do when we asked them to sign up, so the prompt can say why.
+    const [authReason, setAuthReason] = useState<string | null>(null);
+    const [isAuthOpen, setAuthOpen] = useState(false);
+    const [isShareOpen, setShareOpen] = useState(false);
+    const [notes, setNotes] = useState<TableNote[]>([]);
+    const [tableToDelete, setTableToDelete] = useState<string | null>(null);
+    const [isDeletingTable, setDeletingTable] = useState(false);
+    const [isLoadingExample, setLoadingExample] = useState(false);
+
+    /** Open (not ticked off) note count per table, for the badge on each node. */
+    const openNoteCounts = notes.reduce<Record<string, number>>((counts, note) => {
+        if (!note.done) counts[note.table_name] = (counts[note.table_name] ?? 0) + 1;
+        return counts;
+    }, {});
+
+    /**
+     * The signed-in user, readable from callbacks that outlive the render that created them.
+     *
+     * `handleDownloadCsv` is stored in every node's `data`, and the callback that rebuilds
+     * those nodes is deliberately stable - so reading `user` from the closure would pin it to
+     * its first-render value (null) and prompt for sign-up even once signed in.
+     */
+    const userRef = useRef<AuthUser | null>(null);
+
+    const requireAccount = useCallback((reason: string) => {
+        setAuthReason(reason);
+        setAuthOpen(true);
+    }, []);
 
     const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId);
 
@@ -111,8 +142,11 @@ export default function Home() {
             data: {
                 label: tbl.name,
                 columns: tbl.columns,
-                onRefresh: refreshActiveSchema, 
+                onRefresh: refreshActiveSchema,
                 onEdit: setEditingTable,
+                onDelete: requestTableDelete,
+                onDownloadCsv: handleDownloadCsv,
+                onNotesChanged: refreshNotes,
             },
         }));
 
@@ -222,6 +256,17 @@ export default function Home() {
         setActiveWorkspaceId(newId);
     };
 
+    useEffect(() => {
+        userRef.current = user;
+    }, [user]);
+
+    // Resolve the stored token back to a user, so a refresh does not sign anyone out.
+    useEffect(() => {
+        let cancelled = false;
+        authService.me().then(u => { if (!cancelled) setUser(u); });
+        return () => { cancelled = true; };
+    }, []);
+
     // Restore the files that were open before the refresh. Runs once, on mount.
     useEffect(() => {
         let cancelled = false;
@@ -303,6 +348,36 @@ export default function Home() {
         return () => clearTimeout(handle);
     }, [workspaces, activeWorkspaceId, isRestoring]);
 
+    const refreshNotes = useCallback(async () => {
+        if (!activeWorkspaceIdRef.current) { setNotes([]); return; }
+        try {
+            setNotes(await dbService.getAllTableNotes());
+        } catch {
+            setNotes([]);
+        }
+    }, []);
+
+    // Stable, because they are captured in node data that outlives the render.
+    const handleDownloadCsv = useCallback(async (tableName: string) => {
+        if (!userRef.current) return requireAccount('Downloading a table');
+        try {
+            await dbService.downloadTableCsv(tableName);
+        } catch (e) {
+            if (isAuthRequired(e)) return requireAccount('Downloading a table');
+            setNotice({
+                isOpen: true, severity: 'error', title: 'Download failed',
+                message: `"${tableName}" could not be downloaded.`,
+            });
+        }
+    }, [requireAccount]);
+
+    const requestTableDelete = useCallback((tableName: string) => setTableToDelete(tableName), []);
+
+    useEffect(() => {
+        if (isRestoring) return;
+        refreshNotes();
+    }, [activeWorkspaceId, isRestoring, refreshNotes]);
+
     // Deliberately dependency-free so the reference stays stable for the lifetime of the page
     // and the copy stored in every node's `data.onRefresh` is never stale.
     const refreshActiveSchema = useCallback(async () => {
@@ -321,7 +396,15 @@ export default function Home() {
                             id: tbl.name,
                             type: "tableNode",
                             position: existingNode ? existingNode.position : { x: 250 * (index % 3), y: 100 + Math.floor(index / 3) * 300 },
-                            data: { label: tbl.name, columns: tbl.columns, onRefresh: refreshActiveSchema, onEdit: setEditingTable },
+                            data: {
+                                label: tbl.name,
+                                columns: tbl.columns,
+                                onRefresh: refreshActiveSchema,
+                                onEdit: setEditingTable,
+                                onDelete: requestTableDelete,
+                                onDownloadCsv: handleDownloadCsv,
+                                onNotesChanged: refreshNotes,
+                            },
                         };
                     });
                     
@@ -337,7 +420,9 @@ export default function Home() {
                 return w;
             }));
         } catch (e) { console.error("Refresh failed", e); }
-    }, []);
+        // All three are stable useCallbacks, so this array never actually changes - it is
+        // declared so the dependency is explicit rather than silently captured.
+    }, [handleDownloadCsv, requestTableDelete, refreshNotes]);
 
     const onNodesChange = useCallback((changes: NodeChange[]) => {
         setWorkspaces(prevWorkspaces => 
@@ -349,6 +434,93 @@ export default function Home() {
             })
         );
     }, []);
+
+    /** Exports need an account; the backend enforces it too, this just explains why. */
+    const handleExportSql = async () => {
+        if (!activeWorkspace) return;
+        if (!user) return requireAccount('Exporting a file');
+        let name = activeWorkspace.name || 'database_dump.sql';
+        if (activeWorkspace.isImported) name = `modified_${name}`;
+        if (!name.toLowerCase().endsWith('.sql')) name += '.sql';
+        try {
+            await dbService.downloadDatabaseSql(name);
+        } catch (e) {
+            if (isAuthRequired(e)) return requireAccount('Exporting a file');
+            setNotice({ isOpen: true, severity: 'error', title: 'Export failed',
+                message: 'The SQL file could not be downloaded.' });
+        }
+    };
+
+    const handleShare = () => {
+        if (!activeWorkspace) return;
+        if (!user) return requireAccount('Creating a share link');
+        setShareOpen(true);
+    };
+
+    const handleSignOut = () => {
+        authService.logout();
+        setUser(null);
+    };
+
+    /** Fills an empty file with the bundled example so a first visit shows something real. */
+    const handleLoadExample = async () => {
+        setLoadingExample(true);
+        try {
+            let workspaceId = activeWorkspaceIdRef.current;
+            if (!workspaceId) {
+                workspaceId = Date.now().toString();
+                setActiveWorkspace(workspaceId);
+                activeWorkspaceIdRef.current = workspaceId;
+            }
+            await dbService.loadExampleSchema();
+            const schema = await dbService.getSchema();
+
+            if (activeWorkspace) {
+                await refreshActiveSchema();
+            } else {
+                const workspace = transformSchemaToWorkspace(
+                    schema.tables || [], schema.relationships || [],
+                    'example-store.sql', workspaceId, false);
+                setWorkspaces(prev => [...prev, workspace]);
+                setActiveWorkspaceId(workspaceId);
+            }
+            refreshNotes();
+        } catch (err: unknown) {
+            const message = err && typeof err === 'object' && 'response' in err
+                ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
+                : undefined;
+            setNotice({ isOpen: true, severity: 'error', title: 'Could not load the example',
+                message: message || 'The example schema could not be loaded.' });
+        } finally {
+            setLoadingExample(false);
+        }
+    };
+
+    const confirmTableDelete = async () => {
+        if (!tableToDelete) return;
+        setDeletingTable(true);
+        try {
+            await dbService.dropTable(tableToDelete);
+            setTableToDelete(null);
+            await refreshActiveSchema();
+            refreshNotes();
+        } catch (err: unknown) {
+            const response = err && typeof err === 'object' && 'response' in err
+                ? (err as { response?: { status?: number; data?: { error?: string; referencedBy?: string[] } } }).response
+                : undefined;
+            setTableToDelete(null);
+            setNotice({
+                isOpen: true,
+                // 409 is the expected, meaningful case: another table depends on this one.
+                severity: response?.status === 409 ? 'warning' : 'error',
+                title: response?.status === 409 ? 'Table is still referenced' : 'Could not delete the table',
+                message: response?.data?.error || 'The table could not be deleted.',
+                details: response?.data?.referencedBy?.map(t => `${t} has a foreign key pointing at this table`),
+            });
+        } finally {
+            setDeletingTable(false);
+        }
+    };
 
     const handleExportImage = async () => {
         if (!activeWorkspace) return;
@@ -397,14 +569,18 @@ export default function Home() {
         <div className="h-screen w-full bg-white text-zinc-800 flex flex-col">
             <Header
                 onUpload={handleFileUpload}
-                onRefresh={refreshActiveSchema}
+                onNewFile={openNewFileModal}
                 isUploading={isUploading}
                 fileName={activeWorkspace?.name || null}
-                isImported={activeWorkspace?.isImported ?? false}
                 onClear={handleClearRequest}
                 hasData={!!activeWorkspace}
                 onShowInfo={() => setInfoOpen(true)}
+                onExportSql={handleExportSql}
                 onExportImage={handleExportImage}
+                onShare={handleShare}
+                onSignIn={() => { setAuthReason(null); setAuthOpen(true); }}
+                onSignOut={handleSignOut}
+                user={user}
             />
 
             <div className="flex-1 flex overflow-hidden relative">
@@ -421,7 +597,10 @@ export default function Home() {
                     {activeWorkspace ? (
                         <Visualizer
                             key={activeWorkspace.id}
-                            nodes={activeWorkspace.nodes}
+                            nodes={activeWorkspace.nodes.map(n => ({
+                                ...n,
+                                data: { ...n.data, openNotes: openNoteCounts[n.id] ?? 0 },
+                            }))}
                             edges={activeWorkspace.edges}
                             onNodesChange={onNodesChange}
                             onEdgesChange={() => {}}
@@ -438,14 +617,30 @@ export default function Home() {
                             <div className="w-16 h-16 bg-zinc-100 rounded-full flex items-center justify-center shadow-inner">
                                 <FileCode size={32} className="opacity-40" />
                             </div>
-                            <div className="text-center">
-                                <p className="text-sm font-medium text-zinc-500 mb-2">No file selected</p>
-                                <button
-                                    onClick={openNewFileModal}
-                                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-semibold flex items-center gap-2 mx-auto"
-                                >
-                                    <Plus size={16} /> Create New File
-                                </button>
+                            <div className="text-center max-w-sm">
+                                <p className="text-base font-semibold text-zinc-700 mb-1">Nothing open yet</p>
+                                <p className="text-sm text-zinc-500 mb-5 leading-relaxed">
+                                    Load the example to see what a schema looks like here, or start
+                                    an empty file of your own.
+                                </p>
+                                <div className="flex items-center justify-center gap-3">
+                                    <button
+                                        onClick={handleLoadExample}
+                                        disabled={isLoadingExample}
+                                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-md text-sm font-semibold flex items-center gap-2"
+                                    >
+                                        {isLoadingExample
+                                            ? <Loader2 size={16} className="animate-spin" />
+                                            : <Sparkles size={16} />}
+                                        Show me an example
+                                    </button>
+                                    <button
+                                        onClick={openNewFileModal}
+                                        className="px-4 py-2 bg-white border border-zinc-300 hover:bg-zinc-50 text-zinc-700 rounded-md text-sm font-semibold flex items-center gap-2"
+                                    >
+                                        <Plus size={16} /> New file
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     )}
@@ -455,6 +650,54 @@ export default function Home() {
             {editingTable && <DataEditor tableName={editingTable} onClose={() => setEditingTable(null)} />}
             
             <NoticeModal notice={notice} onClose={() => setNotice({ ...notice, isOpen: false })} />
+
+            <AuthModal
+                isOpen={isAuthOpen}
+                reason={authReason}
+                onClose={() => setAuthOpen(false)}
+                onSignedIn={setUser}
+            />
+
+            <ShareModal
+                isOpen={isShareOpen}
+                fileName={activeWorkspace?.name ?? null}
+                onClose={() => setShareOpen(false)}
+                onNeedsAccount={() => requireAccount('Creating a share link')}
+            />
+
+            {tableToDelete && (
+                <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+                    <div className="bg-white border border-zinc-200 border-t-4 border-t-red-500 rounded-xl p-6 max-w-md w-full shadow-2xl">
+                        <h3 className="text-lg font-bold text-zinc-900 flex items-center gap-2">
+                            <AlertTriangle size={20} className="text-red-500" /> Delete table?
+                        </h3>
+                        <p className="text-zinc-600 text-sm mt-2 mb-1">
+                            <span className="font-mono text-zinc-900">{tableToDelete}</span> and all of
+                            its rows will be permanently removed.
+                        </p>
+                        <p className="text-zinc-400 text-xs mb-5">
+                            If another table&apos;s foreign key points at it, the delete is refused
+                            instead of leaving broken references behind.
+                        </p>
+                        <div className="flex gap-3 justify-end">
+                            <button
+                                onClick={() => setTableToDelete(null)}
+                                className="px-4 py-2 text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded-md text-sm"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={confirmTableDelete}
+                                disabled={isDeletingTable}
+                                className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white rounded-md text-sm font-semibold flex items-center gap-2"
+                            >
+                                {isDeletingTable && <Loader2 size={14} className="animate-spin" />}
+                                Delete table
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {showClearConfirm && (
                 <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">

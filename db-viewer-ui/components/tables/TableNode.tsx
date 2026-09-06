@@ -1,9 +1,9 @@
 import React, { memo, useState } from 'react';
 import { Handle, Position } from 'reactflow';
-import { Database, KeyRound, Plus, Download, Edit3, Pencil } from 'lucide-react';
-import { dbService } from '@/services/api';
+import { Database, KeyRound, Plus, Download, Edit3, Pencil, Trash2, StickyNote } from 'lucide-react';
 import { AddColumnModal } from '@/components/modal/AddColumnModal';
 import { EditColumnModal } from '@/components/modal/EditColumnModal';
+import { TableNotesModal } from '@/components/modal/TableNotesModal';
 import { ColumnInfo } from '@/types';
 
 interface TableNodeData {
@@ -11,6 +11,13 @@ interface TableNodeData {
   columns: ColumnInfo[];
   onRefresh: () => void;
   onEdit: (tableName: string) => void;
+  /** Asks the page to confirm and run the delete, so the dialog is not trapped in the canvas. */
+  onDelete?: (tableName: string) => void;
+  /** Downloading needs an account, so the page owns the error handling. */
+  onDownloadCsv?: (tableName: string) => void;
+  /** Count of open to-do notes, used for the badge. */
+  openNotes?: number;
+  onNotesChanged?: () => void;
 }
 
 const TableNode = ({ data }: { data: TableNodeData }) => {
@@ -19,10 +26,11 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
   // inline form unusable at anything below 100%.
   const [isAddColumnOpen, setAddColumnOpen] = useState(false);
   const [editingColumn, setEditingColumn] = useState<ColumnInfo | null>(null);
+  const [isNotesOpen, setNotesOpen] = useState(false);
 
   const handleDownload = (e: React.MouseEvent) => {
     e.stopPropagation();
-    window.open(dbService.getDownloadUrl(data.label), '_blank');
+    data.onDownloadCsv?.(data.label);
   };
 
   return (
@@ -40,6 +48,18 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
 
         {/* HEADER ACTIONS */}
         <div className="flex gap-0.5 shrink-0">
+          <button
+            onClick={(e) => { e.stopPropagation(); setNotesOpen(true); }}
+            className="relative p-0.5 hover:bg-blue-700 rounded text-white/80 hover:text-white transition-colors"
+            title={data.openNotes ? `${data.openNotes} open note(s)` : 'Notes / to-do'}
+          >
+            <StickyNote size={10} />
+            {!!data.openNotes && (
+              <span className="absolute -top-1 -right-1 min-w-[11px] h-[11px] px-0.5 rounded-full bg-amber-400 text-[7px] font-bold text-amber-950 flex items-center justify-center">
+                {data.openNotes}
+              </span>
+            )}
+          </button>
           <button
             onClick={(e) => { e.stopPropagation(); data.onEdit(data.label); }}
             className="p-0.5 hover:bg-blue-700 rounded text-white/80 hover:text-white transition-colors"
@@ -60,6 +80,13 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
             title="Download CSV"
           >
             <Download size={10} />
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); data.onDelete?.(data.label); }}
+            className="p-0.5 hover:bg-red-500 rounded text-white/80 hover:text-white transition-colors"
+            title="Delete table"
+          >
+            <Trash2 size={10} />
           </button>
         </div>
       </div>
@@ -126,6 +153,13 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
         existingColumns={data.columns.map(c => c.name)}
         onClose={() => setEditingColumn(null)}
         onSuccess={() => data.onRefresh?.()}
+      />
+
+      <TableNotesModal
+        isOpen={isNotesOpen}
+        tableName={data.label}
+        onClose={() => setNotesOpen(false)}
+        onChanged={() => data.onNotesChanged?.()}
       />
     </div>
   );

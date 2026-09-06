@@ -20,6 +20,7 @@ services:
     environment:
       DB_PATH: /data/visualizer.db
       WORKSPACE_DIR: /data/workspaces
+      AUTH_SECRET: ${AUTH_SECRET:-local-development-signing-secret-change-me}
       PORT: "8080"
     volumes:
       - db-data:/data

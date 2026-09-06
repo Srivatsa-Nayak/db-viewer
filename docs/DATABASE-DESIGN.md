@@ -107,6 +107,18 @@ The application discovers them at request time (§5) and never caches them.
 SQLite creates `sqlite_sequence` when a table uses `AUTOINCREMENT`. It is filtered out of all
 schema listings by the `name NOT LIKE 'sqlite_%'` predicate.
 
+### 3.2a Application-owned tables
+
+Two kinds, in two different places, for a reason:
+
+| Table | Lives in | Why |
+|---|---|---|
+| `app_users`, `shared_links` | The **default** database | A user and the links they created span every file they open, so they cannot belong to one workspace |
+| `__table_notes` | **Inside each workspace** | Notes are about that file's tables, so they should travel with the file — export it, delete it, and the notes go too |
+
+`__table_notes` is prefixed with `__` and filtered out of `getTableNames()`, so it never reaches
+the canvas, a table listing, or a SQL export. Dropping a table deletes its notes with it.
+
 ### 3.3 The `users` bootstrap table
 
 `DatabaseConfig.init()` runs one statement at startup, against the **default** datasource only:
@@ -349,6 +361,7 @@ dump is more useful than a rejected one — and every skip is returned to the UI
 | Insert (empty row) | `INSERT INTO "t" DEFAULT VALUES` / `INSERT INTO t () VALUES ()` | Driver-specific spelling |
 | Update cell | `UPDATE "t" SET "c" = ? WHERE id = ?` | Values parameterised |
 | Delete row | `DELETE FROM "t" WHERE id = ?` | Cascades to children via `ON DELETE CASCADE` |
+| Drop table | `DROP TABLE "t"` | **Only after** checking every other table's `PRAGMA foreign_key_list` for a reference to `t`. SQLite would otherwise drop a parent and leave dangling children, because foreign key enforcement is off by default — so the guard lives in the service, not the database |
 | Clear workspace | `DROP TABLE IF EXISTS ...` per table, FK checks off | `PRAGMA foreign_keys=OFF` / `SET FOREIGN_KEY_CHECKS=0` around the loop |
 
 **Injection posture.** All *values* are bound as JDBC parameters. *Identifiers* (table and column

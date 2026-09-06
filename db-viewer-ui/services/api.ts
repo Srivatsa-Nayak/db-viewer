@@ -30,7 +30,67 @@ api.interceptors.request.use((config) => {
     return config;
 });
 
-const workspaceParam = () => (activeWorkspaceId ? `&workspaceId=${encodeURIComponent(activeWorkspaceId)}` : '');
+/**
+ * Session token for the signed-in user.
+ *
+ * Almost everything works anonymously; the token only matters for the two actions that take
+ * data out of the app (export, share), which the backend refuses without it. Kept in
+ * localStorage so a refresh does not sign the user out.
+ */
+const TOKEN_KEY = 'sql-visualizer.token';
+let authToken: string | null = null;
+
+const readStoredToken = (): string | null => {
+    try {
+        return typeof window === 'undefined' ? null : window.localStorage.getItem(TOKEN_KEY);
+    } catch {
+        return null;
+    }
+};
+
+export const setAuthToken = (token: string | null) => {
+    authToken = token;
+    try {
+        if (typeof window === 'undefined') return;
+        if (token) window.localStorage.setItem(TOKEN_KEY, token);
+        else window.localStorage.removeItem(TOKEN_KEY);
+    } catch {
+        // Storage disabled - the token still works for this tab.
+    }
+};
+
+export const getAuthToken = (): string | null => {
+    if (authToken === null) authToken = readStoredToken();
+    return authToken;
+};
+
+api.interceptors.request.use((config) => {
+    const token = getAuthToken();
+    if (token) config.headers.set('Authorization', `Bearer ${token}`);
+    return config;
+});
+
+/** Thrown-ish marker: the backend refused because the action needs an account. */
+export const isAuthRequired = (error: unknown): boolean =>
+    typeof error === 'object' && error !== null && 'response' in error
+    && (error as { response?: { status?: number } }).response?.status === 401;
+
+/**
+ * Saves a response body as a file.
+ *
+ * Downloads go through Axios rather than a plain link because a link cannot carry the
+ * Authorization header the export endpoints now require.
+ */
+const saveBlob = (data: BlobPart, fileName: string, mime: string) => {
+    const url = URL.createObjectURL(new Blob([data], { type: mime }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+};
 
 interface AddColumnParams {
     tableName: string;
@@ -121,6 +181,43 @@ export const dbService = {
         });
     },
 
+    /** Drops a table. Rejected with 409 when another table's foreign key references it. */
+    dropTable: async (tableName: string) => {
+        const res = await api.delete(`/table/${encodeURIComponent(tableName)}`);
+        return res.data;
+    },
+
+    /** Fills an empty file with the bundled eight-table example. */
+    loadExampleSchema: async () => {
+        const res = await api.post('/demo');
+        return res.data;
+    },
+
+    // --- Table notes (a to-do list per table) ---
+
+    getAllTableNotes: async (): Promise<TableNote[]> => {
+        const res = await api.get<{ notes?: TableNote[] }>(`/table-notes?_t=${new Date().getTime()}`);
+        return res.data?.notes ?? [];
+    },
+
+    getTableNotes: async (tableName: string): Promise<TableNote[]> => {
+        const res = await api.get<{ notes?: TableNote[] }>(
+            `/table-notes/${encodeURIComponent(tableName)}?_t=${new Date().getTime()}`);
+        return res.data?.notes ?? [];
+    },
+
+    addTableNote: async (tableName: string, note: string) => {
+        return api.post(`/table-notes/${encodeURIComponent(tableName)}`, { note });
+    },
+
+    setTableNoteDone: async (noteId: number, done: boolean) => {
+        return api.post(`/table-notes/${noteId}/done`, { done });
+    },
+
+    deleteTableNote: async (noteId: number) => {
+        return api.delete(`/table-notes/${noteId}`);
+    },
+
     /** Ids of workspaces that still have a database, used to restore a session after a refresh. */
     listWorkspaces: async (): Promise<string[]> => {
         const res = await api.get<{ workspaces?: string[] }>(`/workspaces?_t=${new Date().getTime()}`);
@@ -145,9 +242,12 @@ export const dbService = {
         return res.data;
     },
 
-    getDownloadUrl: (tableName: string) => {
-        // We append ?t=TIMESTAMP to bust the cache
-        return `${API_URL}/export/${tableName}?t=${new Date().getTime()}${workspaceParam()}`;
+    /** Downloads one table as CSV. Requires an account. */
+    downloadTableCsv: async (tableName: string) => {
+        const res = await api.get(`/export/${tableName}?t=${new Date().getTime()}`, {
+            responseType: 'blob',
+        });
+        saveBlob(res.data, `${tableName}.csv`, 'text/csv');
     },
 
     // Get fresh data for a single table
@@ -195,9 +295,12 @@ export const dbService = {
         return response.data;
     },
 
-    getDatabaseExportUrl: (fileName: string | null) => {
-        const name = fileName || "database.sql";
-        return `${API_URL}/export-sql?filename=${encodeURIComponent(name)}&t=${new Date().getTime()}${workspaceParam()}`;
+    /** Downloads the whole file as a SQL dump. Requires an account. */
+    downloadDatabaseSql: async (fileName: string) => {
+        const res = await api.get(
+            `/export-sql?filename=${encodeURIComponent(fileName)}&t=${new Date().getTime()}`,
+            { responseType: 'blob' });
+        saveBlob(res.data, fileName, 'application/sql');
     },
 
     createTable: async (tableName: string, columns: NewTableColumn[]) => {
@@ -206,4 +309,78 @@ export const dbService = {
             columns: columns.map(toBackendColumn)
         });
     },
+};
+
+/** A to-do note attached to a table. */
+export interface TableNote {
+    id: number;
+    table_name: string;
+    note: string;
+    done: number;
+    created_at: string;
+}
+
+export interface AuthUser {
+    email: string;
+    displayName: string;
+}
+
+export interface ShareLink {
+    token: string;
+    fileName?: string | null;
+    sharedBy?: string;
+}
+
+export const authService = {
+    signup: async (email: string, password: string, displayName?: string): Promise<AuthUser> => {
+        const res = await api.post<{ token: string; email: string; displayName: string }>(
+            '/auth/signup', { email, password, displayName });
+        setAuthToken(res.data.token);
+        return { email: res.data.email, displayName: res.data.displayName };
+    },
+
+    login: async (email: string, password: string): Promise<AuthUser> => {
+        const res = await api.post<{ token: string; email: string; displayName: string }>(
+            '/auth/login', { email, password });
+        setAuthToken(res.data.token);
+        return { email: res.data.email, displayName: res.data.displayName };
+    },
+
+    logout: () => setAuthToken(null),
+
+    /** Resolves the stored token to a user, or null if there is none / it expired. */
+    me: async (): Promise<AuthUser | null> => {
+        if (!getAuthToken()) return null;
+        try {
+            const res = await api.get<Partial<AuthUser>>('/auth/me');
+            if (!res.data?.email) {
+                setAuthToken(null);
+                return null;
+            }
+            return { email: res.data.email, displayName: res.data.displayName ?? res.data.email };
+        } catch {
+            setAuthToken(null);
+            return null;
+        }
+    },
+};
+
+export const shareService = {
+    /** Creates (or returns the existing) read-only link for the active file. */
+    create: async (fileName: string): Promise<ShareLink> => {
+        const res = await api.post<ShareLink>('/share', { fileName });
+        return res.data;
+    },
+
+    revoke: async (token: string) => api.delete(`/share/${token}`),
+
+    /** Public read of a shared file. No account needed - the token is the credential. */
+    view: async (token: string) => {
+        const res = await api.get(`/share/${token}?_t=${new Date().getTime()}`);
+        return res.data;
+    },
+
+    /** The URL to hand out, built from where the app is actually running. */
+    linkFor: (token: string) =>
+        `${typeof window === 'undefined' ? '' : window.location.origin}/share/${token}`,
 };

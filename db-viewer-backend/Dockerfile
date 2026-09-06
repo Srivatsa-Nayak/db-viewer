@@ -22,6 +22,8 @@ COPY --from=builder /app/target/db-viewer-*.jar app.jar
 
 ENV DB_PATH=/data/visualizer.db
 ENV WORKSPACE_DIR=/data/workspaces
+# Override at run time: -e AUTH_SECRET=... (sessions reset on restart without it)
+ENV AUTH_SECRET=""
 ENV PORT=8080
 ENV SPRING_PROFILES_ACTIVE=prod
 

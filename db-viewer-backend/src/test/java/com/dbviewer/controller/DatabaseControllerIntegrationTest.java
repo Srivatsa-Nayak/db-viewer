@@ -49,6 +49,25 @@ class DatabaseControllerIntegrationTest {
     @Autowired ObjectMapper objectMapper;
     @Autowired DatabaseServiceImpl databaseServiceImpl;
 
+    private static String bearerToken;
+
+    /**
+     * Signs up once and reuses the token. Exporting is the one thing that needs an account,
+     * so the export tests have to authenticate.
+     */
+    private String token() throws Exception {
+        if (bearerToken == null) {
+            String body = objectMapper.writeValueAsString(Map.of(
+                    "email", "exporter@example.com", "password", "A-good-password"));
+            String response = mockMvc.perform(post("/auth/signup")
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString();
+            bearerToken = "Bearer " + objectMapper.readTree(response).get("token").asText();
+        }
+        return bearerToken;
+    }
+
     // ─── Health ───────────────────────────────────────────────────────────────────
 
     @Test
@@ -288,8 +307,17 @@ class DatabaseControllerIntegrationTest {
 
     @Test
     @Order(16)
+    void export_withoutAnAccount_shouldReturn401() throws Exception {
+        // Gating is enforced here, not only in the UI, so it cannot be bypassed by calling
+        // the API directly.
+        mockMvc.perform(get("/export/products")).andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/export-sql")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @Order(17)
     void exportCsv_shouldStreamTheTableAsCsv() throws Exception {
-        mockMvc.perform(get("/export/products"))
+        mockMvc.perform(get("/export/products").header("Authorization", token()))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Type", containsString("text/csv")))
                 .andExpect(header().string("Content-Disposition", containsString("products.csv")))
@@ -297,9 +325,10 @@ class DatabaseControllerIntegrationTest {
     }
 
     @Test
-    @Order(17)
+    @Order(18)
     void exportSql_shouldStreamADumpWithSchemaAndData() throws Exception {
-        mockMvc.perform(get("/export-sql").param("filename", "my_backup.sql"))
+        mockMvc.perform(get("/export-sql").param("filename", "my_backup.sql")
+                        .header("Authorization", token()))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Disposition", containsString("my_backup.sql")))
                 .andExpect(content().string(containsString("CREATE TABLE")))
@@ -309,7 +338,7 @@ class DatabaseControllerIntegrationTest {
     // ─── Clear ────────────────────────────────────────────────────────────────────
 
     @Test
-    @Order(18)
+    @Order(19)
     void clearDatabase_shouldDropEveryTable() throws Exception {
         mockMvc.perform(delete("/clear"))
                 .andExpect(status().isOk());

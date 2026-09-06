@@ -82,6 +82,7 @@ db-viewer-ui/
 ├── app/
 │   ├── layout.tsx              Root layout; JetBrains Mono via next/font
 │   ├── page.tsx                ★ Owns all application state
+│   ├── share/[token]/page.tsx  Read-only view of a shared file (renders its own handles)
 │   └── globals.css             Tailwind v4 entry + design tokens
 ├── components/
 │   ├── header/Header.tsx           Import / refresh / export / clear / help
@@ -96,6 +97,9 @@ db-viewer-ui/
 │       ├── AddColumnModal.tsx      Single-column ALTER TABLE (portalled)
 │       ├── EditColumnModal.tsx     Rename / retype an existing column (portalled)
 │       ├── NoticeModal.tsx         Error / warning / success with collapsible details
+│       ├── AuthModal.tsx           Sign up / sign in, with the reason it was asked for
+│       ├── ShareModal.tsx          Creates and copies a read-only link
+│       ├── TableNotesModal.tsx     Per-table to-do list (portalled)
 │       ├── NewTableHelpModal.tsx   Canvas toolbar: what the New Table button does
 │       └── InfoModal.tsx           "What is this app" summary + version + credits
 ├── services/
@@ -233,6 +237,25 @@ Saving is debounced by 300 ms because dragging a node fires `onNodesChange` cont
 `localStorage` access is wrapped in try/catch: it throws outright in Safari private browsing and
 when storage is disabled by policy, and losing the session is not a reason to take the app down.
 
+### Accounts
+
+The app works fully signed out. Two actions need an account — **exporting** and **creating a share
+link** — and both are enforced by the backend (401), not just hidden in the UI, so the gate cannot
+be bypassed by calling the API.
+
+Password rules (8+ characters, a capital letter, a special character) are mirrored in
+`AuthModal` as a live checklist so they are visible while typing, but the backend remains the
+authority — the UI copy is a convenience, not the enforcement.
+
+The token lives in `localStorage` and is attached by an Axios interceptor. `AuthModal` takes a
+`reason` prop so the prompt says *why* it appeared ("Exporting a file needs an account") rather
+than appearing out of nowhere.
+
+⚠️ **`handleDownloadCsv` must stay a stable `useCallback` that reads `userRef.current`.** It is
+stored in every node's `data`, and the callback that rebuilds nodes is deliberately stable — so
+reading `user` from the closure would pin it to its first-render value (`null`) and prompt for
+sign-up forever, even once signed in. Same class of bug as the `refreshActiveSchema` note above.
+
 ### Exporting
 
 The header's **Export** menu offers two things, which are for different jobs:
@@ -265,7 +288,7 @@ The transform tolerates both `snake_case` and `camelCase` on relationship fields
 
 | Component | Responsibility | Notes |
 |---|---|---|
-| `Header` | Import, refresh, export menu, clear, help | The SQL option builds a URL and clicks a synthetic `<a>` (imported files get a `modified_` prefix); the PNG option calls back into `page.tsx`, which owns the nodes. The menu closes on outside-click and Escape |
+| `Header` | **File** menu (new / import / export / close) and **Share**, both on the left; account and help on the right. There is no Refresh button — every mutation refreshes the canvas itself | The SQL option builds a URL and clicks a synthetic `<a>` (imported files get a `modified_` prefix); the PNG option calls back into `page.tsx`, which owns the nodes. The menu closes on outside-click and Escape |
 | `FileExplorer` | Files → tables → columns tree, search, collapse rail | Collapsed mode shows one icon per open file |
 | `Visualizer` | React Flow canvas, **New Table** button, zoom select | Renders `CreateTableModal` and `NewTableHelpModal` as *siblings* of the canvas wrapper — see [Gotchas](#gotchas) |
 | `TableNode` | One table: header actions, column list, FK handles, per-column edit button | Handles are inferred from naming convention (`id`, `*_id`), not real metadata |

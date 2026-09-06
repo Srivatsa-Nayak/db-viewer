@@ -258,6 +258,12 @@ client that knows an id can reach that workspace. This matches the app's current
 | `POST` | `/delete-row` | Delete one row by id | ✅ header |
 | `DELETE` | `/clear` | Drop every table, keep the workspace | ✅ header |
 | `GET` | `/workspaces` | Ids of workspaces that still have a database | — |
+| `POST` | `/demo` | Load the bundled eight-table example | ✅ header |
+| `DELETE` | `/table/{name}` | Drop a table; 409 when still referenced | ✅ header |
+| `GET` `POST` `DELETE` | `/table-notes...` | Per-table to-do notes | ✅ header |
+| `POST` | `/auth/signup` · `/auth/login` | Accounts | — |
+| `POST` | `/share` | Create a read-only link **(account required)** | ✅ header |
+| `GET` | `/share/{token}` | View a shared schema (public) | — |
 | `DELETE` | `/workspace` | Delete the workspace's database outright | ✅ header |
 | `GET` | `/export/{table}` | Download table as CSV | ✅ **query param** |
 | `GET` | `/export-sql` | Download workspace as a SQL dump | ✅ **query param** |
@@ -388,7 +394,7 @@ discussion.
 
 | Limitation | Why it exists | What a fix looks like |
 |---|---|---|
-| No authentication or authorisation | Single-user developer tool | Sign-in, workspace ownership records, an `Authorization` header checked in `WorkspaceFilter` |
+| Accounts gate export/share but are not an authorisation model | The app is meant to be usable without signing up | Record workspace ownership and check it on every workspace-scoped route, not just the two that hand data out |
 | Workspace ids are guessable timestamps | Simplicity | UUIDv4 ids plus a server-side owner check |
 | Workspaces are never garbage-collected unless closed in the UI | No session lifecycle | A TTL sweeper over `app.workspace.dir`, or a session-bound registry |
 | SQLite files live on local disk | Zero-infrastructure default | Object storage or a managed MySQL/Postgres per tenant |
@@ -400,6 +406,34 @@ discussion.
 | Row previews capped at 100 | Keeps `/db-info` cheap | Server-side pagination on `/table-data` |
 | `.sql` import skips statements it cannot run | Best-effort import of MySQL dumps | Now reported to the UI via the upload report and `NoticeModal`; MySQL triggers/procedures still have no SQLite equivalent |
 | Indexes and `UNIQUE`/`CHECK` constraints in a dump are dropped | The translator folds only primary and foreign keys | Emit `CREATE INDEX` / table-level constraints during translation |
+
+---
+
+## 8a. Accounts and sharing
+
+```mermaid
+flowchart LR
+    REQ[Request] --> AF["AuthFilter<br/>binds Bearer token → AuthContext<br/>(never rejects)"]
+    AF --> H{Handler}
+    H -->|"most routes"| OK[Runs anonymously]
+    H -->|"export / share"| REQ2["AuthContext.require()"]
+    REQ2 -->|no identity| E401[401 + 'create a free account']
+    REQ2 -->|identity| OK
+```
+
+The filter deliberately never rejects: almost everything is meant to work without an account, so
+the two endpoints that do need one ask for it themselves. Enforcement is server-side rather than a
+hidden button, so calling the API directly does not bypass it.
+
+**Share links** are a random 192-bit token mapped to a workspace id. Viewing one is public — the
+token is the credential, which is the only way a link can be handed to someone — and read-only:
+the route reads the schema and nothing else. Deleting a workspace revokes its links, so a link
+never points at a database that no longer exists.
+
+Application-owned tables (`app_users`, `shared_links`) live in the **default** database, because a
+user and their links span every file. Per-table notes live *inside* the workspace as
+`__table_notes` so they travel with the file; the `__` prefix is filtered out of the schema
+listing, keeping it off the canvas and out of exports.
 
 ---
 
@@ -415,6 +449,8 @@ returns 200 without doing anything is the failure worth catching.
 | Workspace | `WorkspaceIsolationTest` — same table name in two workspaces, row-level leakage, default-database separation, workspace deletion, id sanitisation, MySQL URL rewriting |
 | Column edit | `ColumnEditTest` — rename, retype, renullify; the SQLite rebuild preserving keys, foreign keys and data; primary-key protection; identifier validation; `PRAGMA foreign_keys` restoration |
 | SQL import | `SqlImportTest` — a real phpMyAdmin dump end to end, comment-prefixed statements, semicolons inside string literals, `DELIMITER` blocks, ALTER-key folding, skip reporting |
+| Auth & sharing | `AuthAndSharingTest` — signup validation, BCrypt hashing, no account enumeration, forged tokens, share create/view/revoke, anonymous refusal of export and share |
+| Table lifecycle | `TableLifecycleTest` — the example schema, FK-guarded deletion, and notes staying invisible to the canvas and exports |
 | Frontend | No test suite; `npx tsc --noEmit` and `npm run lint` are the gates |
 
 All backend tests run against in-memory SQLite (`jdbc:sqlite::memory:`), including the workspace
