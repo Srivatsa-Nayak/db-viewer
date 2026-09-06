@@ -69,6 +69,15 @@ db-viewer-backend/
     ├── main/
     │   ├── java/com/dbviewer/
     │   │   ├── DbViewerApplication.java        Entry point (mirrors main.go)
+    │   │   ├── auth/
+    │   │   │   ├── AuthContext.java            ThreadLocal identity for the request
+    │   │   │   ├── AuthFilter.java             Binds the Bearer token; never rejects
+    │   │   │   ├── AuthService.java            Signup/login, BCrypt hashing
+    │   │   │   ├── JwtService.java             Issues and verifies session tokens
+    │   │   │   └── AuthController.java         /auth/signup, /auth/login, /auth/me
+    │   │   ├── share/
+    │   │   │   ├── ShareService.java           Read-only share links
+    │   │   │   └── ShareController.java        /share, /shares
     │   │   ├── config/
     │   │   │   ├── CorsConfig.java             Permissive CORS (no credentials)
     │   │   │   ├── DatabaseConfig.java         Bootstraps the default DB's `users` table
@@ -159,6 +168,13 @@ current workspace on every statement, so as long as new code uses `jdbc()` rathe
 | `POST` | `/create-table` | `HandleCreateTable` | Create a table with PK / `NOT NULL` / FKs | header |
 | `POST` | `/alter-table` | `HandleAddColumn` | Add a column | header |
 | `POST` | `/update-column` | *(new)* | Rename a column, or change its type or nullability | header |
+| `DELETE` | `/table/{name}` | *(new)* | Drop a table; 409 when still referenced by a foreign key | header |
+| `POST` | `/demo` | *(new)* | Load the bundled eight-table example | header |
+| `GET` `POST` `DELETE` | `/table-notes...` | *(new)* | Per-table to-do notes | header |
+| `POST` | `/auth/signup` · `/auth/login` | *(new)* | Create an account / sign in | — |
+| `GET` | `/auth/me` | *(new)* | Current user, `{}` when anonymous | — |
+| `POST` | `/share` | *(new)* | Create a share link **(account required)** | header |
+| `GET` | `/share/{token}` | *(new)* | View a shared schema (public) | — |
 | `POST` | `/insert-row` | `HandleInsertRow` | Insert a row (empty or with values) | header |
 | `POST` | `/update-cell` | `HandleUpdateCell` | Update one cell by row `id` | header |
 | `POST` | `/delete-row` | `HandleDeleteRow` | Delete a row by `id` | header |
@@ -306,6 +322,7 @@ curl localhost:8080/db-info -H 'X-Workspace-Id: demo'   # {"tables":[],"relation
 | `PORT` | `8080` | HTTP port |
 | `DB_PATH` | `./visualizer.db` | SQLite file for the **default** (no-workspace) database |
 | `WORKSPACE_DIR` | `./data/workspaces` | Directory holding one `.db` per workspace |
+| `AUTH_SECRET` | *(none)* | Signing key for session tokens; 32+ chars. Blank means a random key per restart |
 | `SPRING_PROFILES_ACTIVE` | *(none)* | `mysql` and/or `prod` |
 | `MYSQL_HOST` / `MYSQL_PORT` | `localhost` / `3306` | MySQL profile only |
 | `MYSQL_DB` | `dbviewer` | Default schema for no-workspace requests |
@@ -371,7 +388,7 @@ The image sets `DB_PATH=/data/visualizer.db` and `WORKSPACE_DIR=/data/workspaces
 ## Testing
 
 ```bash
-./mvnw test                                     # all 46 tests
+./mvnw test                                     # all 70 tests
 ./mvnw test -Dtest=WorkspaceIsolationTest       # one class
 ./mvnw test -Dtest=ColumnEditTest#renameColumn_shouldKeepTypeAndData
 ```
@@ -385,6 +402,8 @@ fixtures to load.
 | `WorkspaceIsolationTest` | 8 | Same table name in two workspaces, row leakage, default-DB separation, workspace deletion, id sanitisation, MySQL URL rewriting |
 | `ColumnEditTest` | 12 | Rename/retype/renullify a column, SQLite rebuild preserving keys/FKs/data, primary-key protection, identifier validation, pragma restoration |
 | `SqlImportTest` | 8 | Real phpMyAdmin dump, comment-prefixed statements, semicolons in string literals, `DELIMITER` blocks, ALTER-key folding, skip reporting |
+| `AuthAndSharingTest` | 14 | Signup validation, BCrypt hashing, no account enumeration, forged tokens, share create/view/revoke, anonymous refusal |
+| `TableLifecycleTest` | 9 | Example schema, FK-guarded deletion, table notes |
 
 Naming convention: `methodOrFeature_expectedBehavior`, e.g. `uploadCsv_shouldCreateTheTableAndItsRows`.
 
@@ -445,6 +464,34 @@ The upload response reports what happened, so the UI can show it rather than bur
   "warningCount": 6,
   "warnings": ["Skipped MySQL-only statement: CREATE TRIGGER `Bill_date` ...", "..."] }
 ```
+
+---
+
+## Accounts and sharing
+
+The app is usable signed out. An account is required for exactly two things — **exporting a file**
+and **creating a share link** — because both take data out of the app.
+
+| Concern | How |
+|---|---|
+| Passwords | BCrypt via `spring-security-crypto`. Only the hash is stored |
+| Password policy | 8+ characters, at least one capital letter and one special character. Every unmet rule is reported at once, so the user does not discover them one rejected attempt at a time. Enforced on **signup only** — applying it at sign-in would lock out accounts created before the rule |
+| Sessions | A JWT signed with `app.auth.secret`, valid 30 days, sent as `Authorization: Bearer` |
+| Missing secret | A random key is generated at startup with a warning. Deliberately not a hardcoded default, which would let anyone mint valid tokens — the cost is that sessions do not survive a restart |
+| Enforcement | `AuthContext.require()` inside the handler, **not** in the UI. `AuthFilter` never rejects a request; an absent or invalid token simply means anonymous |
+| Login errors | "Email or password is incorrect." for both an unknown address and a wrong password, so the endpoint cannot be used to discover registered emails |
+| Duplicate emails | Rejected with **409** and an `emailAlreadyRegistered` flag the UI turns into a "sign in instead" prompt. Checked *before* the password, because no password would make that signup succeed - reporting a password problem first would send the user off to fix the wrong thing. Addresses are lower-cased, so casing cannot create a second account, and the `UNIQUE` column plus a unique-violation catch cover two signups racing |
+| Share tokens | 192 bits of `SecureRandom`, URL-safe. One link per file per owner, so re-sharing does not mint new tokens |
+| Viewing a share | Public: the token *is* the credential. Read-only — the route only ever reads the schema |
+
+> ⚠️ Accounts gate two actions; they are **not** an authorisation model. Any caller who knows a
+> workspace id can still read and edit that workspace.
+
+The application's own tables (`app_users`, `shared_links`) live in the **default** database, not in
+a workspace — a user and their links exist across every file they open. Per-table notes are the
+opposite: they live *inside* the workspace as `__table_notes`, so they travel with the file. Any
+table whose name starts with `__` is filtered out of the schema listing, so it never reaches the
+canvas or an export.
 
 ---
 

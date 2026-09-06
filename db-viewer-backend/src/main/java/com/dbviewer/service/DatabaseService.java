@@ -91,6 +91,27 @@ public interface DatabaseService {
     String exportDatabaseSql();
 
     /**
+     * Drops a table. Refuses with {@link TableInUseException} when another table's foreign key
+     * still references it, rather than leaving dangling references behind.
+     */
+    void dropTable(String tableName);
+
+    /** Notes attached to one table - a to-do list the user can come back to. */
+    List<Map<String, Object>> getTableNotes(String tableName);
+
+    /** Every note in the workspace, so the UI can badge which tables have open items. */
+    List<Map<String, Object>> getAllTableNotes();
+
+    Map<String, Object> addTableNote(String tableName, String note);
+
+    void setTableNoteDone(long noteId, boolean done);
+
+    void deleteTableNote(long noteId);
+
+    /** Loads the bundled example schema into the current workspace. */
+    Map<String, Object> loadExampleSchema();
+
+    /**
      * Ids of every workspace that still has a database, so the UI can restore a previous
      * session and drop entries whose database no longer exists.
      */

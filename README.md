@@ -43,12 +43,19 @@ Built with **Spring Boot 3.3 (Java 17)** on the backend and **Next.js 16** on th
 | **✏️ Data editing** | View, insert and delete rows, edit a single cell in place, or edit a whole row at once — without leaving the canvas. |
 | **🧱 Schema editing** | Create tables with primary keys, `NOT NULL` constraints and foreign keys; add columns, and rename or retype existing ones, through dedicated modals. |
 | **⬇️ Export** | Download one table as CSV, the whole file as a round-trippable SQL dump, or the diagram as a PNG for reading the schema offline. |
+| **✨ Example schema** | First visit shows an eight-table store database, so the canvas is never a blank page. |
+| **🗑️ Safe table deletion** | Delete a table from its node — refused with a clear message when another table's foreign key still references it. |
+| **📝 Table notes** | A to-do list per table, stored with the file. Tick items off and come back to them later. |
+| **🔗 Share links** | Create a read-only link to a file. Anyone with the link can view the schema; nobody can edit it. |
+| **👤 Optional accounts** | Everything works signed out. Only exporting and sharing need a free account (password: 8+ chars, a capital and a special character). |
 | **💾 Session persistence** | The files you have open survive a browser refresh — the list and your canvas layout are remembered locally, and the schema is re-read from the databases, which are the source of truth. |
 | **📑 API docs** | OpenAPI/Swagger UI generated from the backend controllers. |
 
-> ⚠️ **This is a developer tool, not a multi-tenant service.** There is no authentication, CORS is
-> wide open, and `POST /query` executes arbitrary SQL by design. Run it locally or behind your own
-> access control — never expose the API to untrusted callers.
+> ⚠️ **This is a developer tool, not a multi-tenant service.** Accounts gate exporting and
+> sharing, but they are not an authorisation model: any caller can still read and edit any
+> workspace whose id they know, CORS is wide open, and `POST /query` executes arbitrary SQL by
+> design. Run it locally or behind your own access control — never expose the API to untrusted
+> callers.
 
 ---
 
@@ -96,10 +103,12 @@ db-viewer/
 │   │   ├── controller/         REST endpoints + global exception handler
 │   │   ├── dto/                Request/response POJOs
 │   │   ├── service/            DatabaseService + DatabaseServiceImpl
+│   │   ├── auth/               Accounts, JWT, request identity
+│   │   ├── share/              Read-only share links
 │   │   ├── sql/                Script splitter + MySQL→SQLite translator
 │   │   └── workspace/          Per-file database isolation
 │   ├── src/main/resources/     application.properties + mysql/prod profiles
-│   └── src/test/java/          46 JUnit 5 / MockMvc / AssertJ tests
+│   └── src/test/java/          70 JUnit 5 / MockMvc / AssertJ tests
 ├── db-viewer-ui/               Next.js 16 frontend
 │   ├── app/                    App Router entry; page.tsx owns workspace state
 │   ├── components/             header, canvas, editor, tables, modal
@@ -184,7 +193,8 @@ Then open <http://localhost:3000> and either **Import** a `.csv`/`.sql` file or 
 
 ### Try it in 60 seconds
 
-1. Click **Create New File**, name it `shop.sql`.
+0. Click **Show me an example** on the empty canvas to load an eight-table store schema.
+1. Or use **File → New file** and name it `shop.sql`.
 2. On the canvas, click **New Table** → name it `customers` → keep the `id` PK column, add
    `name` (`VARCHAR`, 128) → **Create Table**.
 3. Click the **+** in the `customers` node header → add a `email` column (`VARCHAR`, 256).
@@ -233,6 +243,7 @@ java -jar db-viewer-backend/target/db-viewer-*.jar \
 | `MYSQL_HOST` / `MYSQL_PORT` | `localhost` / `3306` | MySQL profile only |
 | `MYSQL_DB` | `dbviewer` | Default schema for no-workspace requests |
 | `MYSQL_USER` / `MYSQL_PASSWORD` | `root` / `root` | MySQL credentials |
+| `AUTH_SECRET` | *(none)* | Signing key for session tokens. **Set this (32+ chars) in any real deployment** — when blank a random key is generated at startup and everyone is signed out on every restart |
 
 ### Frontend
 
@@ -256,6 +267,14 @@ set headers.
 |---|---|---|
 | `GET` | `/` | Health check (also returns the version) |
 | `GET` | `/version` | Application version, from `pom.xml` (auto-incremented on every merge to `master`) |
+| `POST` | `/auth/signup` · `/auth/login` | Create an account / sign in; returns a JWT |
+| `GET` | `/auth/me` | Current user, or `{}` when anonymous |
+| `POST` | `/demo` | Load the bundled eight-table example into an empty file |
+| `DELETE` | `/table/{name}` | Drop a table (409 when still referenced) |
+| `GET` `POST` | `/table-notes` · `/table-notes/{table}` | Per-table to-do notes |
+| `POST` | `/share` | Create a read-only share link **(account required)** |
+| `GET` | `/share/{token}` | View a shared schema (public — the token is the credential) |
+| `GET` `DELETE` | `/shares` · `/share/{token}` | List / revoke your links **(account required)** |
 | `POST` | `/upload` | Import a `.csv` or `.sql` file (multipart, field `file`) |
 | `POST` | `/query` | Execute raw SQL |
 | `GET` | `/db-info` | All tables, columns, row previews (max 100) and relationships |
@@ -293,7 +312,7 @@ curl localhost:8080/db-info -H 'X-Workspace-Id: fileA'   # sees only fileA's use
 ## ✅ Testing and quality gates
 
 ```bash
-# Backend — 46 tests, in-memory SQLite, no setup required
+# Backend — 70 tests, in-memory SQLite, no setup required
 cd db-viewer-backend && ./mvnw test
 
 # Single class
@@ -314,6 +333,8 @@ failure worth catching — and the suite is deliberately one layer deep per beha
 | `DatabaseControllerIntegrationTest` | Every REST route end to end: routing, binding, status codes, and what each call actually changed in the database |
 | `WorkspaceIsolationTest` | Same table name in two workspaces, row leakage, default-DB separation, workspace deletion, id sanitisation |
 | `SqlImportTest` | Real phpMyAdmin dump import, comment-prefixed statements, semicolons inside string literals, `DELIMITER` blocks, key folding, skip reporting |
+| `AuthAndSharingTest` | Signup validation, password hashing, no account enumeration, forged tokens, share creation/viewing/revocation, and that export + share are refused anonymously |
+| `TableLifecycleTest` | Example schema, FK-guarded table deletion, per-table notes and their invisibility to the canvas and exports |
 | `ColumnEditTest` | Rename/retype/renullify a column, SQLite table rebuild preserving keys, FKs and data, primary-key protection, identifier validation |
 
 ---

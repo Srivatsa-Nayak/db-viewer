@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Database">
+  <!-- Same geometry and blue as the header logo, and as app/favicon.ico. -->
+  <rect width="64" height="64" rx="14" fill="#2563eb"/>
+  <g fill="#ffffff">
+    <path d="M11 14A21 6.5 0 0 1 53 14L53 26A21 6.5 0 0 1 11 26Z"/>
+    <path d="M11 28.6A21 6.5 0 0 0 53 28.6L53 38A21 6.5 0 0 1 11 38Z"/>
+    <path d="M11 40.6A21 6.5 0 0 0 53 40.6L53 50A21 6.5 0 0 1 11 50Z"/>
+  </g>
+</svg>

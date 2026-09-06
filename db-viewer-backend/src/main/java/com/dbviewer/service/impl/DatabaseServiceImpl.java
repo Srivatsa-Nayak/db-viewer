@@ -3,12 +3,14 @@ package com.dbviewer.service.impl;
 import com.dbviewer.config.DatabaseConfig;
 import com.dbviewer.dto.*;
 import com.dbviewer.service.DatabaseService;
+import com.dbviewer.service.TableInUseException;
 import com.dbviewer.sql.MySqlToSqliteTranslator;
 import com.dbviewer.sql.SqlScriptSplitter;
 import com.dbviewer.workspace.WorkspaceContext;
 import com.dbviewer.workspace.WorkspaceManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -225,13 +227,35 @@ public class DatabaseServiceImpl implements DatabaseService {
         return Map.of("tables", tables, "relationships", relationships);
     }
 
+    /**
+     * User tables only. Internal bookkeeping (the `__` prefix) and the driver's own tables are
+     * filtered out so they never reach the canvas, an export, or a table listing.
+     */
     private List<String> getTableNames() {
-        if (isMysql()) {
-            return jdbc().queryForList("SHOW TABLES", String.class);
-        }
-        return jdbc().queryForList(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-                String.class);
+        List<String> names = isMysql()
+                ? jdbc().queryForList("SHOW TABLES", String.class)
+                : jdbc().queryForList(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+                        String.class);
+        return names.stream().filter(name -> !name.startsWith(INTERNAL_TABLE_PREFIX)).toList();
+    }
+
+    /** Tables the application keeps inside a workspace for its own purposes. */
+    private static final String INTERNAL_TABLE_PREFIX = "__";
+    private static final String NOTES_TABLE = "__table_notes";
+
+    /** Created lazily so an untouched workspace stays completely empty. */
+    private void ensureNotesTable() {
+        jdbc().execute(String.format("""
+                CREATE TABLE IF NOT EXISTS "%s" (
+                    id %s,
+                    table_name VARCHAR(255) NOT NULL,
+                    note TEXT NOT NULL,
+                    done INTEGER NOT NULL DEFAULT 0,
+                    created_at VARCHAR(40) NOT NULL
+                )
+                """, NOTES_TABLE,
+                isMysql() ? "INT AUTO_INCREMENT PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT"));
     }
 
     private List<ColumnInfo> getColumnsForTable(String tableName) {
@@ -673,6 +697,12 @@ public class DatabaseServiceImpl implements DatabaseService {
     @Override
     public void clearDatabase() {
         List<String> tables = getTableNames();
+        // Notes describe tables that are about to stop existing.
+        try {
+            jdbc().execute("DROP TABLE IF EXISTS \"" + NOTES_TABLE + "\"");
+        } catch (Exception e) {
+            log.warn("Could not clear table notes: {}", e.getMessage());
+        }
         if (isMysql()) {
             jdbc().execute("SET FOREIGN_KEY_CHECKS = 0");
             for (String t : tables) {
@@ -718,6 +748,148 @@ public class DatabaseServiceImpl implements DatabaseService {
             return;
         }
         workspaceManager.dropWorkspace(workspaceId);
+    }
+
+    // ─── Example Schema ───────────────────────────────────────────────────────────
+
+    /**
+     * Loads the bundled eight-table example into the current workspace, so a first-time visitor
+     * sees what the app does instead of an empty canvas.
+     */
+    @Override
+    public Map<String, Object> loadExampleSchema() {
+        if (!getTableNames().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "This file already has tables. Create a new file to load the example.");
+        }
+
+        String script;
+        try (var in = new ClassPathResource("demo/example-schema.sql").getInputStream()) {
+            script = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            throw new IllegalStateException("The bundled example schema could not be read", e);
+        }
+
+        List<String> statements = SqlScriptSplitter.split(script);
+        if (isMysql()) {
+            statements = MySqlToSqliteTranslator.translate(statements).statements();
+        }
+        for (String statement : statements) {
+            jdbc().execute(statement);
+        }
+
+        return Map.of("message", "Example schema loaded", "tables", getTableNames());
+    }
+
+    // ─── Drop Table ───────────────────────────────────────────────────────────────
+
+    /**
+     * Drops a table, unless another table's foreign key points at it.
+     *
+     * <p>Refusing is the point. SQLite would happily drop a parent table and leave the children
+     * with dangling references (foreign key enforcement is off by default), so the check is done
+     * here rather than left to the database.
+     */
+    @Override
+    public void dropTable(String tableName) {
+        String table = safeIdentifier(tableName, "table name");
+
+        if (!getTableNames().contains(table)) {
+            throw new IllegalArgumentException("Table \"" + table + "\" does not exist.");
+        }
+
+        List<String> dependents = tablesReferencing(table);
+        if (!dependents.isEmpty()) {
+            throw new TableInUseException(table, dependents);
+        }
+
+        String q = isMysql() ? "`" : "\"";
+        jdbc().execute(String.format("DROP TABLE %s%s%s", q, table, q));
+
+        // The notes were about a table that no longer exists.
+        try {
+            ensureNotesTable();
+            jdbc().update("DELETE FROM \"" + NOTES_TABLE + "\" WHERE table_name = ?", table);
+        } catch (Exception e) {
+            log.warn("Could not clean up notes for dropped table {}: {}", table, e.getMessage());
+        }
+    }
+
+    /** Names of other tables holding a foreign key that references the given table. */
+    private List<String> tablesReferencing(String tableName) {
+        List<String> dependents = new ArrayList<>();
+        for (String other : getTableNames()) {
+            if (other.equalsIgnoreCase(tableName)) {
+                continue;
+            }
+            boolean references = getForeignKeys(other).stream()
+                    .anyMatch(fk -> tableName.equalsIgnoreCase(fk.getTargetTable()));
+            if (references) {
+                dependents.add(other);
+            }
+        }
+        return dependents;
+    }
+
+    // ─── Table Notes ──────────────────────────────────────────────────────────────
+
+    /**
+     * Notes attached to a table - a to-do list the user can come back to.
+     *
+     * <p>Stored inside the workspace database so they travel with the file, and prefixed with
+     * `__` so the table never shows up on the canvas or in an export.
+     */
+    @Override
+    public List<Map<String, Object>> getTableNotes(String tableName) {
+        ensureNotesTable();
+        String table = safeIdentifier(tableName, "table name");
+        return jdbc().queryForList(
+                "SELECT id, table_name, note, done, created_at FROM \"" + NOTES_TABLE + "\" "
+                        + "WHERE table_name = ? ORDER BY done ASC, id DESC", table);
+    }
+
+    /** Every note in the workspace, so the UI can badge which tables have open items. */
+    @Override
+    public List<Map<String, Object>> getAllTableNotes() {
+        ensureNotesTable();
+        return jdbc().queryForList(
+                "SELECT id, table_name, note, done, created_at FROM \"" + NOTES_TABLE + "\" "
+                        + "ORDER BY done ASC, id DESC");
+    }
+
+    @Override
+    public Map<String, Object> addTableNote(String tableName, String note) {
+        ensureNotesTable();
+        String table = safeIdentifier(tableName, "table name");
+        if (note == null || note.isBlank()) {
+            throw new IllegalArgumentException("A note cannot be empty.");
+        }
+        if (note.length() > 2000) {
+            throw new IllegalArgumentException("A note can be at most 2000 characters.");
+        }
+        jdbc().update(
+                "INSERT INTO \"" + NOTES_TABLE + "\" (table_name, note, done, created_at) VALUES (?, ?, 0, ?)",
+                table, note.trim(), java.time.Instant.now().toString());
+        return Map.of("message", "Note added");
+    }
+
+    @Override
+    public void setTableNoteDone(long noteId, boolean done) {
+        ensureNotesTable();
+        int updated = jdbc().update(
+                "UPDATE \"" + NOTES_TABLE + "\" SET done = ? WHERE id = ?", done ? 1 : 0, noteId);
+        if (updated == 0) {
+            throw new IllegalArgumentException("No such note.");
+        }
+    }
+
+    @Override
+    public void deleteTableNote(long noteId) {
+        ensureNotesTable();
+        int removed = jdbc().update("DELETE FROM \"" + NOTES_TABLE + "\" WHERE id = ?", noteId);
+        if (removed == 0) {
+            throw new IllegalArgumentException("No such note.");
+        }
     }
 
     // ─── Create Table ─────────────────────────────────────────────────────────────

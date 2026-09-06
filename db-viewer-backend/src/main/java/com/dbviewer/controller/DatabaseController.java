@@ -1,7 +1,11 @@
 package com.dbviewer.controller;
 
+import com.dbviewer.auth.AuthContext;
+import com.dbviewer.auth.UnauthorizedException;
 import com.dbviewer.dto.*;
+import com.dbviewer.service.TableInUseException;
 import com.dbviewer.service.impl.DatabaseServiceImpl;
+import com.dbviewer.share.ShareService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletResponse;
@@ -28,6 +32,7 @@ import java.util.Map;
 public class DatabaseController {
 
     private final DatabaseServiceImpl databaseServiceImpl;
+    private final ShareService shareService;
 
     /** Maven's project version, filtered into application.properties at build time. */
     @Value("${app.version:unknown}")
@@ -215,6 +220,122 @@ public class DatabaseController {
         }
     }
 
+    // ─── Drop Table ───────────────────────────────────────────────────────────────
+
+    @DeleteMapping("/table/{tableName}")
+    @Operation(summary = "Delete Table",
+            description = "Drops a table. Returns 409 when another table's foreign key still "
+                    + "references it, listing the tables that depend on it.")
+    public ResponseEntity<?> dropTable(@PathVariable String tableName) {
+        try {
+            databaseServiceImpl.dropTable(tableName);
+            return ResponseEntity.ok(Map.of("message", "Table deleted successfully"));
+        } catch (TableInUseException e) {
+            return ResponseEntity.status(409).body(Map.of(
+                    "error", e.getMessage(),
+                    "table", e.getTableName(),
+                    "referencedBy", e.getReferencedBy()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Drop table error for {}", tableName, e);
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("error", "Failed to delete the table: " + e.getMessage()));
+        }
+    }
+
+    // ─── Table Notes ──────────────────────────────────────────────────────────────
+
+    @GetMapping("/table-notes")
+    @Operation(summary = "List All Notes",
+            description = "Every note in the workspace, so the UI can badge tables with open items.")
+    public ResponseEntity<?> getAllNotes() {
+        try {
+            return ResponseEntity.ok(Map.of("notes", databaseServiceImpl.getAllTableNotes()));
+        } catch (Exception e) {
+            log.error("List notes error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/table-notes/{tableName}")
+    @Operation(summary = "Notes For A Table")
+    public ResponseEntity<?> getNotes(@PathVariable String tableName) {
+        try {
+            return ResponseEntity.ok(Map.of("notes", databaseServiceImpl.getTableNotes(tableName)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Notes error for {}", tableName, e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    public record NoteRequest(String note) {
+    }
+
+    public record NoteDoneRequest(Boolean done) {
+    }
+
+    @PostMapping("/table-notes/{tableName}")
+    @Operation(summary = "Add A Note", description = "Attaches a to-do note to a table.")
+    public ResponseEntity<?> addNote(@PathVariable String tableName, @RequestBody NoteRequest request) {
+        try {
+            return ResponseEntity.ok(
+                    databaseServiceImpl.addTableNote(tableName, request == null ? null : request.note()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Add note error for {}", tableName, e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/table-notes/{noteId}/done")
+    @Operation(summary = "Tick A Note Off")
+    public ResponseEntity<?> setNoteDone(@PathVariable long noteId, @RequestBody NoteDoneRequest request) {
+        try {
+            databaseServiceImpl.setTableNoteDone(noteId, request != null && Boolean.TRUE.equals(request.done()));
+            return ResponseEntity.ok(Map.of("message", "Note updated"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(404).body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Update note error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/table-notes/{noteId}")
+    @Operation(summary = "Delete A Note")
+    public ResponseEntity<?> deleteNote(@PathVariable long noteId) {
+        try {
+            databaseServiceImpl.deleteTableNote(noteId);
+            return ResponseEntity.ok(Map.of("message", "Note deleted"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(404).body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Delete note error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    // ─── Example Schema ───────────────────────────────────────────────────────────
+
+    @PostMapping("/demo")
+    @Operation(summary = "Load Example Schema",
+            description = "Fills the current workspace with an eight-table example so a "
+                    + "first-time visitor sees what the app does.")
+    public ResponseEntity<?> loadExample() {
+        try {
+            return ResponseEntity.ok(databaseServiceImpl.loadExampleSchema());
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Load example error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
     // ─── List Workspaces ──────────────────────────────────────────────────────────
 
     @GetMapping("/workspaces")
@@ -238,7 +359,12 @@ public class DatabaseController {
                     + "header. Without that header this clears the default database instead.")
     public ResponseEntity<?> deleteWorkspace() {
         try {
+            String workspaceId = com.dbviewer.workspace.WorkspaceContext.get();
             databaseServiceImpl.deleteWorkspace();
+            if (workspaceId != null && !workspaceId.isBlank()) {
+                // A link to a database that no longer exists is worse than no link.
+                shareService.revokeForWorkspace(workspaceId);
+            }
             return ResponseEntity.ok(Map.of("message", "Workspace deleted successfully"));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
@@ -254,6 +380,8 @@ public class DatabaseController {
     @Operation(summary = "Export Table as CSV", description = "Downloads the specified table as a CSV file")
     public void exportCsv(@PathVariable String tableName, HttpServletResponse response) {
         try {
+            // Taking data out of the app is the one thing that needs an account.
+            AuthContext.require();
             response.setContentType("text/csv");
             response.setHeader(HttpHeaders.CONTENT_DISPOSITION,
                     "attachment; filename=" + tableName + ".csv");
@@ -283,6 +411,8 @@ public class DatabaseController {
                 }
             }
             writer.flush();
+        } catch (UnauthorizedException e) {
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         } catch (Exception e) {
             log.error("Export CSV error for {}", tableName, e);
             response.setStatus(HttpServletResponse.SC_NOT_FOUND);
@@ -296,6 +426,7 @@ public class DatabaseController {
     public ResponseEntity<String> exportSql(
             @RequestParam(value = "filename", defaultValue = "database_export.sql") String filename) {
         try {
+            AuthContext.require();
             if (!filename.toLowerCase().endsWith(".sql")) {
                 filename += ".sql";
             }
@@ -304,6 +435,8 @@ public class DatabaseController {
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=" + filename)
                     .contentType(MediaType.parseMediaType("application/sql"))
                     .body(dump);
+        } catch (UnauthorizedException e) {
+            return ResponseEntity.status(401).body(e.getMessage());
         } catch (Exception e) {
             log.error("Export SQL error", e);
             return ResponseEntity.internalServerError().build();
