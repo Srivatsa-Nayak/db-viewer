@@ -1,726 +1,308 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
-import { Trash2, FileCode, Plus, Loader2, Sparkles, AlertTriangle } from 'lucide-react';
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import {
+    ArrowRight, Database, Sparkles, Github, Mail, Upload, LayoutTemplate, Check,
+} from "lucide-react";
 
-import { Header } from "@/components/header/Header";
-import { Visualizer } from "@/components/canvas/Visualizer";
+import { LandingNav } from "@/components/landing/LandingNav";
+import { HeroDiagram } from "@/components/landing/HeroDiagram";
+import { HowItWorks } from "@/components/landing/HowItWorks";
+import { FeaturesSection } from "@/components/landing/FeaturesSection";
+import { TemplatesSection } from "@/components/landing/TemplatesSection";
+import { Reveal } from "@/components/landing/Reveal";
+import { AuthModal } from "@/components/modal/AuthModal";
+import { Notice, NoticeModal } from "@/components/modal/NoticeModal";
+import {
+    authService, dbService, setActiveWorkspace, AuthUser, SchemaTemplate,
+} from "@/services/api";
+import { loadSession, saveSession } from "@/services/sessionStorage";
 
-import { DataEditor } from "@/components/editor/DataEditor";
-import { InfoModal } from '@/components/modal/InfoModal';
-import { NewFileModal } from '@/components/modal/NewFileModal';
-import { Notice, NoticeModal } from '@/components/modal/NoticeModal';
-import { AuthModal } from '@/components/modal/AuthModal';
-import { ShareModal } from '@/components/modal/ShareModal';
-import { FileExplorer, ExplorerFile } from "@/components/editor/FileExplorer";
-import { Edge, MarkerType, Node, applyNodeChanges, NodeChange } from "reactflow";
-import { dbService, setActiveWorkspace, authService, isAuthRequired, AuthUser, TableNote } from "@/services/api";
-import { clearSession, loadSession, saveSession } from "@/services/sessionStorage";
-import { downloadCanvasImage } from "@/services/exportImage";
-import { Relationship, TableInfo } from "@/types";
+export default function LandingPage() {
+    const router = useRouter();
 
-/**
- * One open SQL file. The `id` is also the backend workspace id: the backend keeps a
- * separate database per id, so tables created in one file are invisible to every
- * other file and two files may reuse the same table names.
- */
-interface Workspace {
-    id: string; // unique ID (timestamp), also the backend workspace id
-    name: string; // filename
-    nodes: Node[];
-    edges: Edge[];
-    fileData: ExplorerFile; // Structure for the explorer (tables/cols)
-    isImported: boolean; // true if loaded from an uploaded .csv/.sql file, false if created in-app
-}
-
-export default function Home() {
-    const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-    const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
-    const [isExplorerOpen, setIsExplorerOpen] = useState(true);
-    const [editingTable, setEditingTable] = useState<string | null>(null);
-    const [notice, setNotice] = useState<Notice>({ isOpen: false, severity: 'error', title: '', message: '' });
-    const [showClearConfirm, setShowClearConfirm] = useState(false);
-    const [isInfoOpen, setInfoOpen] = useState(false);
-    const [isUploading, setIsUploading] = useState(false);
-    const [isNewFileModalOpen, setNewFileModalOpen] = useState(false);
-    const [newFileModalKey, setNewFileModalKey] = useState(0);
-    // True until the previous session has been restored, so the empty state does not flash
-    // and the save effect does not overwrite storage with an empty list on first render.
-    const [isRestoring, setIsRestoring] = useState(true);
     const [user, setUser] = useState<AuthUser | null>(null);
-    // What the user was trying to do when we asked them to sign up, so the prompt can say why.
-    const [authReason, setAuthReason] = useState<string | null>(null);
     const [isAuthOpen, setAuthOpen] = useState(false);
-    const [isShareOpen, setShareOpen] = useState(false);
-    const [notes, setNotes] = useState<TableNote[]>([]);
-    const [tableToDelete, setTableToDelete] = useState<string | null>(null);
-    const [isDeletingTable, setDeletingTable] = useState(false);
-    const [isLoadingExample, setLoadingExample] = useState(false);
+    const [authMode, setAuthMode] = useState<"login" | "signup">("signup");
+    const [notice, setNotice] = useState<Notice>({
+        isOpen: false, severity: "error", title: "", message: "",
+    });
 
-    /** Open (not ticked off) note count per table, for the badge on each node. */
-    const openNoteCounts = notes.reduce<Record<string, number>>((counts, note) => {
-        if (!note.done) counts[note.table_name] = (counts[note.table_name] ?? 0) + 1;
-        return counts;
-    }, {});
-
-    /**
-     * The signed-in user, readable from callbacks that outlive the render that created them.
-     *
-     * `handleDownloadCsv` is stored in every node's `data`, and the callback that rebuilds
-     * those nodes is deliberately stable - so reading `user` from the closure would pin it to
-     * its first-render value (null) and prompt for sign-up even once signed in.
-     */
-    const userRef = useRef<AuthUser | null>(null);
-
-    const requireAccount = useCallback((reason: string) => {
-        setAuthReason(reason);
-        setAuthOpen(true);
-    }, []);
-
-    const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId);
-
-    /**
-     * The active file id, readable from callbacks that outlive the render that created them.
-     *
-     * Every table node stores `onRefresh` in its React Flow `data`, captured when the node was
-     * built. If that callback closed over `activeWorkspaceId` directly it would be stale: a file
-     * is created and its nodes are built in the same tick as `setActiveWorkspaceId`, so the
-     * captured value is still the *previous* id (null for the first file). Refreshing from a
-     * node then returned early and the canvas silently never updated, even though the backend
-     * change had gone through.
-     */
-    const activeWorkspaceIdRef = useRef<string | null>(null);
-
-    // Point every subsequent API call at the file the user is looking at.
-    useEffect(() => {
-        activeWorkspaceIdRef.current = activeWorkspaceId;
-        setActiveWorkspace(activeWorkspaceId);
-    }, [activeWorkspaceId]);
-
-    const openNewFileModal = () => {
-        setNewFileModalKey(k => k + 1);
-        setNewFileModalOpen(true);
-    };
-
-    const transformRelationshipsToEdges = (relationships: Relationship[]): Edge[] => {
-        return relationships.flatMap((rel, index): Edge[] => {
-            const targetTable = rel.target_table ?? rel.targetTable;
-            const sourceTable = rel.source_table ?? rel.sourceTable;
-            const targetColumn = rel.target_column ?? rel.targetColumn ?? "id";
-            const sourceColumn = rel.source_column ?? rel.sourceColumn;
-
-            if (!targetTable || !sourceTable || !sourceColumn) return [];
-
-            return [{
-                id: `e-${index}`,
-                source: targetTable,
-                target: sourceTable,
-                sourceHandle: `${targetColumn}-right`,
-                targetHandle: `${sourceColumn}-left`,
-                type: 'smoothstep',
-                animated: true,
-                style: { stroke: '#2563eb', strokeWidth: 1.5 },
-                markerEnd: { type: MarkerType.ArrowClosed, color: '#2563eb' },
-            }];
-        });
-    };
-
-    const transformSchemaToWorkspace = (
-        tables: TableInfo[],
-        relationships: Relationship[],
-        fileName: string,
-        id: string,
-        isImported: boolean,
-        savedPositions: Record<string, { x: number; y: number }> = {}
-    ): Workspace => {
-        const nodes: Node[] = tables.map((tbl, index) => ({
-            id: tbl.name,
-            type: "tableNode",
-            // Restore the layout the user arranged; fall back to the default grid for a table
-            // that did not exist when the session was saved.
-            position: savedPositions[tbl.name] ?? { x: 250 * (index % 3), y: 100 + Math.floor(index / 3) * 300 },
-            data: {
-                label: tbl.name,
-                columns: tbl.columns,
-                onRefresh: refreshActiveSchema,
-                onEdit: setEditingTable,
-                onDelete: requestTableDelete,
-                onDownloadCsv: handleDownloadCsv,
-                onNotesChanged: refreshNotes,
-            },
-        }));
-
-        const edges = transformRelationshipsToEdges(relationships);
-
-        const fileData: ExplorerFile = {
-            id: id,
-            name: fileName,
-            tables: tables.map(t => ({
-                name: t.name,
-                columns: t.columns.map((c) => ({ name: c.name, type: c.type, is_pk: c.is_pk ?? c.isPk }))
-            }))
-        };
-
-        return { id, name: fileName, nodes, edges, fileData, isImported };
-    };
-
-    const handleFileUpload = async (file: File) => {
-        setIsUploading(true);
-        const newId = Date.now().toString();
-        // Bind the API client to the new workspace before uploading: the file must land
-        // in its own database, not in whichever file happened to be open.
-        setActiveWorkspace(newId);
-        try {
-            const report = await dbService.uploadFile(file);
-            const response = await dbService.getSchema();
-            const tables = response.tables || [];
-            const warnings = report.warnings ?? [];
-
-            if (tables.length === 0) {
-                // The import ran but produced nothing. Without this the user just gets a blank
-                // canvas and no idea why, which is exactly what the server log was hiding.
-                await dbService.deleteWorkspace().catch(() => {});
-                setActiveWorkspace(activeWorkspaceId);
-                setNotice({
-                    isOpen: true,
-                    severity: 'error',
-                    title: 'Nothing could be imported',
-                    message: `No tables were created from "${file.name}". `
-                        + (warnings.length
-                            ? 'Every statement in the file was skipped or failed - see the details below.'
-                            : 'The file may be empty, or contain no CREATE TABLE statements.'),
-                    details: warnings,
-                });
-                return;
-            }
-
-            const newWorkspace = transformSchemaToWorkspace(
-                tables,
-                response.relationships || [],
-                file.name,
-                newId,
-                true
-            );
-            setWorkspaces(prev => [...prev, newWorkspace]);
-            setActiveWorkspaceId(newId);
-
-            if (warnings.length > 0) {
-                const total = report.warningCount ?? warnings.length;
-                setNotice({
-                    isOpen: true,
-                    severity: 'warning',
-                    title: 'Imported with warnings',
-                    message: `Created ${tables.length} table${tables.length === 1 ? '' : 's'} from `
-                        + `"${file.name}", but ${total} statement${total === 1 ? '' : 's'} could not be run. `
-                        + 'This is normal for a MySQL dump - triggers, procedures and engine options '
-                        + 'have no SQLite equivalent.',
-                    details: warnings,
-                });
-            }
-        } catch (err: unknown) {
-            console.error(err);
-            await dbService.deleteWorkspace().catch(() => {});
-            setActiveWorkspace(activeWorkspaceId);
-            const message = err && typeof err === "object" && "response" in err
-                ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
-                : undefined;
-            setNotice({
-                isOpen: true,
-                severity: 'error',
-                title: 'Upload failed',
-                message: message || `"${file.name}" could not be imported.`,
-            });
-        } finally {
-            setIsUploading(false);
-        }
-    };
-
-    // --- CREATE BLANK FILE LOGIC ---
-    const handleCreateBlankFile = (fileName: string) => {
-        const newId = Date.now().toString();
-
-        // The backend creates the workspace database lazily on its first request; all
-        // we have to do here is point the API client at the new id.
-        setActiveWorkspace(newId);
-
-        const newWorkspace: Workspace = {
-            id: newId,
-            name: fileName,
-            nodes: [],
-            edges: [],
-            fileData: { id: newId, name: fileName, tables: [] },
-            isImported: false
-        };
-
-        setWorkspaces(prev => [...prev, newWorkspace]);
-        setActiveWorkspaceId(newId);
-    };
-
-    useEffect(() => {
-        userRef.current = user;
-    }, [user]);
-
-    // Resolve the stored token back to a user, so a refresh does not sign anyone out.
+    // Resolve the stored token, so someone who is already signed in sees that in the nav.
     useEffect(() => {
         let cancelled = false;
         authService.me().then(u => { if (!cancelled) setUser(u); });
         return () => { cancelled = true; };
     }, []);
 
-    // Restore the files that were open before the refresh. Runs once, on mount.
-    useEffect(() => {
-        let cancelled = false;
+    /** Whatever file was active before, so a failed template does not strand the client. */
+    const existingActiveId = () => loadSession()?.activeWorkspaceId ?? null;
 
-        const restore = async () => {
-            const saved = loadSession();
-            if (!saved || saved.workspaces.length === 0) {
-                setIsRestoring(false);
-                return;
-            }
+    /**
+     * Creates a workspace, fills it from the template, and hands off to the editor.
+     *
+     * The handoff is the session file that `/app` already restores from on mount, so no
+     * special-case wiring is needed on the other side: it finds the workspace, confirms it
+     * exists via GET /workspaces, and reads the schema back like any other open file.
+     */
+    const handleUseTemplate = useCallback(async (template: SchemaTemplate) => {
+        const workspaceId = Date.now().toString();
+        // Bind before applying, so the tables land in the new workspace rather than in
+        // whatever the client was last pointed at.
+        setActiveWorkspace(workspaceId);
 
-            try {
-                // Only restore files whose database still exists. A wiped data directory or a
-                // different backend would otherwise resurrect empty ghosts of old files.
-                const existing = new Set(await dbService.listWorkspaces());
-                const alive = saved.workspaces.filter(w => existing.has(w.id));
+        try {
+            await dbService.applyTemplate(template.id);
 
-                const restored: Workspace[] = [];
-                for (const entry of alive) {
-                    setActiveWorkspace(entry.id);
-                    try {
-                        const schema = await dbService.getSchema();
-                        restored.push(transformSchemaToWorkspace(
-                            schema.tables || [],
-                            schema.relationships || [],
-                            entry.name,
-                            entry.id,
-                            entry.isImported,
-                            entry.positions
-                        ));
-                    } catch (e) {
-                        console.error(`Could not restore "${entry.name}"`, e);
-                    }
-                }
-
-                if (cancelled) return;
-
-                if (restored.length === 0) {
-                    clearSession();
-                } else {
-                    const nextActive = restored.some(w => w.id === saved.activeWorkspaceId)
-                        ? saved.activeWorkspaceId
-                        : restored[restored.length - 1].id;
-                    setWorkspaces(restored);
-                    setActiveWorkspaceId(nextActive);
-                }
-            } catch (e) {
-                // Backend unreachable: keep the stored session for the next attempt rather than
-                // deleting the user's file list because the server happened to be down.
-                console.error("Could not restore the previous session", e);
-            } finally {
-                if (!cancelled) setIsRestoring(false);
-            }
-        };
-
-        restore();
-        return () => { cancelled = true; };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-
-    // Persist the open files whenever they change. Debounced because dragging a node fires
-    // onNodesChange continuously.
-    useEffect(() => {
-        if (isRestoring) return;
-
-        const handle = setTimeout(() => {
+            const existing = loadSession();
             saveSession({
                 version: 1,
-                activeWorkspaceId,
-                workspaces: workspaces.map(w => ({
-                    id: w.id,
-                    name: w.name,
-                    isImported: w.isImported,
-                    positions: Object.fromEntries(w.nodes.map(n => [n.id, n.position])),
-                })),
+                activeWorkspaceId: workspaceId,
+                workspaces: [
+                    ...(existing?.workspaces ?? []),
+                    { id: workspaceId, name: `${template.id}.sql`, isImported: false, positions: {} },
+                ],
             });
-        }, 300);
 
-        return () => clearTimeout(handle);
-    }, [workspaces, activeWorkspaceId, isRestoring]);
-
-    const refreshNotes = useCallback(async () => {
-        if (!activeWorkspaceIdRef.current) { setNotes([]); return; }
-        try {
-            setNotes(await dbService.getAllTableNotes());
-        } catch {
-            setNotes([]);
-        }
-    }, []);
-
-    // Stable, because they are captured in node data that outlives the render.
-    const handleDownloadCsv = useCallback(async (tableName: string) => {
-        if (!userRef.current) return requireAccount('Downloading a table');
-        try {
-            await dbService.downloadTableCsv(tableName);
-        } catch (e) {
-            if (isAuthRequired(e)) return requireAccount('Downloading a table');
-            setNotice({
-                isOpen: true, severity: 'error', title: 'Download failed',
-                message: `"${tableName}" could not be downloaded.`,
-            });
-        }
-    }, [requireAccount]);
-
-    const requestTableDelete = useCallback((tableName: string) => setTableToDelete(tableName), []);
-
-    useEffect(() => {
-        if (isRestoring) return;
-        refreshNotes();
-    }, [activeWorkspaceId, isRestoring, refreshNotes]);
-
-    // Deliberately dependency-free so the reference stays stable for the lifetime of the page
-    // and the copy stored in every node's `data.onRefresh` is never stale.
-    const refreshActiveSchema = useCallback(async () => {
-        const workspaceId = activeWorkspaceIdRef.current;
-        if (!workspaceId) return;
-        try {
-            const response = await dbService.getSchema();
-            const tables = response.tables || [];
-            const edges = transformRelationshipsToEdges(response.relationships || []);
-            
-            setWorkspaces(prev => prev.map(w => {
-                if (w.id === workspaceId) {
-                    const newNodes: Node[] = tables.map((tbl, index) => {
-                        const existingNode = w.nodes.find(n => n.id === tbl.name);
-                        return {
-                            id: tbl.name,
-                            type: "tableNode",
-                            position: existingNode ? existingNode.position : { x: 250 * (index % 3), y: 100 + Math.floor(index / 3) * 300 },
-                            data: {
-                                label: tbl.name,
-                                columns: tbl.columns,
-                                onRefresh: refreshActiveSchema,
-                                onEdit: setEditingTable,
-                                onDelete: requestTableDelete,
-                                onDownloadCsv: handleDownloadCsv,
-                                onNotesChanged: refreshNotes,
-                            },
-                        };
-                    });
-                    
-                    const updatedFileData: ExplorerFile = {
-                        ...w.fileData,
-                        tables: tables.map(t => ({ 
-                            name: t.name, 
-                            columns: t.columns.map((c) => ({ name: c.name, type: c.type, is_pk: c.is_pk ?? c.isPk })) 
-                        }))
-                    };
-                    return { ...w, nodes: newNodes, edges, fileData: updatedFileData };
-                }
-                return w;
-            }));
-        } catch (e) { console.error("Refresh failed", e); }
-        // All three are stable useCallbacks, so this array never actually changes - it is
-        // declared so the dependency is explicit rather than silently captured.
-    }, [handleDownloadCsv, requestTableDelete, refreshNotes]);
-
-    const onNodesChange = useCallback((changes: NodeChange[]) => {
-        setWorkspaces(prevWorkspaces => 
-            prevWorkspaces.map(workspace => {
-                if (workspace.id === activeWorkspaceIdRef.current) {
-                    return { ...workspace, nodes: applyNodeChanges(changes, workspace.nodes) };
-                }
-                return workspace;
-            })
-        );
-    }, []);
-
-    /** Exports need an account; the backend enforces it too, this just explains why. */
-    const handleExportSql = async () => {
-        if (!activeWorkspace) return;
-        if (!user) return requireAccount('Exporting a file');
-        let name = activeWorkspace.name || 'database_dump.sql';
-        if (activeWorkspace.isImported) name = `modified_${name}`;
-        if (!name.toLowerCase().endsWith('.sql')) name += '.sql';
-        try {
-            await dbService.downloadDatabaseSql(name);
-        } catch (e) {
-            if (isAuthRequired(e)) return requireAccount('Exporting a file');
-            setNotice({ isOpen: true, severity: 'error', title: 'Export failed',
-                message: 'The SQL file could not be downloaded.' });
-        }
-    };
-
-    const handleShare = () => {
-        if (!activeWorkspace) return;
-        if (!user) return requireAccount('Creating a share link');
-        setShareOpen(true);
-    };
-
-    const handleSignOut = () => {
-        authService.logout();
-        setUser(null);
-    };
-
-    /** Fills an empty file with the bundled example so a first visit shows something real. */
-    const handleLoadExample = async () => {
-        setLoadingExample(true);
-        try {
-            let workspaceId = activeWorkspaceIdRef.current;
-            if (!workspaceId) {
-                workspaceId = Date.now().toString();
-                setActiveWorkspace(workspaceId);
-                activeWorkspaceIdRef.current = workspaceId;
-            }
-            await dbService.loadExampleSchema();
-            const schema = await dbService.getSchema();
-
-            if (activeWorkspace) {
-                await refreshActiveSchema();
-            } else {
-                const workspace = transformSchemaToWorkspace(
-                    schema.tables || [], schema.relationships || [],
-                    'example-store.sql', workspaceId, false);
-                setWorkspaces(prev => [...prev, workspace]);
-                setActiveWorkspaceId(workspaceId);
-            }
-            refreshNotes();
+            router.push("/app");
         } catch (err: unknown) {
-            const message = err && typeof err === 'object' && 'response' in err
+            setActiveWorkspace(existingActiveId());
+            const message = err && typeof err === "object" && "response" in err
                 ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
                 : undefined;
-            setNotice({ isOpen: true, severity: 'error', title: 'Could not load the example',
-                message: message || 'The example schema could not be loaded.' });
-        } finally {
-            setLoadingExample(false);
-        }
-    };
-
-    const confirmTableDelete = async () => {
-        if (!tableToDelete) return;
-        setDeletingTable(true);
-        try {
-            await dbService.dropTable(tableToDelete);
-            setTableToDelete(null);
-            await refreshActiveSchema();
-            refreshNotes();
-        } catch (err: unknown) {
-            const response = err && typeof err === 'object' && 'response' in err
-                ? (err as { response?: { status?: number; data?: { error?: string; referencedBy?: string[] } } }).response
-                : undefined;
-            setTableToDelete(null);
             setNotice({
                 isOpen: true,
-                // 409 is the expected, meaningful case: another table depends on this one.
-                severity: response?.status === 409 ? 'warning' : 'error',
-                title: response?.status === 409 ? 'Table is still referenced' : 'Could not delete the table',
-                message: response?.data?.error || 'The table could not be deleted.',
-                details: response?.data?.referencedBy?.map(t => `${t} has a foreign key pointing at this table`),
-            });
-        } finally {
-            setDeletingTable(false);
-        }
-    };
-
-    const handleExportImage = async () => {
-        if (!activeWorkspace) return;
-        try {
-            await downloadCanvasImage(activeWorkspace.nodes, activeWorkspace.name);
-        } catch (e) {
-            setNotice({
-                isOpen: true,
-                severity: 'error',
-                title: 'Could not export the image',
-                message: e instanceof Error ? e.message : 'The diagram could not be rendered to a PNG.',
+                severity: "error",
+                title: "Could not open that template",
+                message: message
+                    || `"${template.name}" could not be created. Check that the backend is running.`,
             });
         }
-    };
+    }, [router]);
 
-    const handleClearRequest = () => {
-        if (!activeWorkspace) {
-             setNotice({
-                 isOpen: true,
-                 severity: 'warning',
-                 title: 'No file open',
-                 message: 'Open or create a file before trying to close one.',
-             });
-             return;
-        }
-        setShowClearConfirm(true);
-    };
-
-    const confirmClear = async () => {
-        const closingId = activeWorkspaceId;
-        try {
-            // Drops this file's own database only - other open files are untouched.
-            await dbService.deleteWorkspace();
-        } catch (e) {
-            console.error("Failed to delete workspace", e);
-        }
-        const remaining = workspaces.filter(w => w.id !== closingId);
-        const nextId = remaining.length > 0 ? remaining[remaining.length - 1].id : null;
-        setWorkspaces(remaining);
-        setActiveWorkspaceId(nextId);
-        setActiveWorkspace(nextId);
-        setShowClearConfirm(false);
+    const openAuth = (mode: "login" | "signup") => {
+        setAuthMode(mode);
+        setAuthOpen(true);
     };
 
     return (
-        <div className="h-screen w-full bg-white text-zinc-800 flex flex-col">
-            <Header
-                onUpload={handleFileUpload}
-                onNewFile={openNewFileModal}
-                isUploading={isUploading}
-                fileName={activeWorkspace?.name || null}
-                onClear={handleClearRequest}
-                hasData={!!activeWorkspace}
-                onShowInfo={() => setInfoOpen(true)}
-                onExportSql={handleExportSql}
-                onExportImage={handleExportImage}
-                onShare={handleShare}
-                onSignIn={() => { setAuthReason(null); setAuthOpen(true); }}
-                onSignOut={handleSignOut}
+        <div className="min-h-screen bg-white text-zinc-800">
+            <LandingNav
                 user={user}
+                onLogin={() => openAuth("login")}
+                onSignup={() => openAuth("signup")}
+                onSignOut={() => { authService.logout(); setUser(null); }}
             />
 
-            <div className="flex-1 flex overflow-hidden relative">
-                <FileExplorer
-                    files={workspaces.map(w => w.fileData)}
-                    activeFileId={activeWorkspaceId}
-                    onSelectFile={setActiveWorkspaceId}
-                    onCreateFile={openNewFileModal}
-                    isOpen={isExplorerOpen}
-                    onToggle={() => setIsExplorerOpen(!isExplorerOpen)}
+            {/* ── Hero ─────────────────────────────────────────────────────────── */}
+            <section className="section-wash relative overflow-hidden pt-40 pb-20 sm:pt-48 sm:pb-28">
+                {/* Decorative light. Two soft blooms read as illumination; the flat band this
+                    replaced read as a painted stripe. */}
+                <div
+                    aria-hidden
+                    className="pointer-events-none absolute -left-32 -top-24 h-[34rem] w-[34rem] rounded-full bg-blue-400/20 blur-3xl"
+                />
+                <div
+                    aria-hidden
+                    className="pointer-events-none absolute -right-24 top-10 h-[30rem] w-[30rem] rounded-full bg-indigo-400/18 blur-3xl"
                 />
 
-                <div className="flex-1 flex flex-col relative h-full">
-                    {activeWorkspace ? (
-                        <Visualizer
-                            key={activeWorkspace.id}
-                            nodes={activeWorkspace.nodes.map(n => ({
-                                ...n,
-                                data: { ...n.data, openNotes: openNoteCounts[n.id] ?? 0 },
-                            }))}
-                            edges={activeWorkspace.edges}
-                            onNodesChange={onNodesChange}
-                            onEdgesChange={() => {}}
-                            onConnect={() => {}}
-                            onRefreshRequest={refreshActiveSchema}
-                        />
-                    ) : isRestoring ? (
-                        <div className="flex-1 flex flex-col items-center justify-center bg-white text-zinc-400 gap-3">
-                            <Loader2 size={28} className="animate-spin text-blue-500" />
-                            <p className="text-sm text-zinc-500">Restoring your files...</p>
-                        </div>
-                    ) : (
-                        <div className="flex-1 flex flex-col items-center justify-center bg-white text-zinc-400 gap-4">
-                            <div className="w-16 h-16 bg-zinc-100 rounded-full flex items-center justify-center shadow-inner">
-                                <FileCode size={32} className="opacity-40" />
-                            </div>
-                            <div className="text-center max-w-sm">
-                                <p className="text-base font-semibold text-zinc-700 mb-1">Nothing open yet</p>
-                                <p className="text-sm text-zinc-500 mb-5 leading-relaxed">
-                                    Load the example to see what a schema looks like here, or start
-                                    an empty file of your own.
-                                </p>
-                                <div className="flex items-center justify-center gap-3">
-                                    <button
-                                        onClick={handleLoadExample}
-                                        disabled={isLoadingExample}
-                                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-md text-sm font-semibold flex items-center gap-2"
-                                    >
-                                        {isLoadingExample
-                                            ? <Loader2 size={16} className="animate-spin" />
-                                            : <Sparkles size={16} />}
-                                        Show me an example
-                                    </button>
-                                    <button
-                                        onClick={openNewFileModal}
-                                        className="px-4 py-2 bg-white border border-zinc-300 hover:bg-zinc-50 text-zinc-700 rounded-md text-sm font-semibold flex items-center gap-2"
-                                    >
-                                        <Plus size={16} /> New file
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                </div>
-            </div>
+                <div className="relative mx-auto grid max-w-6xl items-center gap-12 px-6 lg:grid-cols-2">
+                    <div>
+                        <Reveal>
+                            <span className="inline-flex items-center gap-1.5 rounded-full border border-blue-200/70 bg-white/80 px-3.5 py-1.5 text-xs font-medium text-blue-700 shadow-sm backdrop-blur-sm">
+                                <Sparkles size={12} />
+                                No install, no connection string
+                            </span>
+                        </Reveal>
 
-            {editingTable && <DataEditor tableName={editingTable} onClose={() => setEditingTable(null)} />}
-            
-            <NoticeModal notice={notice} onClose={() => setNotice({ ...notice, isOpen: false })} />
+                        <Reveal delay={90}>
+                            <h1 className="mt-6 text-4xl font-bold tracking-tight text-zinc-900 sm:text-5xl lg:text-[3.4rem] lg:leading-[1.08]">
+                                See your database,{" "}
+                                {/* The accent phrase drifts through blue into indigo, so the
+                                    headline has a pulse without anything moving. */}
+                                <span className="gradient-word bg-gradient-to-r from-blue-700 via-sky-500 to-indigo-600 bg-clip-text text-transparent">
+                                    not just your SQL
+                                </span>
+                            </h1>
+                        </Reveal>
+
+                        <Reveal delay={170}>
+                        <p className="mt-6 max-w-xl text-lg leading-relaxed text-zinc-600">
+                            Drop in a <code className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[0.9em] text-zinc-700">.csv</code> or{" "}
+                            <code className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[0.9em] text-zinc-700">.sql</code> file
+                            and get a live entity-relationship diagram you can edit. Every change runs
+                            against a real database, so what you see is what you have.
+                        </p>
+                        </Reveal>
+
+                        <Reveal delay={250} className="mt-8 flex flex-wrap items-center gap-3">
+                            <Link
+                                href="/app"
+                                className="brand-gradient brand-gradient-hover shadow-glow-md inline-flex items-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold text-white transition-all hover:-translate-y-0.5"
+                            >
+                                Open the app <ArrowRight size={16} />
+                            </Link>
+                            <a
+                                href="#templates"
+                                className="inline-flex items-center gap-2 rounded-xl border border-[var(--surface-line)] bg-white/80 px-6 py-3.5 text-sm font-semibold text-slate-700 shadow-sm backdrop-blur-sm transition-all hover:-translate-y-0.5 hover:border-blue-300 hover:text-blue-700"
+                            >
+                                Browse templates
+                            </a>
+                        </Reveal>
+
+                        <Reveal delay={330}>
+                            <p className="mt-5 text-sm text-zinc-500">
+                                Free, and no account needed to import, edit or visualise.
+                            </p>
+                        </Reveal>
+                    </div>
+
+                    <div className="lg:pl-4">
+                        <HeroDiagram />
+                    </div>
+                </div>
+            </section>
+
+            <HowItWorks />
+
+            <FeaturesSection />
+
+            <TemplatesSection onUse={handleUseTemplate} />
+
+            {/* ── Closing call to action ───────────────────────────────────────── */}
+            <section className="px-6 py-20 sm:py-24">
+                <Reveal className="brand-gradient shadow-glow-lg relative mx-auto max-w-5xl overflow-hidden rounded-3xl">
+                    {/* A faint dot grid ties the panel back to the canvas, and a soft bloom
+                        keeps the large flat area from reading as a solid block of colour. */}
+                    <span
+                        aria-hidden
+                        className="pointer-events-none absolute inset-0 opacity-[0.18]"
+                        style={{
+                            backgroundImage: 'radial-gradient(#ffffff 1px, transparent 1px)',
+                            backgroundSize: '22px 22px',
+                        }}
+                    />
+                    <span
+                        aria-hidden
+                        className="pointer-events-none absolute -right-20 -top-24 h-80 w-80 rounded-full bg-white/15 blur-3xl"
+                    />
+
+                    <div className="relative grid gap-10 p-8 sm:p-12 lg:grid-cols-2 lg:items-center">
+
+                        {/* Left: the pitch */}
+                        <div>
+                            <h2 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">
+                                Open a file and start looking around
+                            </h2>
+                            <p className="mt-4 max-w-md leading-relaxed text-blue-100">
+                                Nothing to install and no connection string. Pick a starting point and
+                                you will have a diagram in front of you in seconds.
+                            </p>
+
+                            <ul className="mt-6 space-y-2.5">
+                                {[
+                                    'Free to import, edit and visualise',
+                                    'An account is only needed to export or share',
+                                    'Your files stay isolated from each other',
+                                ].map(line => (
+                                    <li key={line} className="flex items-start gap-2.5 text-sm text-blue-50">
+                                        <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-white/20">
+                                            <Check size={10} strokeWidth={3} className="text-white" />
+                                        </span>
+                                        {line}
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+
+                        {/* Right: the two ways in, as real choices rather than one button */}
+                        <div className="space-y-3">
+                            <Link
+                                href="/app"
+                                className="group flex items-center gap-4 rounded-2xl bg-white p-5 shadow-lg transition-all hover:-translate-y-0.5 hover:shadow-xl"
+                            >
+                                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600 transition-colors group-hover:bg-blue-600 group-hover:text-white">
+                                    <Upload size={19} />
+                                </span>
+                                <span className="min-w-0 flex-1">
+                                    <span className="block font-semibold text-slate-900">Import your own file</span>
+                                    <span className="mt-0.5 block text-sm text-slate-500">
+                                        Drop in a .csv or .sql and see it straight away.
+                                    </span>
+                                </span>
+                                <ArrowRight size={18} className="shrink-0 text-slate-300 transition-all group-hover:translate-x-0.5 group-hover:text-blue-600" />
+                            </Link>
+
+                            <a
+                                href="#templates"
+                                className="group flex items-center gap-4 rounded-2xl border border-white/25 bg-white/10 p-5 backdrop-blur-sm transition-all hover:-translate-y-0.5 hover:bg-white/20"
+                            >
+                                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/20 text-white">
+                                    <LayoutTemplate size={19} />
+                                </span>
+                                <span className="min-w-0 flex-1">
+                                    <span className="block font-semibold text-white">Start from a template</span>
+                                    <span className="mt-0.5 block text-sm text-blue-100">
+                                        Twelve ready-made schemas, with sample data.
+                                    </span>
+                                </span>
+                                <ArrowRight size={18} className="shrink-0 text-blue-200 transition-transform group-hover:translate-x-0.5" />
+                            </a>
+                        </div>
+                    </div>
+                </Reveal>
+            </section>
+
+            {/* ── Footer ───────────────────────────────────────────────────────── */}
+            <footer className="border-t border-[var(--surface-line)] bg-[var(--surface-tint)]">
+                <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-6 px-6 py-10 sm:flex-row">
+                    <div className="flex items-center gap-2.5">
+                        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600">
+                            <Database size={16} className="text-white" />
+                        </span>
+                        <span className="text-sm font-semibold text-zinc-900">
+                            SQL <span className="text-blue-600">Visualizer</span>
+                        </span>
+                    </div>
+
+                    <div className="flex items-center gap-5 text-sm text-zinc-500">
+                        <a href="#features" className="transition-colors hover:text-zinc-900">Features</a>
+                        <a href="#templates" className="transition-colors hover:text-zinc-900">Templates</a>
+                        <Link href="/docs" className="transition-colors hover:text-zinc-900">Docs</Link>
+                        <Link href="/app" className="transition-colors hover:text-zinc-900">Open app</Link>
+                    </div>
+
+                    <div className="flex items-center gap-4">
+                        <a
+                            href="https://github.com/Srivatsa-Nayak"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-1.5 text-sm text-zinc-500 transition-colors hover:text-zinc-900"
+                        >
+                            <Github size={15} /> Srivatsa-Nayak
+                        </a>
+                        <a
+                            href="mailto:nayaksrivatsa15@gmail.com"
+                            className="text-zinc-400 transition-colors hover:text-zinc-900"
+                            title="nayaksrivatsa15@gmail.com"
+                        >
+                            <Mail size={15} />
+                        </a>
+                    </div>
+                </div>
+            </footer>
 
             <AuthModal
                 isOpen={isAuthOpen}
-                reason={authReason}
+                initialMode={authMode}
                 onClose={() => setAuthOpen(false)}
                 onSignedIn={setUser}
             />
 
-            <ShareModal
-                isOpen={isShareOpen}
-                fileName={activeWorkspace?.name ?? null}
-                onClose={() => setShareOpen(false)}
-                onNeedsAccount={() => requireAccount('Creating a share link')}
-            />
-
-            {tableToDelete && (
-                <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-                    <div className="bg-white border border-zinc-200 border-t-4 border-t-red-500 rounded-xl p-6 max-w-md w-full shadow-2xl">
-                        <h3 className="text-lg font-bold text-zinc-900 flex items-center gap-2">
-                            <AlertTriangle size={20} className="text-red-500" /> Delete table?
-                        </h3>
-                        <p className="text-zinc-600 text-sm mt-2 mb-1">
-                            <span className="font-mono text-zinc-900">{tableToDelete}</span> and all of
-                            its rows will be permanently removed.
-                        </p>
-                        <p className="text-zinc-400 text-xs mb-5">
-                            If another table&apos;s foreign key points at it, the delete is refused
-                            instead of leaving broken references behind.
-                        </p>
-                        <div className="flex gap-3 justify-end">
-                            <button
-                                onClick={() => setTableToDelete(null)}
-                                className="px-4 py-2 text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded-md text-sm"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={confirmTableDelete}
-                                disabled={isDeletingTable}
-                                className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white rounded-md text-sm font-semibold flex items-center gap-2"
-                            >
-                                {isDeletingTable && <Loader2 size={14} className="animate-spin" />}
-                                Delete table
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {showClearConfirm && (
-                <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-                    <div className="bg-white border border-zinc-200 rounded-lg p-6 max-w-md w-full shadow-2xl border-t-4 border-t-red-500">
-                        <h3 className="text-lg font-bold text-zinc-900 flex items-center gap-2"><Trash2 size={20} className="text-red-500"/> Close Workspace?</h3>
-                        <p className="text-zinc-500 text-sm mt-2 mb-4">This will remove &quot;{activeWorkspace?.name}&quot; from your view.</p>
-                        <div className="flex gap-3 justify-end">
-                            <button onClick={() => setShowClearConfirm(false)} className="px-4 py-2 text-zinc-500 hover:text-zinc-900">Cancel</button>
-                            <button onClick={confirmClear} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded">Close File</button>
-                        </div>
-                    </div>
-                </div>
-            )}
-            
-            {isInfoOpen && <InfoModal isOpen={isInfoOpen} onClose={() => setInfoOpen(false)} />}
-
-            <NewFileModal
-                key={newFileModalKey}
-                isOpen={isNewFileModalOpen}
-                onClose={() => setNewFileModalOpen(false)}
-                onConfirm={handleCreateBlankFile}
-                defaultName={`Untitled-${workspaces.length + 1}.sql`}
-            />
+            <NoticeModal notice={notice} onClose={() => setNotice({ ...notice, isOpen: false })} />
         </div>
     );
 }

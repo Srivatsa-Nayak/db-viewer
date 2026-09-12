@@ -187,9 +187,29 @@ export const dbService = {
         return res.data;
     },
 
-    /** Fills an empty file with the bundled eight-table example. */
+    /** Fills an empty file with the default (Online Store) template. */
     loadExampleSchema: async () => {
         const res = await api.post('/demo');
+        return res.data;
+    },
+
+    // --- Starter templates (the catalogue lives entirely on the backend) ---
+
+    /** Every bundled template, plus the distinct categories. Public - no account needed. */
+    listTemplates: async (): Promise<{ templates: SchemaTemplate[]; categories: string[] }> => {
+        const res = await api.get<{ templates?: SchemaTemplate[]; categories?: string[] }>('/templates');
+        return { templates: res.data?.templates ?? [], categories: res.data?.categories ?? [] };
+    },
+
+    /** One template including its SQL body, for the preview. */
+    getTemplate: async (id: string): Promise<SchemaTemplate> => {
+        const res = await api.get<SchemaTemplate>(`/templates/${encodeURIComponent(id)}`);
+        return res.data;
+    },
+
+    /** Creates the template's tables in the workspace the client is currently bound to. */
+    applyTemplate: async (id: string) => {
+        const res = await api.post(`/templates/${encodeURIComponent(id)}/apply`);
         return res.data;
     },
 
@@ -384,3 +404,49 @@ export const shareService = {
     linkFor: (token: string) =>
         `${typeof window === 'undefined' ? '' : window.location.origin}/share/${token}`,
 };
+
+/**
+ * A bundled starter schema.
+ *
+ * Authored on the backend (a .sql file plus a manifest entry) and only rendered here, so a new
+ * template needs no frontend change. `sql` is present only on the detail endpoint.
+ */
+export interface TemplateColumn {
+    name: string;
+    type: string;
+    pk: boolean;
+}
+
+export interface TemplateRelationship {
+    sourceTable: string;
+    sourceColumn: string;
+    targetTable: string;
+    targetColumn: string;
+}
+
+export interface TemplateTable {
+    name: string;
+    columns: TemplateColumn[];
+}
+
+/** Enough structure to draw the diagram without the frontend parsing any SQL. */
+export interface TemplateSchema {
+    tables: TemplateTable[];
+    relationships: TemplateRelationship[];
+}
+
+export interface SchemaTemplate {
+    id: string;
+    name: string;
+    description: string;
+    category: string;
+    tags: string[];
+    featured: boolean;
+    tables: string[];
+    tableCount: number;
+    relationshipCount: number;
+    /** Detail endpoint only — omitted from the list so the catalogue stays small. */
+    sql?: string | null;
+    /** Detail endpoint only. */
+    schema?: TemplateSchema | null;
+}

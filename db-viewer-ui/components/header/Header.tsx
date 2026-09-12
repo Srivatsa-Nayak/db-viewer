@@ -74,6 +74,7 @@ export const Header = ({
     const [isFileOpen, setFileOpen] = useState(false);
     const [isAccountOpen, setAccountOpen] = useState(false);
 
+    const fileInputRef = useRef<HTMLInputElement>(null);
     const fileRef = useDismissable(isFileOpen, () => setFileOpen(false));
     const accountRef = useDismissable(isAccountOpen, () => setAccountOpen(false));
 
@@ -124,10 +125,20 @@ export const Header = ({
                                 onClick={() => run(onNewFile)}
                             />
 
-                            <label
-                                htmlFor="fileUpload"
+                            {/* Opens the file input through a ref rather than a <label htmlFor>.
+                                A label's "forward my click to the input" step is a *default
+                                action* the browser runs after the listeners do - and this item
+                                has to close the menu, which unmounts the label before that step
+                                is reached, so the picker never opened. Calling click() directly
+                                does not depend on the element still being in the document. */}
+                            <button
+                                role="menuitem"
+                                type="button"
+                                onClick={() => {
+                                    fileInputRef.current?.click();
+                                    setFileOpen(false);
+                                }}
                                 className="w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-zinc-50 transition-colors cursor-pointer"
-                                onClick={() => setFileOpen(false)}
                             >
                                 <span className="text-blue-600 mt-0.5 shrink-0"><Upload size={16} /></span>
                                 <span>
@@ -138,7 +149,7 @@ export const Header = ({
                                         Open a .csv or .sql file in a new tab.
                                     </span>
                                 </span>
-                            </label>
+                            </button>
 
                             <div className="h-px bg-zinc-100" />
 
@@ -168,9 +179,9 @@ export const Header = ({
                                     >
                                         <span className="text-red-500 mt-0.5 shrink-0"><Trash2 size={16} /></span>
                                         <span>
-                                            <span className="block text-sm font-medium text-red-600">Close file</span>
+                                            <span className="block text-sm font-medium text-red-600">Delete file</span>
                                             <span className="block text-xs text-zinc-500 mt-0.5">
-                                                Deletes this file&apos;s database.
+                                                Permanently deletes this file and its database.
                                             </span>
                                         </span>
                                     </button>
@@ -194,14 +205,23 @@ export const Header = ({
                     {!user && <Lock size={11} className="opacity-70" />}
                 </button>
 
-                {/* The file input the Import menu item points at. */}
+                {/* The file input the Import menu item opens. It lives outside the dropdown
+                    on purpose, so closing the menu cannot unmount it mid-click.
+
+                    The value is cleared after each pick rather than being bound as a prop: a
+                    file input's value cannot be controlled by React, and resetting it here is
+                    what lets the same file be chosen twice in a row and still fire onChange. */}
                 <input
+                    ref={fileInputRef}
                     type="file"
                     id="fileUpload"
                     className="hidden"
                     accept=".csv, .sql"
-                    value=""
-                    onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0])}
+                    onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        if (file) onUpload(file);
+                    }}
                 />
             </div>
 

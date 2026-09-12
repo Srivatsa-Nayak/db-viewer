@@ -4,15 +4,20 @@ import React, { useEffect, useState } from 'react';
 import { X, Loader2, AlertCircle, Lock, Mail, User, Check } from 'lucide-react';
 import { authService, AuthUser } from '@/services/api';
 
+type Mode = 'signup' | 'login';
+
 interface AuthModalProps {
     isOpen: boolean;
     /** What the user was trying to do, so the prompt explains why they are being asked. */
     reason?: string | null;
+    /**
+     * Which tab to open on when there is no `reason` - e.g. the landing page's Login and
+     * Sign up buttons, where nothing was blocked and the copy should not claim otherwise.
+     */
+    initialMode?: Mode;
     onClose: () => void;
     onSignedIn: (user: AuthUser) => void;
 }
-
-type Mode = 'signup' | 'login';
 
 /**
  * Mirrors the server-side policy in AuthService.validatePassword.
@@ -26,7 +31,7 @@ const PASSWORD_RULES: { label: string; test: (value: string) => boolean }[] = [
     { label: 'A special character', test: v => /[^A-Za-z0-9]/.test(v) },
 ];
 
-export const AuthModal = ({ isOpen, reason, onClose, onSignedIn }: AuthModalProps) => {
+export const AuthModal = ({ isOpen, reason, initialMode, onClose, onSignedIn }: AuthModalProps) => {
     const [mode, setMode] = useState<Mode>('signup');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
@@ -39,7 +44,8 @@ export const AuthModal = ({ isOpen, reason, onClose, onSignedIn }: AuthModalProp
 
     useEffect(() => {
         if (isOpen) {
-            setMode(reason ? 'signup' : 'login');
+            // A blocked action always lands on sign-up; otherwise honour the caller's choice.
+            setMode(reason ? 'signup' : (initialMode ?? 'login'));
             setEmail('');
             setPassword('');
             setDisplayName('');
@@ -47,7 +53,7 @@ export const AuthModal = ({ isOpen, reason, onClose, onSignedIn }: AuthModalProp
             setDuplicateEmail(null);
             setBusy(false);
         }
-    }, [isOpen, reason]);
+    }, [isOpen, reason, initialMode]);
 
     useEffect(() => {
         if (!isOpen) return;

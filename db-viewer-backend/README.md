@@ -67,28 +67,42 @@ db-viewer-backend/
 ├── pom.xml
 └── src/
     ├── main/
-    │   ├── java/com/dbviewer/
+    │   ├── java/com/dbviewer/app/
     │   │   ├── DbViewerApplication.java        Entry point (mirrors main.go)
+    │   │   ├── common/
+    │   │   │   └── Constants.java              Every SQL statement the app issues
+    │   │   ├── exception/                      Every custom exception lives here
+    │   │   │   ├── EmailAlreadyRegisteredException.java   → 409
+    │   │   │   ├── TableInUseException.java               → 409, names the blocking tables
+    │   │   │   └── UnauthorizedException.java             → 401
     │   │   ├── auth/
     │   │   │   ├── AuthContext.java            ThreadLocal identity for the request
-    │   │   │   ├── AuthFilter.java             Binds the Bearer token; never rejects
-    │   │   │   ├── AuthService.java            Signup/login, BCrypt hashing
-    │   │   │   ├── JwtService.java             Issues and verifies session tokens
-    │   │   │   └── AuthController.java         /auth/signup, /auth/login, /auth/me
-    │   │   ├── share/
-    │   │   │   ├── ShareService.java           Read-only share links
-    │   │   │   └── ShareController.java        /share, /shares
+    │   │   │   └── AuthFilter.java             Binds the Bearer token; never rejects
+    │   │   ├── template/
+    │   │   │   └── TemplateSchemaParser.java   CREATE TABLE parser for the preview diagram
     │   │   ├── config/
     │   │   │   ├── CorsConfig.java             Permissive CORS (no credentials)
     │   │   │   ├── DatabaseConfig.java         Bootstraps the default DB's `users` table
     │   │   │   └── OpenApiConfig.java          Swagger metadata
-    │   │   ├── controller/
-    │   │   │   ├── DatabaseController.java     All routes; thin, try/catch → {error}
+    │   │   ├── controller/                     Every REST endpoint lives here
+    │   │   │   ├── DatabaseController.java     All data routes; thin, try/catch → {error}
+    │   │   │   ├── AuthController.java         /auth/signup, /auth/login, /auth/me
+    │   │   │   ├── ShareController.java        /share, /shares
+    │   │   │   ├── TemplateController.java     /templates
     │   │   │   └── GlobalExceptionHandler.java
     │   │   ├── dto/                            One POJO per request/response shape
-    │   │   ├── service/
-    │   │   │   ├── DatabaseService.java        The contract
-    │   │   │   └── impl/DatabaseServiceImpl.java   All SQL, CSV parsing, exports
+    │   │   ├── service/                        Contracts — one interface per service
+    │   │   │   ├── DatabaseService.java        Schema, data, import/export
+    │   │   │   ├── AuthService.java            Signup, login, current user
+    │   │   │   ├── JwtService.java             Issue and verify session tokens
+    │   │   │   ├── ShareService.java           Read-only share links
+    │   │   │   ├── TemplateService.java        Catalogue + the Template record shapes
+    │   │   │   └── impl/                       The implementations
+    │   │   │       ├── DatabaseServiceImpl.java    CSV parsing, exports, schema edits
+    │   │   │       ├── AuthServiceImpl.java        BCrypt hashing, password policy
+    │   │   │       ├── JwtServiceImpl.java         HMAC-SHA256 signing
+    │   │   │       ├── ShareServiceImpl.java       Token minting and revocation
+    │   │   │       └── TemplateServiceImpl.java    Loads manifest + .sql at startup
     │   │   ├── sql/
     │   │   │   ├── SqlScriptSplitter.java      Comment/quote/DELIMITER-aware statement splitter
     │   │   │   └── MySqlToSqliteTranslator.java  Dump translation + ALTER-key folding
@@ -101,11 +115,14 @@ db-viewer-backend/
     │       ├── application-mysql.properties    MySQL profile
     │       └── application-prod.properties     Production overrides
     └── test/
-        ├── java/com/dbviewer/
-        │   ├── controller/DatabaseControllerIntegrationTest.java   18 MockMvc tests
-        │   ├── service/ColumnEditTest.java                          12 column-edit tests
-        │   ├── sql/SqlImportTest.java                                8 SQL-import tests
-        │   └── workspace/WorkspaceIsolationTest.java               7 isolation tests
+        ├── java/com/dbviewer/app/
+        │   ├── auth/AuthAndSharingTest.java                        14 auth + sharing tests
+        │   ├── controller/DatabaseControllerIntegrationTest.java   19 MockMvc tests
+        │   ├── service/ColumnEditTest.java                         12 column-edit tests
+        │   ├── service/TableLifecycleTest.java                      9 delete/notes tests
+        │   ├── sql/SqlImportTest.java                               8 SQL-import tests
+        │   ├── template/TemplateCatalogueTest.java                  9 template tests
+        │   └── workspace/WorkspaceIsolationTest.java                8 isolation tests
         └── resources/
             ├── application-test.properties     In-memory SQLite
             └── test-files-for-upload/sample.csv
@@ -169,7 +186,10 @@ current workspace on every statement, so as long as new code uses `jdbc()` rathe
 | `POST` | `/alter-table` | `HandleAddColumn` | Add a column | header |
 | `POST` | `/update-column` | *(new)* | Rename a column, or change its type or nullability | header |
 | `DELETE` | `/table/{name}` | *(new)* | Drop a table; 409 when still referenced by a foreign key | header |
-| `POST` | `/demo` | *(new)* | Load the bundled eight-table example | header |
+| `GET` | `/templates` | *(new)* | The starter-schema catalogue; public | — |
+| `GET` | `/templates/{id}` | *(new)* | One template including its SQL | — |
+| `POST` | `/templates/{id}/apply` | *(new)* | Create a template's tables in the workspace | header |
+| `POST` | `/demo` | *(new)* | Shortcut for applying the Online Store template | header |
 | `GET` `POST` `DELETE` | `/table-notes...` | *(new)* | Per-table to-do notes | header |
 | `POST` | `/auth/signup` · `/auth/login` | *(new)* | Create an account / sign in | — |
 | `GET` | `/auth/me` | *(new)* | Current user, `{}` when anonymous | — |
@@ -388,7 +408,7 @@ The image sets `DB_PATH=/data/visualizer.db` and `WORKSPACE_DIR=/data/workspaces
 ## Testing
 
 ```bash
-./mvnw test                                     # all 70 tests
+./mvnw test                                     # all 81 tests
 ./mvnw test -Dtest=WorkspaceIsolationTest       # one class
 ./mvnw test -Dtest=ColumnEditTest#renameColumn_shouldKeepTypeAndData
 ```
@@ -404,6 +424,7 @@ fixtures to load.
 | `SqlImportTest` | 8 | Real phpMyAdmin dump, comment-prefixed statements, semicolons in string literals, `DELIMITER` blocks, ALTER-key folding, skip reporting |
 | `AuthAndSharingTest` | 14 | Signup validation, BCrypt hashing, no account enumeration, forged tokens, share create/view/revoke, anonymous refusal |
 | `TableLifecycleTest` | 9 | Example schema, FK-guarded deletion, table notes |
+| `TemplateCatalogueTest` | 11 | Every template applies, has relationships and rows, states accurate counts, and its parsed preview schema matches the real database |
 
 Naming convention: `methodOrFeature_expectedBehavior`, e.g. `uploadCsv_shouldCreateTheTableAndItsRows`.
 
@@ -492,6 +513,36 @@ a workspace — a user and their links exist across every file they open. Per-ta
 opposite: they live *inside* the workspace as `__table_notes`, so they travel with the file. Any
 table whose name starts with `__` is filtered out of the schema listing, so it never reaches the
 canvas or an export.
+
+---
+
+## Starter templates
+
+The landing page's template catalogue is authored entirely here. A template is two files:
+
+```
+src/main/resources/templates/
+├── manifest.json        id, name, description, category, tags, featured
+├── ecommerce.sql        the schema plus a few sample rows
+├── blog.sql
+└── ...
+```
+
+Adding one is a **backend-only change** — drop in a `.sql` file, add a manifest entry, restart.
+The frontend renders whatever `GET /templates` returns and needs no release.
+
+| Aspect | How |
+|---|---|
+| Loading | Parsed once at startup. A template that fails to load is logged and skipped rather than taking the whole catalogue — and the app — down |
+| Stats | `tableCount`, `tables[]` and `relationshipCount` are **derived from the SQL**, never repeated in the manifest, so a card cannot claim a shape the template does not have |
+| Counting | Only within `CREATE TABLE` statements, after the splitter has stripped comments. Scanning the raw file counted the words "foreign key" appearing in a header comment *and* in sample data (a task titled "Draw foreign key edges"), overstating two templates. `TemplateCatalogueTest` now applies every template and asserts the stated counts against the real schema |
+| Applying | Goes through `DatabaseServiceImpl.runScript`, the same path a `.sql` upload takes, so a template behaves like a file the user imported. Refused when the workspace already has tables |
+| Preview schema | `TemplateSchemaParser` turns the `CREATE TABLE` statements into tables, columns and foreign keys, so the landing page can draw the diagram without parsing SQL or the backend creating a throwaway database per preview. It is a narrow parser for templates we author ourselves — kept honest by a test that applies every template and compares the parsed result against the live metadata |
+| Payload | The list response omits `sql` and `schema`; they are the bulk of a template and the catalogue is fetched on first paint. Both endpoints send `Cache-Control: public, max-age=600`, since the catalogue only changes when a new build ships |
+| Failures | Unlike an upload, a failing statement is fatal. These scripts ship with the app, so a failure is our bug, not the user's malformed input |
+
+Every template must declare foreign keys: the canvas draws its edges from them, and a template
+without any would render as a row of disconnected boxes. A test enforces this.
 
 ---
 

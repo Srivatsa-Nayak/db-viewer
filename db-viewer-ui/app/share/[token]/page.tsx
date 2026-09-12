@@ -191,7 +191,7 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
                         <Eye size={13} /> Read-only
                     </span>
                     <Link
-                        href="/"
+                        href="/app"
                         className="flex items-center gap-2 bg-white hover:bg-blue-50 text-blue-700 px-3 py-2 rounded-md text-sm font-semibold transition-colors"
                     >
                         <ExternalLink size={15} /> Open the app
