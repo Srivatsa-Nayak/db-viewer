@@ -13,8 +13,8 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: Arial, Helvetica, sans-serif;
-  --font-mono: var(--font-jetbrains-mono), "Cascadia Mono", Consolas, monospace;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 
 /* 2. UPDATE CSS VARIABLES
@@ -29,7 +29,19 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  /* Inter's defaults are loose at UI sizes; these are the settings it is designed to be
+     read with. `cv11` gives the single-storey 'a'-alternate digits a straighter shape. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  letter-spacing: -0.011em;
+}
+
+/* Headings tighten further — Inter needs negative tracking to stop large text
+   looking spaced out. */
+h1, h2, h3, h4 {
+  letter-spacing: -0.022em;
 }
 
 /* Design tokens */
@@ -118,3 +130,236 @@ body {
   transition: width 260ms cubic-bezier(.22,.9,.31,1), opacity 220ms ease;
 }
 
+/* Landing-page anchors (#features / #templates) glide rather than jump. Respects the
+   viewer's reduced-motion preference, where an abrupt jump is the accessible behaviour. */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Landing-page motion.
+
+   The theme is that the page performs what the product does: a schema that
+   assembles itself, edges that draw, data that moves along them. Everything
+   here is decorative, so it is all wrapped in a reduced-motion guard further
+   down — the content itself never depends on an animation having run.
+   ────────────────────────────────────────────────────────────────────────── */
+
+@keyframes revealUp {
+  from { opacity: 0; transform: translateY(22px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes popIn {
+  0%   { opacity: 0; transform: scale(0.9) translateY(14px); }
+  60%  { opacity: 1; transform: scale(1.015) translateY(-2px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* Edges draw themselves, the way they appear after an import. */
+@keyframes drawLine {
+  from { stroke-dashoffset: var(--dash, 300); }
+  to   { stroke-dashoffset: 0; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Cards drift so the hero never looks like a screenshot. */
+@keyframes floatY {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-7px); }
+}
+
+/* Sweep used on the "building" state of the pipeline strip. */
+@keyframes shimmer {
+  from { background-position: -180% 0; }
+  to   { background-position: 180% 0; }
+}
+
+@keyframes gradientShift {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+
+@keyframes caretBlink {
+  0%, 45%   { opacity: 1; }
+  55%, 100% { opacity: 0; }
+}
+
+/* Scroll reveal. The hidden state is applied only when motion is welcome, so a
+   reduced-motion visitor sees the content immediately rather than waiting for an
+   animation that will never play. */
+@media (prefers-reduced-motion: no-preference) {
+  .reveal {
+    opacity: 0;
+    transform: translateY(22px);
+  }
+  .reveal.is-visible {
+    animation: revealUp 620ms cubic-bezier(.16, .84, .44, 1) both;
+  }
+
+  .hero-card {
+    opacity: 0;
+    animation: popIn 620ms cubic-bezier(.16, .84, .44, 1) both;
+  }
+  /* Once settled, drift gently and out of phase with each other. */
+  .hero-card-float {
+    animation: floatY 7s ease-in-out infinite;
+  }
+
+  .hero-edge {
+    stroke-dasharray: var(--dash, 300);
+    animation: drawLine 900ms cubic-bezier(.16, .84, .44, 1) both;
+  }
+
+  .hero-label {
+    opacity: 0;
+    animation: fadeIn 500ms ease-out both;
+  }
+
+  .shimmer-sweep {
+    background-image: linear-gradient(
+      100deg,
+      transparent 20%,
+      rgba(37, 99, 235, 0.16) 45%,
+      transparent 70%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.6s ease-in-out infinite;
+  }
+
+  .gradient-word {
+    background-size: 220% auto;
+    animation: gradientShift 7s ease infinite;
+  }
+
+  .caret {
+    animation: caretBlink 1.05s step-end infinite;
+  }
+}
+
+/* A lift with a coloured glow, for feature and template cards. */
+.lift-card {
+  transition:
+    transform 260ms cubic-bezier(.16, .84, .44, 1),
+    box-shadow 260ms ease,
+    border-color 200ms ease;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .lift-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 18px 40px -12px rgba(37, 99, 235, 0.28);
+  }
+  /* The icon reacts too, so the whole tile feels like one object. */
+  .lift-card:hover .lift-icon {
+    transform: scale(1.1) rotate(-5deg);
+  }
+}
+.lift-icon {
+  transition: transform 300ms cubic-bezier(.16, .84, .44, 1), background-color 200ms ease;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Landing palette.
+
+   The page read flat because everything was a single solid blue on neutral
+   grey. Three changes fix that without abandoning blue-and-white:
+
+   1. The primary is a gradient (blue -> indigo), not a fill, so large areas
+      have direction and depth.
+   2. Neutrals carry a blue undertone (slate rather than zinc), so white areas
+      sit in the same family as the accent instead of beside it.
+   3. Shadows are tinted blue rather than black. Black shadows on a blue page
+      read as grime; tinted ones read as light.
+   ────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --brand-600: #2563eb;
+  --brand-500: #3b82f6;
+  --brand-400: #60a5fa;
+  --brand-deep: #1d4ed8;
+  --brand-violet: #4f46e5;
+
+  --surface-tint: #f6f8fd;   /* white with a blue cast */
+  --surface-line: #e2e8f5;   /* borders that belong to the blue family */
+
+  --glow-sm: 0 1px 2px rgba(37, 99, 235, 0.06), 0 4px 12px -4px rgba(37, 99, 235, 0.10);
+  --glow-md: 0 4px 10px -2px rgba(37, 99, 235, 0.10), 0 18px 38px -14px rgba(37, 99, 235, 0.22);
+  --glow-lg: 0 10px 24px -6px rgba(30, 64, 175, 0.18), 0 40px 70px -22px rgba(30, 64, 175, 0.30);
+}
+
+/* The primary gradient, for buttons and headers. */
+.brand-gradient {
+  background-image: linear-gradient(135deg, var(--brand-600) 0%, var(--brand-violet) 100%);
+}
+.brand-gradient-hover:hover {
+  background-image: linear-gradient(135deg, var(--brand-deep) 0%, #4338ca 100%);
+}
+
+/* Text that carries the same gradient. */
+.brand-text-gradient {
+  background-image: linear-gradient(120deg, var(--brand-deep) 0%, var(--brand-500) 45%, var(--brand-violet) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* A soft, off-centre wash. Two overlapping radials read as light falling on the
+   page, where a single linear gradient reads as a painted band. */
+.section-wash {
+  background-color: #ffffff;
+  background-image:
+    radial-gradient(60rem 32rem at 12% -10%, rgba(59, 130, 246, 0.10), transparent 60%),
+    radial-gradient(48rem 28rem at 88% 8%, rgba(99, 102, 241, 0.09), transparent 62%);
+}
+.section-wash-tinted {
+  background-color: var(--surface-tint);
+  background-image:
+    radial-gradient(52rem 30rem at 85% -8%, rgba(59, 130, 246, 0.12), transparent 62%),
+    radial-gradient(44rem 26rem at 6% 105%, rgba(99, 102, 241, 0.10), transparent 60%);
+}
+
+/* Cards: a barely-there vertical gradient stops them reading as flat paper. */
+.surface-card {
+  background-image: linear-gradient(180deg, #ffffff 0%, var(--surface-tint) 100%);
+  border-color: var(--surface-line);
+  box-shadow: var(--glow-sm);
+}
+
+.shadow-glow-md { box-shadow: var(--glow-md); }
+.shadow-glow-lg { box-shadow: var(--glow-lg); }
+
+/* Replaces the plain lift: the card rises *and* its shadow warms up. */
+@media (prefers-reduced-motion: no-preference) {
+  .lift-card:hover {
+    transform: translateY(-6px);
+    box-shadow: var(--glow-md);
+  }
+}
+
+/* A hairline gradient rule, for section edges that should not look stamped on. */
+.rule-gradient {
+  height: 1px;
+  background-image: linear-gradient(90deg, transparent, var(--surface-line) 15%, var(--surface-line) 85%, transparent);
+}
+
+/* The big editor mockup assembles itself, like the hero. */
+@media (prefers-reduced-motion: no-preference) {
+  .mock-card {
+    opacity: 0;
+    animation: popIn 640ms cubic-bezier(.16, .84, .44, 1) both;
+  }
+  .mock-edge {
+    stroke-dasharray: var(--dash, 400);
+    animation: drawLine 1000ms cubic-bezier(.16, .84, .44, 1) both;
+  }
+  .mock-chrome {
+    opacity: 0;
+    animation: fadeIn 500ms ease-out both;
+  }
+}

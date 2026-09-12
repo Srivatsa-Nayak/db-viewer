@@ -81,7 +81,8 @@ Files present: `.env.local` (local dev) and `.env.production` (the deployed Azur
 db-viewer-ui/
 ├── app/
 │   ├── layout.tsx              Root layout; JetBrains Mono via next/font
-│   ├── page.tsx                ★ Owns all application state
+│   ├── page.tsx                Landing page (/) — hero, features, templates
+│   ├── app/page.tsx            ★ The editor (/app); owns all application state
 │   ├── share/[token]/page.tsx  Read-only view of a shared file (renders its own handles)
 │   └── globals.css             Tailwind v4 entry + design tokens
 ├── components/
@@ -113,6 +114,20 @@ db-viewer-ui/
 ```
 
 ---
+
+## Routes
+
+| Route | What it is |
+|---|---|
+| `/` | Landing page — hero, Features and Templates sections, and the account controls. Marketing surface; holds no workspace state |
+| `/app` | The editor. Everything in *State ownership* below refers to `app/app/page.tsx` |
+| `/share/[token]` | Read-only view of a shared file |
+
+The landing page hands a chosen template to the editor through **the session file the editor
+already restores from** (`services/sessionStorage.ts`) rather than a bespoke handoff: it creates
+a workspace, applies the template, appends the entry to the stored session and navigates to
+`/app`, which then finds the workspace, confirms it via `GET /workspaces` and reads the schema
+back like any other open file. That is why `/app` needed no changes to support templates.
 
 ## Architecture
 
@@ -166,8 +181,9 @@ Two places set it:
 If an upload fails, the page rebinds the client to the previously active workspace so a failed
 import doesn't strand later calls against a database that was never populated.
 
-Closing a file calls `DELETE /workspace`, which deletes that file's database and leaves every other
-open file untouched.
+The File menu's **Delete file** calls `DELETE /workspace`, which deletes that file's database and
+leaves every other open file untouched. It is named "delete" rather than "close" because there is no
+close-without-deleting action — the wording has to match what it actually does.
 
 ### The API boundary
 
@@ -355,7 +371,7 @@ deliberately left as-is, so a column can show a handle without being a key.
 
 1. Start from **`app/page.tsx`** for anything workspace-level.
 2. Add or change backend calls **only** in `services/api.ts`, and confirm the endpoint exists in
-   `../db-viewer-backend/src/main/java/com/dbviewer/controller/DatabaseController.java`.
+   `../db-viewer-backend/src/main/java/com/dbviewer/app/controller/DatabaseController.java`.
 3. If a new endpoint needs workspace scoping, it gets it for free through the Axios interceptor —
    unless it's a browser download, which needs `&workspaceId=` on the URL.
 4. Update `types/index.ts` when relying on new backend response fields.

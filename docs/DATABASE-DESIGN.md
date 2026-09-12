@@ -77,8 +77,8 @@ stateDiagram-v2
 Two distinct destructive operations exist on purpose:
 
 - **`DELETE /clear`** empties a workspace but keeps it — "start this file over".
-- **`DELETE /workspace`** removes the database entirely — "close this file". This is what the UI
-  calls when a file is closed, so a closed file's tables cannot resurface in a later session.
+- **`DELETE /workspace`** removes the database entirely — "delete this file". This is what the UI's
+  **Delete file** action calls, so a deleted file's tables cannot resurface in a later session.
 
 ### 2.3 Workspace id rules
 

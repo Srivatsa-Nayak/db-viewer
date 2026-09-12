@@ -1,0 +1,146 @@
+[
+  {
+    "id": "ecommerce",
+    "name": "Online Store",
+    "description": "Customers, orders and products wired together the way a typical storefront is. A good all-round starting point.",
+    "category": "Commerce",
+    "tags": [
+      "orders",
+      "products",
+      "reviews"
+    ],
+    "featured": true
+  },
+  {
+    "id": "saas",
+    "name": "SaaS Subscriptions",
+    "description": "Multi-tenant billing: organizations, plans, subscriptions and invoices, with every table hanging off the tenant.",
+    "category": "Business",
+    "tags": [
+      "multi-tenant",
+      "billing",
+      "invoices"
+    ],
+    "featured": true
+  },
+  {
+    "id": "blog",
+    "name": "Blog & CMS",
+    "description": "Posts, authors and comments, plus a posts-to-tags junction table — the clearest example of a many-to-many relationship.",
+    "category": "Content",
+    "tags": [
+      "many-to-many",
+      "posts",
+      "tags"
+    ],
+    "featured": true
+  },
+  {
+    "id": "project-tracker",
+    "name": "Project Tracker",
+    "description": "Projects, tasks, assignees and labels. Close to what an issue tracker stores, including a labels junction.",
+    "category": "Productivity",
+    "tags": [
+      "tasks",
+      "labels",
+      "comments"
+    ],
+    "featured": false
+  },
+  {
+    "id": "school",
+    "name": "School Management",
+    "description": "Students, courses and teachers joined through enrollments, with assignments and submissions on top.",
+    "category": "Education",
+    "tags": [
+      "enrollments",
+      "courses",
+      "grades"
+    ],
+    "featured": false
+  },
+  {
+    "id": "clinic",
+    "name": "Clinic & Appointments",
+    "description": "Departments, doctors, patients and appointments — a chain three levels deep, ending at prescriptions.",
+    "category": "Healthcare",
+    "tags": [
+      "appointments",
+      "patients",
+      "prescriptions"
+    ],
+    "featured": false
+  },
+  {
+    "id": "library",
+    "name": "Library Lending",
+    "description": "Books, members and loans in five tables. The smallest template here — the whole diagram fits on one screen.",
+    "category": "Education",
+    "tags": [
+      "loans",
+      "books",
+      "small"
+    ],
+    "featured": false
+  },
+  {
+    "id": "inventory",
+    "name": "Warehouse Inventory",
+    "description": "Items, suppliers and stock tracked per warehouse, so the same product can sit in several places at once.",
+    "category": "Operations",
+    "tags": [
+      "stock",
+      "suppliers",
+      "purchase orders"
+    ],
+    "featured": false
+  },
+  {
+    "id": "social",
+    "name": "Social Network",
+    "description": "Posts, likes and replies — plus a follows table that joins users to users, the self-join people most often get stuck on.",
+    "category": "Content",
+    "tags": [
+      "self-join",
+      "follows",
+      "likes"
+    ],
+    "featured": true
+  },
+  {
+    "id": "hr-payroll",
+    "name": "HR & Payroll",
+    "description": "Employees, departments and payslips, with a manager_id pointing back into employees so the reporting line is visible.",
+    "category": "Business",
+    "tags": [
+      "self-reference",
+      "payroll",
+      "leave"
+    ],
+    "featured": false
+  },
+  {
+    "id": "restaurant",
+    "name": "Restaurant Orders",
+    "description": "Tables, staff and orders, with menu items built from ingredients through a recipe junction.",
+    "category": "Operations",
+    "tags": [
+      "orders",
+      "recipes",
+      "menu"
+    ],
+    "featured": false
+  },
+  {
+    "id": "music",
+    "name": "Music Streaming",
+    "description": "Artists, albums and tracks, with playlists joined through a table that carries its own data — the track's position.",
+    "category": "Content",
+    "tags": [
+      "playlists",
+      "plays",
+      "junction"
+    ],
+    "featured": false
+  }
+]

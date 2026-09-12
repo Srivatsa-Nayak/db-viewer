@@ -43,7 +43,9 @@ Built with **Spring Boot 3.3 (Java 17)** on the backend and **Next.js 16** on th
 | **✏️ Data editing** | View, insert and delete rows, edit a single cell in place, or edit a whole row at once — without leaving the canvas. |
 | **🧱 Schema editing** | Create tables with primary keys, `NOT NULL` constraints and foreign keys; add columns, and rename or retype existing ones, through dedicated modals. |
 | **⬇️ Export** | Download one table as CSV, the whole file as a round-trippable SQL dump, or the diagram as a PNG for reading the schema offline. |
-| **✨ Example schema** | First visit shows an eight-table store database, so the canvas is never a blank page. |
+| **🏠 Landing page** | `/` introduces the app, with in-page Features and Templates sections; the editor lives at `/app`. |
+| **🧩 Starter templates** | Twelve ready-made schemas across seven categories. Preview shows the diagram *and* the SQL side by side. Authored on the backend — the frontend only renders them. |
+| **✨ Example schema** | The canvas's empty state loads the Online Store template, so it is never a blank page. |
 | **🗑️ Safe table deletion** | Delete a table from its node — refused with a clear message when another table's foreign key still references it. |
 | **📝 Table notes** | A to-do list per table, stored with the file. Tick items off and come back to them later. |
 | **🔗 Share links** | Create a read-only link to a file. Anyone with the link can view the schema; nobody can edit it. |
@@ -98,19 +100,21 @@ Full details: [`docs/SYSTEM-DESIGN.md`](docs/SYSTEM-DESIGN.md) and
 ```
 db-viewer/
 ├── db-viewer-backend/          Spring Boot API (Java 17)
-│   ├── src/main/java/com/dbviewer/
+│   ├── src/main/java/com/dbviewer/app/
+│   │   ├── common/             Constants.java — every SQL statement the app issues
 │   │   ├── config/             CORS, default DB bootstrap, OpenAPI
-│   │   ├── controller/         REST endpoints + global exception handler
+│   │   ├── controller/         Every REST endpoint + global exception handler
 │   │   ├── dto/                Request/response POJOs
-│   │   ├── service/            DatabaseService + DatabaseServiceImpl
-│   │   ├── auth/               Accounts, JWT, request identity
-│   │   ├── share/              Read-only share links
+│   │   ├── service/            One interface per service; impl/ holds the classes
+│   │   ├── exception/          Every custom exception
+│   │   ├── auth/               Request identity + auth filter
+│   │   ├── template/           CREATE TABLE parser for template previews
 │   │   ├── sql/                Script splitter + MySQL→SQLite translator
 │   │   └── workspace/          Per-file database isolation
 │   ├── src/main/resources/     application.properties + mysql/prod profiles
-│   └── src/test/java/          70 JUnit 5 / MockMvc / AssertJ tests
+│   └── src/test/java/          81 JUnit 5 / MockMvc / AssertJ tests
 ├── db-viewer-ui/               Next.js 16 frontend
-│   ├── app/                    App Router entry; page.tsx owns workspace state
+│   ├── app/                    App Router: / landing, /app editor, /share/[token]
 │   ├── components/             header, canvas, editor, tables, modal
 │   ├── services/api.ts         The only place that talks to the backend
 │   └── types/                  Shared response types
@@ -193,8 +197,8 @@ Then open <http://localhost:3000> and either **Import** a `.csv`/`.sql` file or 
 
 ### Try it in 60 seconds
 
-0. Click **Show me an example** on the empty canvas to load an eight-table store schema.
-1. Or use **File → New file** and name it `shop.sql`.
+0. On the landing page at `/`, jump to **Templates** and pick one — it opens in the editor ready to explore.
+1. Or go to `/app`, use **File → New file** and name it `shop.sql`.
 2. On the canvas, click **New Table** → name it `customers` → keep the `id` PK column, add
    `name` (`VARCHAR`, 128) → **Create Table**.
 3. Click the **+** in the `customers` node header → add a `email` column (`VARCHAR`, 256).
@@ -269,7 +273,10 @@ set headers.
 | `GET` | `/version` | Application version, from `pom.xml` (auto-incremented on every merge to `master`) |
 | `POST` | `/auth/signup` · `/auth/login` | Create an account / sign in; returns a JWT |
 | `GET` | `/auth/me` | Current user, or `{}` when anonymous |
-| `POST` | `/demo` | Load the bundled eight-table example into an empty file |
+| `GET` | `/templates` | The starter-schema catalogue (public) |
+| `GET` | `/templates/{id}` | One template, including its SQL body |
+| `POST` | `/templates/{id}/apply` | Create a template's tables in the current workspace |
+| `POST` | `/demo` | Shortcut for applying the Online Store template |
 | `DELETE` | `/table/{name}` | Drop a table (409 when still referenced) |
 | `GET` `POST` | `/table-notes` · `/table-notes/{table}` | Per-table to-do notes |
 | `POST` | `/share` | Create a read-only share link **(account required)** |
@@ -312,7 +319,7 @@ curl localhost:8080/db-info -H 'X-Workspace-Id: fileA'   # sees only fileA's use
 ## ✅ Testing and quality gates
 
 ```bash
-# Backend — 70 tests, in-memory SQLite, no setup required
+# Backend — 81 tests, in-memory SQLite, no setup required
 cd db-viewer-backend && ./mvnw test
 
 # Single class
@@ -335,6 +342,7 @@ failure worth catching — and the suite is deliberately one layer deep per beha
 | `SqlImportTest` | Real phpMyAdmin dump import, comment-prefixed statements, semicolons inside string literals, `DELIMITER` blocks, key folding, skip reporting |
 | `AuthAndSharingTest` | Signup validation, password hashing, no account enumeration, forged tokens, share creation/viewing/revocation, and that export + share are refused anonymously |
 | `TableLifecycleTest` | Example schema, FK-guarded table deletion, per-table notes and their invisibility to the canvas and exports |
+| `TemplateCatalogueTest` | Every bundled template actually applies, produces relationships and sample rows, states counts that match what it really creates, and has its parsed preview schema checked against the real database |
 | `ColumnEditTest` | Rename/retype/renullify a column, SQLite table rebuild preserving keys, FKs and data, primary-key protection, identifier validation |
 
 ---
@@ -409,4 +417,4 @@ keep.
 | `.sql` import produced fewer tables than expected | Unsupported statements are skipped, not fatal — the UI now reports how many and why. MySQL triggers, procedures and `SET`/`COMMIT` directives have no SQLite equivalent. |
 | Row edit/delete does nothing | Both address rows by an `id` column. A table without one can be viewed but not edited row-wise. |
 | Port 8080 already in use | `./mvnw spring-boot:run -Dspring-boot.run.arguments=--server.port=8090` and set `NEXT_PUBLIC_API_URL` to match. |
-| Workspace files piling up in `data/workspaces` | Nothing prunes them automatically. Close files in the UI, or delete the directory while the app is stopped. |
+| Workspace files piling up in `data/workspaces` | Nothing prunes them automatically. Use **File → Delete file** in the UI, or delete the directory while the app is stopped. |

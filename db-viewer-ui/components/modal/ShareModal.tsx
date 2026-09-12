@@ -131,7 +131,7 @@ export const ShareModal = ({ isOpen, fileName, onClose, onNeedsAccount }: ShareM
                                 <span>
                                     Anyone with this link can <strong>view</strong> the schema — no account
                                     needed. They cannot edit anything, and the link stops working if you
-                                    close the file or revoke it.
+                                    delete the file or revoke it.
                                 </span>
                             </div>
                         </>

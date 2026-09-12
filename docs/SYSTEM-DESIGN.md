@@ -37,8 +37,10 @@ flowchart TB
     subgraph Server["Spring Boot 3.3 / Java 17 (db-viewer-backend)"]
         FILTERS["CorsFilter → WorkspaceFilter"]
         CTRL["DatabaseController<br/>(REST, thin)"]
-        SVC["DatabaseServiceImpl<br/>(SQL generation, CSV parsing,<br/>type inference, export)"]
+        SVC["DatabaseServiceImpl<br/>(CSV parsing, type inference,<br/>export, schema edits)"]
+        CONST["common/Constants<br/>(every SQL statement)"]
         WSM["WorkspaceManager<br/>(one DataSource per open file)"]
+        SVC --> CONST
     end
 
     subgraph Storage["Storage"]
@@ -78,9 +80,12 @@ through `JdbcTemplate` with reflection-style metadata queries.
 db-viewer-ui/
 ├── app/
 │   ├── layout.tsx          Root layout, JetBrains Mono via next/font
-│   ├── page.tsx            ★ Owns all workspace state; the only stateful "page"
+│   ├── page.tsx            Landing page (/): hero, features, templates
+│   ├── app/page.tsx        ★ The editor (/app); owns all workspace state
+│   ├── share/[token]/      Read-only view of a shared file
 │   └── globals.css         Tailwind v4 entry + design tokens
 ├── components/
+│   ├── landing/                    Nav pill, features grid, template catalogue
 │   ├── header/Header.tsx           Import / refresh / export / clear / help
 │   ├── editor/FileExplorer.tsx     Left tree: files → tables → columns
 │   ├── editor/DataEditor.tsx       Row-level view / edit / insert / delete modal
@@ -179,15 +184,32 @@ flowchart LR
     REQ[HTTP request] --> CORS[CorsFilter]
     CORS --> WF["WorkspaceFilter<br/>binds X-Workspace-Id<br/>to a ThreadLocal"]
     WF --> C["DatabaseController<br/>maps route → service call,<br/>translates exceptions to<br/>400 / 500 + {error}"]
-    C --> S["DatabaseServiceImpl<br/>builds SQL, parses CSV,<br/>infers types, formats exports"]
+    C --> S["DatabaseServiceImpl<br/>parses CSV, infers types,<br/>formats exports, picks<br/>statements from Constants"]
     S --> W["WorkspaceManager.current()<br/>→ JdbcTemplate"]
     W --> D[(Database)]
     WF -. finally .-> CLR["WorkspaceContext.clear()"]
 ```
 
-Controllers stay thin — route, delegate, wrap the result or the error. All SQL construction,
-parsing, and formatting lives in `DatabaseServiceImpl`. `GlobalExceptionHandler` covers anything
-that escapes a controller's own try/catch.
+Controllers stay thin — route, delegate, wrap the result or the error. Parsing, type inference
+and formatting live in `DatabaseServiceImpl`.
+
+Every service is an interface in `service/` with its implementation in `service/impl/`:
+`DatabaseService`, `AuthService`, `JwtService`, `ShareService`, `TemplateService`. Nothing is
+typed against a `*Impl` — controllers and services depend on the contract, so Spring injects the
+implementation and a collaborator can be substituted without touching the caller. Shapes that are
+part of a contract live on the interface too: `TemplateService.Template` and its nested records are
+declared there, not on the implementation, because the controller, the schema parser and the tests
+all speak in terms of them.
+
+Every SQL statement the application issues lives in `common/Constants.java`, not in the class that
+runs it. A service decides *what* to do and supplies the identifiers; the statement itself is read
+from a named constant. That keeps the whole SQL surface reviewable in one file, and means a
+statement can be corrected without reading the control flow wrapped around it. Two conventions
+hold throughout: `?` is a real JDBC bind parameter, and `%s` is a format slot for an identifier
+that the caller has already validated — identifiers cannot be bound, so `safeIdentifier` does that
+job before the name reaches a statement.
+
+`GlobalExceptionHandler` covers anything that escapes a controller's own try/catch.
 
 ### 4.2 Workspace isolation — the central design decision
 
@@ -258,7 +280,10 @@ client that knows an id can reach that workspace. This matches the app's current
 | `POST` | `/delete-row` | Delete one row by id | ✅ header |
 | `DELETE` | `/clear` | Drop every table, keep the workspace | ✅ header |
 | `GET` | `/workspaces` | Ids of workspaces that still have a database | — |
-| `POST` | `/demo` | Load the bundled eight-table example | ✅ header |
+| `GET` | `/templates` | The starter-schema catalogue | — |
+| `GET` | `/templates/{id}` | One template, including its SQL | — |
+| `POST` | `/templates/{id}/apply` | Create a template's tables in the workspace | ✅ header |
+| `POST` | `/demo` | Shortcut for the Online Store template | ✅ header |
 | `DELETE` | `/table/{name}` | Drop a table; 409 when still referenced | ✅ header |
 | `GET` `POST` `DELETE` | `/table-notes...` | Per-table to-do notes | ✅ header |
 | `POST` | `/auth/signup` · `/auth/login` | Accounts | — |
@@ -447,6 +472,7 @@ returns 200 without doing anything is the failure worth catching.
 |---|---|
 | REST | `DatabaseControllerIntegrationTest` — every route end to end via MockMvc: routing, binding, error status codes, workspace scoping, and what each call changed in the database |
 | Workspace | `WorkspaceIsolationTest` — same table name in two workspaces, row-level leakage, default-database separation, workspace deletion, id sanitisation, MySQL URL rewriting |
+| Templates | `TemplateCatalogueTest` — every bundled template applies for real, produces relationships and sample rows, and states counts that match the schema it actually creates |
 | Column edit | `ColumnEditTest` — rename, retype, renullify; the SQLite rebuild preserving keys, foreign keys and data; primary-key protection; identifier validation; `PRAGMA foreign_keys` restoration |
 | SQL import | `SqlImportTest` — a real phpMyAdmin dump end to end, comment-prefixed statements, semicolons inside string literals, `DELIMITER` blocks, ALTER-key folding, skip reporting |
 | Auth & sharing | `AuthAndSharingTest` — signup validation, BCrypt hashing, no account enumeration, forged tokens, share create/view/revoke, anonymous refusal of export and share |
