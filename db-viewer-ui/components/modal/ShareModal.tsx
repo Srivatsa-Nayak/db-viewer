@@ -1,8 +1,9 @@
 "use client";
 
 import React, { useEffect, useState } from 'react';
-import { X, Loader2, AlertCircle, Check, Copy, Link2, Eye } from 'lucide-react';
+import { Loader2, AlertCircle, Check, Copy, Link2, Eye } from 'lucide-react';
 import { shareService } from '@/services/api';
+import { Callout, GhostButton, Modal, PrimaryButton } from '@/components/ui/Modal';
 
 interface ShareModalProps {
     isOpen: boolean;
@@ -54,8 +55,6 @@ export const ShareModal = ({ isOpen, fileName, onClose, onNeedsAccount }: ShareM
         return () => { cancelled = true; };
     }, [isOpen, fileName, onClose, onNeedsAccount]);
 
-    if (!isOpen) return null;
-
     const handleCopy = async () => {
         if (!link) return;
         try {
@@ -83,84 +82,61 @@ export const ShareModal = ({ isOpen, fileName, onClose, onNeedsAccount }: ShareM
     };
 
     return (
-        <div className="fixed inset-0 bg-black/60 z-[130] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-150">
-            <div className="bg-white border border-zinc-200 rounded-xl w-full max-w-lg shadow-2xl overflow-hidden">
-
-                <div className="p-4 border-b border-zinc-200 flex justify-between items-start">
-                    <div>
-                        <h3 className="font-bold text-zinc-900 flex items-center gap-2">
-                            <Link2 size={18} className="text-blue-600" />
-                            Share this file
-                        </h3>
-                        <p className="text-xs text-zinc-500 mt-1">
-                            <span className="font-mono">{fileName}</span>
-                        </p>
-                    </div>
-                    <button onClick={onClose} className="p-1 rounded text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 transition-colors" aria-label="Close">
-                        <X size={18} />
-                    </button>
-                </div>
-
-                <div className="p-6 space-y-4">
-                    {isBusy && !link && (
-                        <div className="flex items-center gap-2 text-sm text-zinc-500 py-4 justify-center">
-                            <Loader2 size={16} className="animate-spin" /> Creating link...
-                        </div>
-                    )}
-
-                    {link && (
-                        <>
-                            <div className="flex gap-2">
-                                <input
-                                    readOnly
-                                    value={link}
-                                    onFocus={e => e.target.select()}
-                                    className="flex-1 bg-zinc-50 border border-zinc-300 rounded-md py-2 px-3 text-xs text-zinc-700 font-mono focus:outline-none focus:border-blue-500"
-                                />
-                                <button
-                                    onClick={handleCopy}
-                                    className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium flex items-center gap-1.5 shrink-0 transition-colors"
-                                >
-                                    {copied ? <Check size={14} /> : <Copy size={14} />}
-                                    {copied ? 'Copied' : 'Copy'}
-                                </button>
-                            </div>
-
-                            <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-200 rounded-md text-xs text-blue-700">
-                                <Eye size={14} className="shrink-0 mt-px" />
-                                <span>
-                                    Anyone with this link can <strong>view</strong> the schema — no account
-                                    needed. They cannot edit anything, and the link stops working if you
-                                    delete the file or revoke it.
-                                </span>
-                            </div>
-                        </>
-                    )}
-
-                    {error && (
-                        <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-md text-xs text-red-600">
-                            <AlertCircle size={14} className="shrink-0 mt-px" />
-                            <span>{error}</span>
-                        </div>
-                    )}
-                </div>
-
-                <div className="p-4 border-t border-zinc-200 flex justify-between items-center">
-                    <button
+        <Modal
+            isOpen={isOpen}
+            onClose={onClose}
+            size="lg"
+            title="Share this file"
+            subtitle={<span className="font-mono">{fileName}</span>}
+            icon={<Link2 size={18} className="text-brand-600 shrink-0" />}
+            footer={
+                <div className="flex flex-col-reverse sm:flex-row sm:justify-between sm:items-center gap-2">
+                    <GhostButton
                         onClick={handleRevoke}
                         disabled={!token || isBusy}
-                        className="px-3 py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-md disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        className="!text-red-600 hover:!text-red-700 hover:!bg-red-50"
                     >
                         Revoke link
-                    </button>
-                    <button
-                        onClick={onClose}
-                        className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium shadow-sm transition-all"
-                    >
-                        Done
-                    </button>
+                    </GhostButton>
+                    <PrimaryButton onClick={onClose}>Done</PrimaryButton>
                 </div>
+            }
+        >
+            <div className="space-y-4">
+                {isBusy && !link && (
+                    <div className="flex items-center gap-2 text-sm text-ink-500 py-4 justify-center">
+                        <Loader2 size={16} className="animate-spin" /> Creating link...
+                    </div>
+                )}
+
+                {link && (
+                    <>
+                        <div className="flex flex-col sm:flex-row gap-2">
+                            <input
+                                readOnly
+                                value={link}
+                                aria-label="Share link"
+                                onFocus={e => e.target.select()}
+                                className="flex-1 min-w-0 bg-ink-50 border border-ink-300 rounded-md py-2.5 px-3 text-xs text-ink-700 font-mono focus:outline-none focus:border-brand-500"
+                            />
+                            <PrimaryButton onClick={handleCopy} className="shrink-0">
+                                {copied ? <Check size={14} /> : <Copy size={14} />}
+                                {copied ? 'Copied' : 'Copy'}
+                            </PrimaryButton>
+                        </div>
+
+                        <Callout tone="info" icon={<Eye size={14} />}>
+                            Anyone with this link can <strong>view</strong> the schema — no account
+                            needed. They cannot edit anything, and the link stops working if you
+                            delete the file or revoke it.
+                        </Callout>
+                    </>
+                )}
+
+                {error && (
+                    <Callout tone="error" icon={<AlertCircle size={14} />}>{error}</Callout>
+                )}
             </div>
-        </div>
+        </Modal>
     );
 };

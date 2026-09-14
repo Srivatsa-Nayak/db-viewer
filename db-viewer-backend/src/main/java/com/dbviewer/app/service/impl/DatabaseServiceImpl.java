@@ -8,6 +8,7 @@ import com.dbviewer.app.exception.TableInUseException;
 import com.dbviewer.app.sql.MySqlToSqliteTranslator;
 import com.dbviewer.app.sql.SqlScriptSplitter;
 import com.dbviewer.app.workspace.WorkspaceContext;
+import com.dbviewer.app.service.WorkspaceOwnershipService;
 import com.dbviewer.app.workspace.WorkspaceManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -29,6 +30,7 @@ public class DatabaseServiceImpl implements DatabaseService {
 
     private final WorkspaceManager workspaceManager;
     private final DatabaseConfig databaseConfig;
+    private final WorkspaceOwnershipService ownershipService;
 
     /**
      * Every statement below runs against the workspace bound to the current request,
@@ -726,7 +728,9 @@ public class DatabaseServiceImpl implements DatabaseService {
      */
     @Override
     public List<String> listWorkspaces() {
-        return workspaceManager.existingWorkspaceIds();
+        // Narrowed to the caller. This is what the UI restores a session from, so returning
+        // every workspace on the machine would put other people's files in your explorer.
+        return ownershipService.listOwned(workspaceManager.existingWorkspaceIds());
     }
 
     // ─── Delete Workspace ─────────────────────────────────────────────────────────
@@ -744,6 +748,7 @@ public class DatabaseServiceImpl implements DatabaseService {
             return;
         }
         workspaceManager.dropWorkspace(workspaceId);
+        ownershipService.release(workspaceId);
     }
 
     // ─── Example Schema ───────────────────────────────────────────────────────────

@@ -95,18 +95,18 @@ const FEATURES = [
 ];
 
 export const FeaturesSection = () => (
-    <section id="features" className="section-wash scroll-mt-28 py-20 sm:py-28">
+    <section id="features" className="section-wash scroll-mt-28 overflow-hidden py-20 sm:py-28">
         <div className="mx-auto max-w-6xl px-6">
 
             <Reveal className="mx-auto mb-14 max-w-2xl text-center">
-                <span className="mb-4 inline-block rounded-full border border-blue-200/70 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-wide text-blue-700 shadow-sm">
+                <span className="mb-4 inline-block rounded-full border border-brand-200/70 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-wide text-brand-700 shadow-sm">
                     Features
                 </span>
-                <h2 className="text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
+                <h2 className="text-3xl font-bold tracking-tight text-ink-900 sm:text-4xl">
                     Everything happens against{' '}
                     <span className="brand-text-gradient">a real database</span>
                 </h2>
-                <p className="mt-4 leading-relaxed text-slate-600">
+                <p className="mt-4 leading-relaxed text-ink-600">
                     This is not a drawing tool. Your file is an actual database, the diagram is
                     read back from its live metadata, and every edit you make is executed SQL.
                     Hover a card to see what each one means.
@@ -119,17 +119,17 @@ export const FeaturesSection = () => (
                         key={title}
                         // Staggered so the grid cascades instead of snapping in as one block.
                         delay={Math.min(i, 5) * 70}
-                        className={`group lift-card surface-card overflow-hidden rounded-2xl border hover:border-blue-300 ${span}`}
+                        className={`group lift-card surface-card overflow-hidden rounded-2xl border hover:border-brand-300 ${span}`}
                     >
                         {wide ? (
                             // Wide tiles read side-by-side, so the drawing gets real room.
                             <div className="flex h-full flex-col gap-4 p-6 sm:flex-row sm:items-center">
                                 <div className="sm:w-[46%] sm:shrink-0">
-                                    <span className="lift-icon mb-3 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-blue-100 bg-blue-50 group-hover:border-transparent group-hover:bg-[image:linear-gradient(135deg,#2563eb,#4f46e5)]">
-                                        <Icon size={16} className="text-blue-600 transition-colors group-hover:text-white" />
+                                    <span className="lift-icon mb-3 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-brand-100 bg-brand-50 group-hover:border-transparent group-hover:bg-[image:linear-gradient(135deg,#2563eb,#4f46e5)]">
+                                        <Icon size={16} className="text-brand-600 transition-colors group-hover:text-white" />
                                     </span>
-                                    <h3 className="font-semibold text-slate-900">{title}</h3>
-                                    <p className="mt-1.5 text-sm leading-relaxed text-slate-500">{body}</p>
+                                    <h3 className="font-semibold text-ink-900">{title}</h3>
+                                    <p className="mt-1.5 text-sm leading-relaxed text-ink-500">{body}</p>
                                 </div>
                                 <div className="min-w-0 flex-1 rounded-xl border border-[var(--surface-line)] bg-gradient-to-b from-[#eef3fd] to-white px-3 pt-3 pb-1">
                                     <Art />
@@ -141,13 +141,13 @@ export const FeaturesSection = () => (
                                     <Art />
                                 </div>
                                 <div className="flex-1 p-5">
-                                    <h3 className="mb-2 flex items-center gap-2 font-semibold text-slate-900">
-                                        <span className="lift-icon inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-blue-100 bg-blue-50 group-hover:border-transparent group-hover:bg-[image:linear-gradient(135deg,#2563eb,#4f46e5)]">
-                                            <Icon size={14} className="text-blue-600 transition-colors group-hover:text-white" />
+                                    <h3 className="mb-2 flex items-center gap-2 font-semibold text-ink-900">
+                                        <span className="lift-icon inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-brand-100 bg-brand-50 group-hover:border-transparent group-hover:bg-[image:linear-gradient(135deg,#2563eb,#4f46e5)]">
+                                            <Icon size={14} className="text-brand-600 transition-colors group-hover:text-white" />
                                         </span>
                                         {title}
                                     </h3>
-                                    <p className="text-sm leading-relaxed text-slate-500">{body}</p>
+                                    <p className="text-sm leading-relaxed text-ink-500">{body}</p>
                                 </div>
                             </div>
                         )}

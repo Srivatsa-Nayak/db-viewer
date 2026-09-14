@@ -2,6 +2,8 @@ package com.dbviewer.app.service.impl;
 
 import com.dbviewer.app.service.JwtService;
 import com.dbviewer.app.service.AuthService;
+import com.dbviewer.app.service.WorkspaceOwnershipService;
+import com.dbviewer.app.workspace.ClientContext;
 import com.dbviewer.app.common.Constants;
 import com.dbviewer.app.auth.AuthContext;
 import com.dbviewer.app.exception.EmailAlreadyRegisteredException;
@@ -37,9 +39,12 @@ public class AuthServiceImpl implements AuthService {
     private static final Pattern UPPERCASE = Pattern.compile("[A-Z]");
     /** Anything that is not a letter or a digit counts, including punctuation and spaces. */
     private static final Pattern SPECIAL = Pattern.compile("[^A-Za-z0-9]");
+    /** Matches the display_name column, so a long name is refused rather than silently cut. */
+    private static final int MAX_DISPLAY_NAME_LENGTH = 120;
 
     private final JdbcTemplate jdbcTemplate;
     private final JwtService jwtService;
+    private final WorkspaceOwnershipService ownershipService;
 
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
@@ -76,6 +81,7 @@ public class AuthServiceImpl implements AuthService {
         }
 
         log.info("Registered account {}", email);
+        adoptAnonymousWork(email);
         return session(email, name);
     }
 
@@ -123,7 +129,22 @@ public class AuthServiceImpl implements AuthService {
                 || !passwordEncoder.matches(password, String.valueOf(user.get("password_hash")))) {
             throw new IllegalArgumentException("Email or password is incorrect.");
         }
+        adoptAnonymousWork(email);
         return session(email, String.valueOf(user.get("display_name")));
+    }
+
+    /**
+     * Moves anything this browser made while signed out onto the account it has just entered.
+     *
+     * <p>Without it, making an account would look like losing your work: every file open in the
+     * explorer belongs to {@code anon:<clientId>}, and the moment the caller starts presenting
+     * an account instead, none of them are theirs any more.
+     *
+     * <p>It only ever moves workspaces that are still anonymous, so signing in as a second user
+     * on a shared browser cannot take over the first user's files.
+     */
+    private void adoptAnonymousWork(String email) {
+        ownershipService.adoptAnonymous(ClientContext.get(), email);
     }
 
     /** The signed-in user's profile, or null when the request is anonymous. */
@@ -139,6 +160,51 @@ public class AuthServiceImpl implements AuthService {
         Map<String, Object> profile = new LinkedHashMap<>();
         profile.put("email", user.get("email"));
         profile.put("displayName", user.get("display_name"));
+        return profile;
+    }
+
+    @Override
+    public Map<String, Object> updateProfile(String displayName, String currentPassword, String newPassword) {
+        String email = AuthContext.require();
+        Map<String, Object> user = findByEmail(email);
+        if (user == null) {
+            throw new UnauthorizedException("Sign in again to edit your profile.");
+        }
+
+        // Verified before anything is written, so a rejected password change cannot leave the
+        // name updated and the password not — the two arrive in one request and should land
+        // as one change.
+        boolean changingPassword = newPassword != null && !newPassword.isEmpty();
+        if (changingPassword) {
+            if (currentPassword == null || currentPassword.isEmpty()
+                    || !passwordEncoder.matches(currentPassword, String.valueOf(user.get("password_hash")))) {
+                throw new IllegalArgumentException("Your current password is incorrect.");
+            }
+            if (newPassword.equals(currentPassword)) {
+                throw new IllegalArgumentException("The new password must be different from the current one.");
+            }
+            validatePassword(newPassword);
+        }
+
+        String name = String.valueOf(user.get("display_name"));
+        if (displayName != null && !displayName.isBlank() && !displayName.trim().equals(name)) {
+            name = displayName.trim();
+            if (name.length() > MAX_DISPLAY_NAME_LENGTH) {
+                throw new IllegalArgumentException(
+                        "Name must be " + MAX_DISPLAY_NAME_LENGTH + " characters or fewer.");
+            }
+            jdbcTemplate.update(Constants.Auth.UPDATE_DISPLAY_NAME, name, email);
+        }
+
+        if (changingPassword) {
+            jdbcTemplate.update(Constants.Auth.UPDATE_PASSWORD_HASH,
+                    passwordEncoder.encode(newPassword), email);
+            log.info("Password changed for {}", email);
+        }
+
+        Map<String, Object> profile = new LinkedHashMap<>();
+        profile.put("email", email);
+        profile.put("displayName", name);
         return profile;
     }
 

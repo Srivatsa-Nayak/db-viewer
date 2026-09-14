@@ -80,7 +80,7 @@ Files present: `.env.local` (local dev) and `.env.production` (the deployed Azur
 ```
 db-viewer-ui/
 ├── app/
-│   ├── layout.tsx              Root layout; JetBrains Mono via next/font
+│   ├── layout.tsx              Root layout; Inter + Geist Mono via next/font
 │   ├── page.tsx                Landing page (/) — hero, features, templates
 │   ├── app/page.tsx            ★ The editor (/app); owns all application state
 │   ├── share/[token]/page.tsx  Read-only view of a shared file (renders its own handles)
@@ -103,14 +103,16 @@ db-viewer-ui/
 │       ├── TableNotesModal.tsx     Per-table to-do list (portalled)
 │       ├── NewTableHelpModal.tsx   Canvas toolbar: what the New Table button does
 │       └── InfoModal.tsx           "What is this app" summary + version + credits
+│   └── ui/
+│       ├── Modal.tsx           ★ The dialog primitive every modal is built on
+│       └── ConfirmDialog.tsx   Destructive confirmation, built on Modal
 ├── services/
 │   ├── api.ts                  ★ The only module that talks to the backend
 │   ├── sessionStorage.ts       Remembers open files + canvas layout across a refresh
 │   └── exportImage.ts          Canvas → PNG via html-to-image
-├── types/index.ts              Shared response types
-├── hooks/useSchema.ts          Legacy hook — NOT on the active code path
-├── tailwind.config.js          Vestigial (Tailwind v4 is configured from CSS)
-└── next.config.ts              output: "standalone"
+├── services/workspaceId.ts     Collision-free backend workspace ids
+├── types/index.ts              Normalized UI types + the Raw* wire shapes
+└── next.config.ts              standalone output, console stripping, import optimization
 ```
 
 ---
@@ -203,11 +205,25 @@ api.interceptors.request.use((config) => {
 });
 ```
 
-Downloads are the exception: `window.open()` and `<a download>` cannot attach custom headers, so
-`getDownloadUrl` and `getDatabaseExportUrl` append `&workspaceId=` instead. Keep that in mind if you
-add another download endpoint.
+Workspace ids are minted by `services/workspaceId.ts`, never `Date.now()` — two files created in
+the same millisecond used to land on the same backend database.
+
+**Every request also carries `X-Client-Id`** (`services/clientId.ts`), a stable per-browser id in
+localStorage. It is what gives a signed-out visitor an identity, so the backend can keep two
+anonymous sessions from seeing each other's files. It is created lazily, on the first API call —
+a fresh signed-out load with no stored session makes no requests at all, so do not expect the key
+to exist before then. On sign-in the backend re-keys whatever this id owns onto the account, so
+making an account never looks like losing your work.
 
 Schema and table reads append a `_t`/`t` timestamp so the browser can never serve a stale schema.
+
+**Responses are normalized here, not in components.** The backend has answered with both `is_pk`
+and `isPk` (and `source_table`/`sourceTable`, `not_null`/`notNull`) over its life, so every reader
+used to carry its own `c.is_pk ?? c.isPk` fallback — and a reader that forgot half of it silently
+treated every primary key as an ordinary column. `normaliseColumn`, `normaliseRelationships` and
+`normaliseSchema` fold both spellings into the camelCase types in `types/index.ts` at the boundary.
+Those types are now ground truth; the `Raw*` types describing the wire format should be imported
+only by `services/api.ts`.
 
 | `dbService` method | Endpoint |
 |---|---|
@@ -222,10 +238,10 @@ Schema and table reads append a `_t`/`t` timestamp so the browser can never serv
 | `insertRow(table, data)` | `POST /insert-row` |
 | `updateCell(params)` | `POST /update-cell` |
 | `deleteRow(table, id)` | `POST /delete-row` |
-| `clearDatabase()` | `DELETE /clear` |
 | `deleteWorkspace()` | `DELETE /workspace` |
-| `getDownloadUrl(table)` | `GET /export/{table}` (URL only) |
-| `getDatabaseExportUrl(name)` | `GET /export-sql` (URL only) |
+| `downloadTableCsv(table)` | `GET /export/{table}` (blob) |
+| `downloadDatabaseSql(name)` | `GET /export-sql` (blob) |
+| `authService.updateProfile(changes)` | `PATCH /auth/profile` |
 
 ### Session persistence
 
@@ -321,40 +337,53 @@ The transform tolerates both `snake_case` and `camelCase` on relationship fields
 
 ## Styling
 
-- **Tailwind CSS v4**, configured from CSS (`app/globals.css`) rather than JS content-globbing.
-  `tailwind.config.js` still lists `./src/**` paths that don't exist here — it is vestigial
-  scaffolding, not the active config.
-- **Light theme only.** Fixed blue header, white body, blue accent. The dark/system toggle was
-  removed because it only ever restyled the canvas and table nodes, never the rest of the chrome.
-- **Font**: JetBrains Mono is loaded in `app/layout.tsx` and wired into Tailwind's `--font-mono`
-  variable, so every `font-mono` class picks it up. Don't hardcode a font family per component.
-- **Z-index ladder**: canvas panels < `DataEditor` (50) < page-level modals (100) <
-  in-canvas modals (110) < `AddColumnModal` (120).
+- **Tailwind CSS v4**, configured entirely from CSS (`app/globals.css`). There is no
+  `tailwind.config.js` — the scaffolded one pointed at `./src/**` paths that do not exist here.
+- **One palette, declared in `@theme`.** `brand-*` (blue 50-900, plus `brand-violet`) and `ink-*`
+  (slate-valued neutrals 50-950), plus `surface`, `surface-tint` and `line`. Use these rather than
+  raw `blue-*` / `zinc-*` / `slate-*`: the landing page and the editor previously ran on two
+  separate systems — a blue/indigo gradient set on slate for marketing, flat `blue-600` on zinc for
+  the editor — which is what made moving between them feel like moving between two apps.
+- **Shared utilities**: `brand-gradient(-hover)`, `brand-text-gradient`, `surface-card`,
+  `section-wash(-tinted)`, `shadow-glow-sm|md|lg`, `rule-gradient`, `scroll-slim`.
+- **Animation is local.** `tailwindcss-animate` was never installed, so the `animate-in` /
+  `fade-in` / `slide-in-from-*` classes that appeared at 17 call sites did nothing at all. Use
+  `anim-fade-in`, `anim-fade-up`, `anim-dialog-in`, `anim-menu-in`, all defined in `globals.css`
+  and all inside a `prefers-reduced-motion` guard.
+- **Light theme only.** The dark/system toggle was removed because it only ever restyled the
+  canvas and table nodes, never the rest of the chrome; the leftover `.dark` token block and
+  `@custom-variant` have now been deleted too, so nothing suggests a dark mode that is not there.
+- **Focus rings are `:focus-visible`**, not `:focus` — the old rule painted a ring on every mouse
+  click, including on table cells.
+- **Fonts**: Inter (`--font-sans`) and Geist Mono (`--font-mono`), loaded in `app/layout.tsx`.
+  Keep monospace content on `font-mono`; don't hardcode a family per component.
+- **Breakpoints**: Tailwind's defaults plus `xs` (25rem), because the 320-639px band otherwise has
+  no breakpoint at all and that is exactly where a second control stops fitting on one line.
+- **Z-index**: dialogs compute their own from `--z-overlay-base` (100) and their depth in the open
+  dialog stack. Don't add hand-picked `z-[130]` values.
 
 ---
 
 ## Gotchas
 
-**1. Fixed-position modals and transformed ancestors.** React Flow transforms its viewport, and the
-canvas wrapper carries `animate-fade-up` (also a transform). A transformed ancestor becomes the
-containing block for `position: fixed` descendants, so a modal nested inside the canvas silently
-positions itself against the canvas pane instead of the viewport. Two mitigations are in use:
+**1. Build dialogs with `components/ui/Modal.tsx`. Never hand-roll an overlay.** React Flow
+transforms its viewport, which makes it the containing block for any `position: fixed` descendant —
+a dialog opened from a table node would silently position itself against the canvas pane rather
+than the window. The primitive always portals to `document.body`, so that class of bug cannot
+recur. It also owns Escape (top of the stack only), the focus trap and focus restore, the body
+scroll lock, `role="dialog"` / `aria-modal` / `aria-labelledby`, the z-index, and the phone bottom
+-sheet layout. `ConfirmDialog` sits on top of it for destructive confirmations.
 
-- `CreateTableModal` and `NewTableHelpModal` are rendered as **siblings** of the canvas wrapper,
-  inside a `<>...</>` fragment. (`InfoModal` and `NoticeModal` live in `page.tsx`, outside the
-  canvas entirely, so they are unaffected.)
-- `AddColumnModal` opens from inside a `TableNode` — unavoidably deep inside the transformed
-  viewport — so it renders through `createPortal(..., document.body)` and guards on a `mounted`
-  flag because `document` doesn't exist during SSR.
+**2. Dialogs are mounted only while open.** The call sites render `{isOpen && <Foo isOpen … />}`
+and import through `next/dynamic` with `ssr: false`. This is load-bearing in two ways: it keeps
+form-heavy code out of the initial bundle, and it means *mounting is the reset*, which is why no
+dialog re-seeds its form state from a `useEffect` (the lint config rejects that anyway).
 
-Any new fixed modal must do one of these two things.
-
-**2. `hooks/useSchema.ts` is not live code.** `page.tsx` duplicates its logic. Changing the hook
-changes nothing at runtime.
-
-**3. Canvas edge creation doesn't persist.** `onConnect` / `onEdgesChange` in `page.tsx` are
-no-ops. Dragging a connection on the canvas is purely visual; foreign keys are only created through
-`CreateTableModal`.
+**3. The canvas is deliberately not connectable.** `nodesConnectable={false}`, and every `Handle`
+sets `isConnectable={false}`. Previously `onConnect` / `onEdgesChange` were no-ops while the
+handles stayed live, so dragging one started a connection gesture the app could never honour.
+Foreign keys are created through `CreateTableModal`. If drag-to-create is ever built, re-enable
+connectability *and* wire up persistence in the same change.
 
 **4. Connection handles are placed by naming convention, not metadata.** `TableNode` treats a
 column literally named `id` or ending in `_id` as a key and gives it a connection handle. Real

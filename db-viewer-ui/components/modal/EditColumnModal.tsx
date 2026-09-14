@@ -1,13 +1,17 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { X, Pencil, Loader2, AlertCircle, KeyRound, AlertTriangle } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Pencil, Loader2, AlertCircle, KeyRound, AlertTriangle } from 'lucide-react';
 import { dbService } from '@/services/api';
 import { ColumnInfo } from '@/types';
+import { Callout, GhostButton, Modal, ModalActions, PrimaryButton } from '@/components/ui/Modal';
 
 const COLUMN_TYPES = ["VARCHAR", "INT", "DECIMAL", "BOOLEAN", "TEXT", "DATE", "TIME", "DATETIME"];
 const VARCHAR_LENGTHS = [64, 128, 256];
+
+const FIELD = 'w-full bg-white border border-ink-300 rounded-md py-2.5 sm:py-2 px-3 text-sm text-ink-900 '
+    + 'focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-all '
+    + 'disabled:bg-ink-100 disabled:text-ink-400 disabled:cursor-not-allowed';
 
 interface EditColumnModalProps {
     isOpen: boolean;
@@ -54,8 +58,8 @@ export const EditColumnModal = ({
             name: column.name,
             base,
             length: length || 128,
-            notNull: column.notNull ?? column.not_null ?? false,
-            isPk: column.isPk ?? column.is_pk ?? false,
+            notNull: column.notNull ?? false,
+            isPk: column.isPk ?? false,
         };
     }, [column]);
 
@@ -65,9 +69,7 @@ export const EditColumnModal = ({
     const [notNull, setNotNull] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
-
-    const [isMounted, setIsMounted] = useState(false);
-    useEffect(() => setIsMounted(true), []);
+    const nameRef = useRef<HTMLInputElement>(null);
 
     // Re-seed the form from the column each time the modal opens.
     useEffect(() => {
@@ -81,29 +83,20 @@ export const EditColumnModal = ({
         }
     }, [isOpen, original]);
 
-    useEffect(() => {
-        if (!isOpen) return;
-        const onKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') onClose();
-        };
-        window.addEventListener('keydown', onKeyDown);
-        return () => window.removeEventListener('keydown', onKeyDown);
-    }, [isOpen, onClose]);
-
-    if (!isOpen || !isMounted || !original) return null;
-
     // An unrecognised existing type still needs to be selectable, or saving would rewrite it.
-    const typeOptions = COLUMN_TYPES.includes(original.base)
-        ? COLUMN_TYPES
-        : [original.base, ...COLUMN_TYPES];
+    const typeOptions = original && !COLUMN_TYPES.includes(original.base)
+        ? [original.base, ...COLUMN_TYPES]
+        : COLUMN_TYPES;
 
-    const nameChanged = name.trim() !== original.name;
-    const typeChanged = base !== original.base || (base === 'VARCHAR' && length !== original.length);
-    const nullChanged = notNull !== original.notNull;
+    const nameChanged = Boolean(original) && name.trim() !== original!.name;
+    const typeChanged = Boolean(original)
+        && (base !== original!.base || (base === 'VARCHAR' && length !== original!.length));
+    const nullChanged = Boolean(original) && notNull !== original!.notNull;
     const hasChanges = nameChanged || typeChanged || nullChanged;
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!original) return;
         const trimmed = name.trim();
 
         if (!trimmed) return setError("Column name is required.");
@@ -113,10 +106,7 @@ export const EditColumnModal = ({
         if (nameChanged && existingColumns.some(c => c.toLowerCase() === trimmed.toLowerCase())) {
             return setError(`"${trimmed}" already exists in ${tableName}.`);
         }
-        if (!hasChanges) {
-            onClose();
-            return;
-        }
+        if (!hasChanges) return onClose();
 
         setIsSaving(true);
         setError(null);
@@ -143,159 +133,121 @@ export const EditColumnModal = ({
         }
     };
 
-    return createPortal(
-        <div
-            className="fixed inset-0 bg-black/60 z-[120] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-150"
-            onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    if (!original) return null;
+
+    return (
+        <Modal
+            isOpen={isOpen}
+            onClose={onClose}
+            title="Edit column"
+            subtitle={
+                <>
+                    <span className="font-mono text-brand-600">{tableName}</span>
+                    <span className="text-ink-300"> . </span>
+                    <span className="font-mono">{original.name}</span>
+                </>
+            }
+            icon={<Pencil size={16} className="text-brand-600 shrink-0" />}
+            closeOnBackdrop={false}
+            initialFocusRef={nameRef}
+            onSubmit={handleSubmit}
+            footer={
+                <ModalActions>
+                    <GhostButton onClick={onClose}>Cancel</GhostButton>
+                    <PrimaryButton type="submit" disabled={isSaving || !hasChanges}>
+                        {isSaving && <Loader2 size={14} className="animate-spin" />}
+                        {isSaving ? "Saving..." : "Save changes"}
+                    </PrimaryButton>
+                </ModalActions>
+            }
         >
-            <div
-                className="bg-white border border-zinc-200 rounded-xl w-full max-w-md shadow-2xl overflow-hidden"
-                onMouseDown={(e) => e.stopPropagation()}
-            >
-                {/* Header */}
-                <div className="p-4 border-b border-zinc-200 flex justify-between items-start">
-                    <div>
-                        <h3 className="font-bold text-zinc-900 flex items-center gap-2">
-                            <Pencil size={16} className="text-blue-600" />
-                            Edit Column
-                        </h3>
-                        <p className="text-xs text-zinc-500 mt-0.5">
-                            <span className="font-mono text-blue-600">{tableName}</span>
-                            <span className="text-zinc-300"> . </span>
-                            <span className="font-mono">{original.name}</span>
-                        </p>
-                    </div>
-                    <button
-                        type="button"
-                        onClick={onClose}
-                        className="p-1 rounded text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 transition-colors"
-                        aria-label="Close"
-                    >
-                        <X size={20} />
-                    </button>
+            <div className="space-y-5">
+                {original.isPk && (
+                    <Callout tone="info" icon={<KeyRound size={14} />}>
+                        This is the primary key. It can be renamed, but its type and nullability
+                        are fixed &mdash; changing them would break row identity and auto-numbering.
+                    </Callout>
+                )}
+
+                <div>
+                    <label htmlFor="edit-column-name" className="block text-xs font-bold text-ink-500 uppercase mb-2">
+                        Column name
+                    </label>
+                    <input
+                        id="edit-column-name"
+                        ref={nameRef}
+                        type="text"
+                        className={`${FIELD} font-mono`}
+                        value={name}
+                        onChange={(e) => { setName(e.target.value); setError(null); }}
+                    />
                 </div>
 
-                <form onSubmit={handleSubmit} className="p-6 space-y-5">
-                    {original.isPk && (
-                        <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-200 rounded-md text-xs text-blue-700">
-                            <KeyRound size={14} className="shrink-0 mt-px" />
-                            <span>
-                                This is the primary key. It can be renamed, but its type and
-                                nullability are fixed &mdash; changing them would break row
-                                identity and auto-numbering.
-                            </span>
-                        </div>
-                    )}
-
-                    <div>
-                        <label htmlFor="edit-column-name" className="block text-xs font-bold text-zinc-500 uppercase mb-2">
-                            Column name
+                <div className="flex flex-col sm:flex-row gap-3">
+                    <div className="flex-1">
+                        <label htmlFor="edit-column-type" className="block text-xs font-bold text-ink-500 uppercase mb-2">
+                            Data type
                         </label>
-                        <input
-                            id="edit-column-name"
-                            autoFocus
-                            type="text"
-                            className="w-full bg-white border border-zinc-300 rounded-md py-2 px-3 text-sm text-zinc-900 font-mono focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
-                            value={name}
-                            onChange={(e) => { setName(e.target.value); setError(null); }}
-                        />
+                        <select
+                            id="edit-column-type"
+                            disabled={original.isPk}
+                            className={FIELD}
+                            value={base}
+                            onChange={(e) => setBase(e.target.value)}
+                        >
+                            {typeOptions.map(type => <option key={type} value={type}>{type}</option>)}
+                        </select>
                     </div>
 
-                    <div className="flex gap-3">
-                        <div className="flex-1">
-                            <label htmlFor="edit-column-type" className="block text-xs font-bold text-zinc-500 uppercase mb-2">
-                                Data type
+                    {base === 'VARCHAR' && (
+                        <div className="sm:w-28">
+                            <label htmlFor="edit-column-length" className="block text-xs font-bold text-ink-500 uppercase mb-2">
+                                Length
                             </label>
                             <select
-                                id="edit-column-type"
+                                id="edit-column-length"
                                 disabled={original.isPk}
-                                className="w-full bg-white border border-zinc-300 rounded-md py-2 px-3 text-sm text-zinc-900 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all disabled:bg-zinc-100 disabled:text-zinc-400 disabled:cursor-not-allowed"
-                                value={base}
-                                onChange={(e) => setBase(e.target.value)}
+                                className={FIELD}
+                                value={length}
+                                onChange={(e) => setLength(Number(e.target.value))}
                             >
-                                {typeOptions.map(type => (
-                                    <option key={type} value={type}>{type}</option>
-                                ))}
+                                {(VARCHAR_LENGTHS.includes(length) ? VARCHAR_LENGTHS : [length, ...VARCHAR_LENGTHS])
+                                    .map(len => <option key={len} value={len}>{len}</option>)}
                             </select>
                         </div>
+                    )}
+                </div>
 
-                        {base === 'VARCHAR' && (
-                            <div className="w-28 animate-in fade-in slide-in-from-left-2">
-                                <label htmlFor="edit-column-length" className="block text-xs font-bold text-zinc-500 uppercase mb-2">
-                                    Length
-                                </label>
-                                <select
-                                    id="edit-column-length"
-                                    disabled={original.isPk}
-                                    className="w-full bg-white border border-zinc-300 rounded-md py-2 px-3 text-sm text-zinc-900 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all disabled:bg-zinc-100 disabled:text-zinc-400 disabled:cursor-not-allowed"
-                                    value={length}
-                                    onChange={(e) => setLength(Number(e.target.value))}
-                                >
-                                    {(VARCHAR_LENGTHS.includes(length) ? VARCHAR_LENGTHS : [length, ...VARCHAR_LENGTHS])
-                                        .map(len => <option key={len} value={len}>{len}</option>)}
-                                </select>
-                            </div>
-                        )}
-                    </div>
-
-                    <label className={`flex items-start gap-3 p-3 rounded-md border transition-colors ${
-                        original.isPk
-                            ? 'border-zinc-200 bg-zinc-100 cursor-not-allowed opacity-60'
-                            : 'border-zinc-200 bg-zinc-50 cursor-pointer hover:border-blue-300'
-                    }`}>
-                        <input
-                            type="checkbox"
-                            disabled={original.isPk}
-                            checked={original.isPk ? true : notNull}
-                            onChange={(e) => setNotNull(e.target.checked)}
-                            className="mt-0.5 rounded border-zinc-300 bg-white text-blue-600 w-4 h-4 focus:ring-0 focus:ring-offset-0"
-                        />
-                        <span className="text-sm">
-                            <span className="font-medium text-zinc-800">Required</span>
-                            <span className="block text-xs text-zinc-500 mt-0.5">
-                                Enforces <span className="font-mono">NOT NULL</span>. Existing empty
-                                values are filled in with a type-appropriate default.
-                            </span>
+                <label className={`flex items-start gap-3 p-3 rounded-md border transition-colors ${
+                    original.isPk
+                        ? 'border-ink-200 bg-ink-100 cursor-not-allowed opacity-60'
+                        : 'border-ink-200 bg-ink-50 cursor-pointer hover:border-brand-300'
+                }`}>
+                    <input
+                        type="checkbox"
+                        disabled={original.isPk}
+                        checked={original.isPk ? true : notNull}
+                        onChange={(e) => setNotNull(e.target.checked)}
+                        className="mt-0.5 rounded border-ink-300 bg-white text-brand-600 w-4 h-4 focus:ring-0 focus:ring-offset-0"
+                    />
+                    <span className="text-sm min-w-0">
+                        <span className="font-medium text-ink-800">Required</span>
+                        <span className="block text-xs text-ink-500 mt-0.5 leading-relaxed">
+                            Enforces <span className="font-mono">NOT NULL</span>. Existing empty
+                            values are filled in with a type-appropriate default.
                         </span>
-                    </label>
+                    </span>
+                </label>
 
-                    {typeChanged && (
-                        <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-md text-xs text-amber-700">
-                            <AlertTriangle size={14} className="shrink-0 mt-px" />
-                            <span>
-                                Changing the type rewrites the column. Values that do not fit the new
-                                type may be converted or lost.
-                            </span>
-                        </div>
-                    )}
+                {typeChanged && (
+                    <Callout tone="warning" icon={<AlertTriangle size={14} />}>
+                        Changing the type rewrites the column. Values that do not fit the new
+                        type may be converted or lost.
+                    </Callout>
+                )}
 
-                    {error && (
-                        <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-md text-xs text-red-600">
-                            <AlertCircle size={14} className="shrink-0 mt-px" />
-                            <span>{error}</span>
-                        </div>
-                    )}
-
-                    <div className="flex justify-end gap-3 pt-1">
-                        <button
-                            type="button"
-                            onClick={onClose}
-                            className="px-4 py-2 text-zinc-500 hover:text-zinc-900 text-sm hover:bg-zinc-100 rounded-md transition-colors"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            type="submit"
-                            disabled={isSaving || !hasChanges}
-                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md text-sm font-bold shadow-sm transition-all flex items-center gap-2"
-                        >
-                            {isSaving && <Loader2 size={14} className="animate-spin" />}
-                            {isSaving ? "Saving..." : "Save Changes"}
-                        </button>
-                    </div>
-                </form>
+                {error && <Callout tone="error" icon={<AlertCircle size={14} />}>{error}</Callout>}
             </div>
-        </div>,
-        document.body
+        </Modal>
     );
 };

@@ -1,10 +1,23 @@
+"use client";
+
 import React, { memo, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { Handle, Position } from 'reactflow';
 import { Database, KeyRound, Plus, Download, Edit3, Pencil, Trash2, StickyNote } from 'lucide-react';
-import { AddColumnModal } from '@/components/modal/AddColumnModal';
-import { EditColumnModal } from '@/components/modal/EditColumnModal';
-import { TableNotesModal } from '@/components/modal/TableNotesModal';
 import { ColumnInfo } from '@/types';
+
+/**
+ * Loaded on demand, and only while open.
+ *
+ * These three used to be mounted inside *every* table node — a twelve-table schema carried
+ * thirty-six modal components, all rendering null, all re-rendering whenever their node did.
+ */
+const AddColumnModal = dynamic(
+    () => import('@/components/modal/AddColumnModal').then(m => m.AddColumnModal), { ssr: false });
+const EditColumnModal = dynamic(
+    () => import('@/components/modal/EditColumnModal').then(m => m.EditColumnModal), { ssr: false });
+const TableNotesModal = dynamic(
+    () => import('@/components/modal/TableNotesModal').then(m => m.TableNotesModal), { ssr: false });
 
 interface TableNodeData {
   label: string;
@@ -20,6 +33,12 @@ interface TableNodeData {
   onNotesChanged?: () => void;
 }
 
+const ACTION_BUTTON = 'p-1 rounded text-white/80 hover:text-white transition-colors';
+
+/** A column gets connection handles if it is a key by naming convention or by real metadata. */
+const isKeyColumn = (col: ColumnInfo) =>
+  col.isPk || col.name === 'id' || col.name.endsWith('_id');
+
 const TableNode = ({ data }: { data: TableNodeData }) => {
   // The add-column form lives in its own modal (AddColumnModal) rather than inside the
   // node: the node is only ~200px wide and scales with the canvas zoom, which made the
@@ -28,17 +47,12 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
   const [editingColumn, setEditingColumn] = useState<ColumnInfo | null>(null);
   const [isNotesOpen, setNotesOpen] = useState(false);
 
-  const handleDownload = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    data.onDownloadCsv?.(data.label);
-  };
+  const columnNames = data.columns.map(c => c.name);
 
   return (
-    // CONTAINER: overflow-hidden REMOVED so dots can sit outside
-    <div className="bg-white border border-blue-200 rounded-md min-w-[180px] max-w-[220px] shadow-xl transition-all duration-200 group/node">
+    <div className="bg-white border border-brand-200 rounded-md min-w-[190px] max-w-[230px] shadow-glow-md transition-shadow hover:shadow-glow-lg group/node">
 
-      {/* HEADER: Added rounded-t-md */}
-      <div className="bg-blue-600 px-2 py-1.5 flex items-center justify-between rounded-t-md">
+      <div className="brand-gradient px-2 py-1.5 flex items-center justify-between rounded-t-md gap-1">
         <div className="flex items-center gap-1.5 overflow-hidden">
           <Database size={10} className="text-white shrink-0" />
           <span className="font-bold text-white text-[10px] truncate leading-tight" title={data.label}>
@@ -46,121 +60,150 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
           </span>
         </div>
 
-        {/* HEADER ACTIONS */}
         <div className="flex gap-0.5 shrink-0">
           <button
             onClick={(e) => { e.stopPropagation(); setNotesOpen(true); }}
-            className="relative p-0.5 hover:bg-blue-700 rounded text-white/80 hover:text-white transition-colors"
+            className={`relative ${ACTION_BUTTON}`}
             title={data.openNotes ? `${data.openNotes} open note(s)` : 'Notes / to-do'}
+            aria-label={`Notes for ${data.label}`}
           >
-            <StickyNote size={10} />
+            <StickyNote size={11} />
             {!!data.openNotes && (
-              <span className="absolute -top-1 -right-1 min-w-[11px] h-[11px] px-0.5 rounded-full bg-amber-400 text-[7px] font-bold text-amber-950 flex items-center justify-center">
+              <span className="absolute -top-1 -right-1 min-w-[12px] h-[12px] px-0.5 rounded-full bg-amber-400 text-[7px] font-bold text-amber-950 flex items-center justify-center">
                 {data.openNotes}
               </span>
             )}
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); data.onEdit(data.label); }}
-            className="p-0.5 hover:bg-blue-700 rounded text-white/80 hover:text-white transition-colors"
-            title="Edit Data"
+            className={ACTION_BUTTON}
+            title="Edit data"
+            aria-label={`Edit data in ${data.label}`}
           >
-            <Edit3 size={10} />
+            <Edit3 size={11} />
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); setAddColumnOpen(true); }}
-            className="p-0.5 hover:bg-blue-700 rounded text-white/80 hover:text-white transition-colors"
-            title="Add Column"
+            className={ACTION_BUTTON}
+            title="Add column"
+            aria-label={`Add a column to ${data.label}`}
           >
-            <Plus size={10} />
+            <Plus size={11} />
           </button>
           <button
-            onClick={handleDownload}
-            className="p-0.5 hover:bg-blue-700 rounded text-white/80 hover:text-white transition-colors"
+            onClick={(e) => { e.stopPropagation(); data.onDownloadCsv?.(data.label); }}
+            className={ACTION_BUTTON}
             title="Download CSV"
+            aria-label={`Download ${data.label} as CSV`}
           >
-            <Download size={10} />
+            <Download size={11} />
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); data.onDelete?.(data.label); }}
-            className="p-0.5 hover:bg-red-500 rounded text-white/80 hover:text-white transition-colors"
+            className={`${ACTION_BUTTON} hover:bg-red-500`}
             title="Delete table"
+            aria-label={`Delete ${data.label}`}
           >
-            <Trash2 size={10} />
+            <Trash2 size={11} />
           </button>
         </div>
       </div>
 
-      {/* COLUMNS LIST */}
-      <div className="flex flex-col bg-zinc-50 py-0.5 rounded-b-md">
-        {data.columns.map((col, i) => (
-          <div key={i} className="group relative flex justify-between items-center px-2 py-0.5 hover:bg-zinc-100 transition-colors h-[22px]">
+      <div className="flex flex-col bg-ink-50 py-0.5 rounded-b-md">
+        {data.columns.map((col) => {
+          const isKey = isKeyColumn(col);
+          // A foreign key points *out* of this table, so it is the target end of an edge.
+          const isForeignKey = col.name !== 'id' && col.name.endsWith('_id');
 
-            {/* LEFT HANDLE (Target): Only if column ends in _id (Foreign Key) but is not "id" */}
-            {(col.name !== 'id' && col.name.endsWith('_id')) && (
+          return (
+            <div
+              key={col.name}
+              className="group relative flex justify-between items-center px-2 py-0.5 hover:bg-ink-100 transition-colors h-[22px]"
+            >
+              {isForeignKey && (
                 <div className="absolute -left-1.5 top-1/2 -translate-y-1/2 z-50">
-                    <Handle type="target" position={Position.Left} id={`${col.name}-left`} className="!w-2.5 !h-2.5 !bg-blue-500 !border-2 !border-white" />
+                  <Handle
+                    type="target"
+                    position={Position.Left}
+                    id={`${col.name}-left`}
+                    isConnectable={false}
+                    className="!w-2.5 !h-2.5 !bg-brand-500 !border-2 !border-white"
+                  />
                 </div>
-            )}
-
-            {/* Column Name */}
-            <div className="flex items-center gap-1.5 overflow-hidden">
-              {(col.name === 'id' || col.name.endsWith('_id')) && (
-                <KeyRound size={8} className="text-blue-500 shrink-0" />
               )}
-              <span className="truncate font-mono text-[9px] text-zinc-700 leading-none font-medium">
-                {col.name}
-              </span>
-            </div>
 
-            {/* Column Type, swapped for an edit affordance on hover */}
-            <span className="flex items-center gap-1 shrink-0 ml-2">
-              <span className="text-zinc-400 font-mono uppercase text-[8px] leading-none">
-                {col.type}
-              </span>
-              <button
-                onClick={(e) => { e.stopPropagation(); setEditingColumn(col); }}
-                className="p-0.5 rounded text-zinc-400 hover:text-blue-600 hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition-opacity"
-                title={`Edit column "${col.name}"`}
-              >
-                <Pencil size={8} />
-              </button>
-            </span>
+              <div className="flex items-center gap-1.5 overflow-hidden">
+                {isKey && <KeyRound size={8} className="text-brand-500 shrink-0" />}
+                <span
+                  className={`truncate font-mono text-[9px] leading-none ${
+                    col.isPk ? 'text-brand-700 font-bold' : 'text-ink-700 font-medium'
+                  }`}
+                  title={col.notNull ? `${col.name} (NOT NULL)` : col.name}
+                >
+                  {col.name}
+                </span>
+              </div>
 
-            {/* RIGHT HANDLE (Source): If it's 'id' OR ends in '_id' (allows referencing table_id from another table) */}
-            {(col.name === 'id' || col.name.endsWith('_id')) && (
+              {/* Column type, with an edit affordance beside it on hover. */}
+              <span className="flex items-center gap-1 shrink-0 ml-2">
+                <span className="text-ink-400 font-mono uppercase text-[8px] leading-none">
+                  {col.type}
+                </span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); setEditingColumn(col); }}
+                  className="p-0.5 rounded text-ink-400 hover:text-brand-600 hover:bg-brand-50 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+                  title={`Edit column "${col.name}"`}
+                  aria-label={`Edit column ${col.name}`}
+                >
+                  <Pencil size={8} />
+                </button>
+              </span>
+
+              {isKey && (
                 <div className="absolute -right-1.5 top-1/2 -translate-y-1/2 z-50">
-                    <Handle type="source" position={Position.Right} id={`${col.name}-right`} className="!w-2.5 !h-2.5 !bg-blue-500 !border-2 !border-white" />
+                  <Handle
+                    type="source"
+                    position={Position.Right}
+                    id={`${col.name}-right`}
+                    isConnectable={false}
+                    className="!w-2.5 !h-2.5 !bg-brand-500 !border-2 !border-white"
+                  />
                 </div>
-            )}
-
-          </div>
-        ))}
+              )}
+            </div>
+          );
+        })}
       </div>
 
-      <AddColumnModal
-        isOpen={isAddColumnOpen}
-        tableName={data.label}
-        existingColumns={data.columns.map(c => c.name)}
-        onClose={() => setAddColumnOpen(false)}
-        onSuccess={() => data.onRefresh?.()}
-      />
+      {isAddColumnOpen && (
+        <AddColumnModal
+          isOpen
+          tableName={data.label}
+          existingColumns={columnNames}
+          onClose={() => setAddColumnOpen(false)}
+          onSuccess={() => data.onRefresh?.()}
+        />
+      )}
 
-      <EditColumnModal
-        isOpen={editingColumn !== null}
-        tableName={data.label}
-        column={editingColumn}
-        existingColumns={data.columns.map(c => c.name)}
-        onClose={() => setEditingColumn(null)}
-        onSuccess={() => data.onRefresh?.()}
-      />
+      {editingColumn && (
+        <EditColumnModal
+          isOpen
+          tableName={data.label}
+          column={editingColumn}
+          existingColumns={columnNames}
+          onClose={() => setEditingColumn(null)}
+          onSuccess={() => data.onRefresh?.()}
+        />
+      )}
 
-      <TableNotesModal
-        isOpen={isNotesOpen}
-        tableName={data.label}
-        onClose={() => setNotesOpen(false)}
-        onChanged={() => data.onNotesChanged?.()}
-      />
+      {isNotesOpen && (
+        <TableNotesModal
+          isOpen
+          tableName={data.label}
+          onClose={() => setNotesOpen(false)}
+          onChanged={() => data.onNotesChanged?.()}
+        />
+      )}
     </div>
   );
 };

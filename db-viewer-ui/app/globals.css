@@ -1,29 +1,83 @@
 @import "tailwindcss";
 
-/* 1. OVERRIDE DEFAULT DARK MODE BEHAVIOR
-   This tells Tailwind v4: "Only apply 'dark:' styles if the class .dark is present." 
-*/
-@custom-variant dark (&:where(.dark, .dark *));
+/* ──────────────────────────────────────────────────────────────────────────
+   Design tokens.
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+   One palette for the whole product. The landing page and the editor used to
+   run on separate systems — a blue/indigo gradient set on slate neutrals for
+   the marketing pages, flat `blue-600` on zinc for the editor — which is why
+   moving between them felt like moving between two apps.
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+   Everything below is exposed to Tailwind through `@theme`, so `bg-brand-600`,
+   `text-ink-500` and `border-line` are real utilities. Prefer those over raw
+   palette classes in new code.
+   ────────────────────────────────────────────────────────────────────────── */
+
+@theme {
+  /* Brand ramp. 600 is the primary; the gradient runs 600 -> violet. */
+  --color-brand-50: #eff6ff;
+  --color-brand-100: #dbeafe;
+  --color-brand-200: #bfdbfe;
+  --color-brand-300: #93c5fd;
+  --color-brand-400: #60a5fa;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #2563eb;
+  --color-brand-700: #1d4ed8;
+  --color-brand-800: #1e40af;
+  --color-brand-900: #1e3a8a;
+  --color-brand-violet: #4f46e5;
+
+  /* Neutrals. Slate, not zinc: a blue undertone keeps whites in the same
+     family as the accent instead of sitting beside it. */
+  --color-ink-50: #f8fafc;
+  --color-ink-100: #f1f5f9;
+  --color-ink-200: #e2e8f0;
+  --color-ink-300: #cbd5e1;
+  --color-ink-400: #94a3b8;
+  --color-ink-500: #64748b;
+  --color-ink-600: #475569;
+  --color-ink-700: #334155;
+  --color-ink-800: #1e293b;
+  --color-ink-900: #0f172a;
+  --color-ink-950: #020617;
+
+  /* Surfaces */
+  --color-surface: #ffffff;
+  --color-surface-tint: #f6f8fd; /* white with a blue cast */
+  --color-line: #e2e8f5;         /* borders that belong to the blue family */
+
+  /* Tailwind's smallest default breakpoint is 640px, which leaves the whole 320-639px band
+     with no way to make a distinction. `xs` splits it where a second control stops fitting
+     on one line. */
+  --breakpoint-xs: 25rem;
+
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 
-/* 2. UPDATE CSS VARIABLES
-   Changed from "@media (prefers-color-scheme: dark)" to ".dark".
-   Now, when your React code adds the class "dark" to HTML, these colors apply.
-*/
-.dark {
-  --background: #0a0a0a;
-  --foreground: #ededed;
+:root {
+  --background: #ffffff;
+  --foreground: #0f172a;
+
+  /* Aliases kept for the plain-CSS utilities further down. */
+  --brand-600: #2563eb;
+  --brand-500: #3b82f6;
+  --brand-400: #60a5fa;
+  --brand-deep: #1d4ed8;
+  --brand-violet: #4f46e5;
+  --surface-tint: #f6f8fd;
+  --surface-line: #e2e8f5;
+
+  /* Shadows are tinted blue rather than black. Black shadows on a blue page
+     read as grime; tinted ones read as light. */
+  --glow-sm: 0 1px 2px rgba(37, 99, 235, 0.06), 0 4px 12px -4px rgba(37, 99, 235, 0.10);
+  --glow-md: 0 4px 10px -2px rgba(37, 99, 235, 0.10), 0 18px 38px -14px rgba(37, 99, 235, 0.22);
+  --glow-lg: 0 10px 24px -6px rgba(30, 64, 175, 0.18), 0 40px 70px -22px rgba(30, 64, 175, 0.30);
+
+  /* Modal stacking. Dialogs compute their own z-index from the open-dialog
+     stack depth, starting here, so a dialog opened from inside a dialog is
+     always above its parent without anyone hand-picking a number. */
+  --z-overlay-base: 100;
 }
 
 body {
@@ -31,7 +85,7 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans);
   /* Inter's defaults are loose at UI sizes; these are the settings it is designed to be
-     read with. `cv11` gives the single-storey 'a'-alternate digits a straighter shape. */
+     read with. `cv11` gives the single-storey 'a' and its digits a straighter shape. */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
@@ -44,90 +98,75 @@ h1, h2, h3, h4 {
   letter-spacing: -0.022em;
 }
 
-/* Design tokens */
-:root {
-  --accent: #06b6d4; /* teal-400 */
-  --muted: #9ca3af; /* zinc-400 */
-  --panel-bg-light: #ffffff;
-  --panel-bg-dark: #111827; /* near zinc-950 but adjustable */
-  --shadow-1: 0 1px 2px rgba(2,6,23,0.6);
-  --shadow-2: 0 6px 18px rgba(2,6,23,0.5);
-}
-
-/* Utility UI classes to provide consistent panels, borders and shadows */
-.card {
-  border-radius: 0.5rem; /* rounded-lg */
-  border: 1px solid rgba(148,163,184,0.12);
-  box-shadow: var(--shadow-1);
-  background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent);
-}
-
-.panel {
-  border-radius: 0.5rem;
-  border: 1px solid rgba(148,163,184,0.06);
-  box-shadow: var(--shadow-2);
-  overflow: hidden;
-}
-
-.soft-border {
-  border: 1px solid rgba(148,163,184,0.06);
-}
-
-.btn-primary {
-  background: var(--accent);
-  color: white;
-  padding: 0.45rem 0.75rem;
-  border-radius: 0.375rem;
-  font-weight: 600;
-  box-shadow: 0 6px 14px rgba(6,182,212,0.12);
-}
-
-/* Minor focus ring for keyboard navigation */
-:focus {
-  outline: 2px solid rgba(6,182,212,0.18);
+/* Keyboard focus only. The old rule used `:focus`, so every mouse click on a
+   button or a table cell painted a ring the user had not asked for. */
+:focus-visible {
+  outline: 2px solid var(--brand-500);
   outline-offset: 2px;
   border-radius: 0.25rem;
 }
 
-/* Animations and micro-interactions */
+/* Stop iOS Safari zooming the page when a control smaller than 16px is focused,
+   without making every input look oversized on the desktop. */
+@media (max-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+/* While a dialog is open the page behind it must not scroll — on touch devices
+   a scrolling background under a modal is the classic "lost my place" bug. */
+body[data-dialog-open="true"] {
+  overflow: hidden;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Motion.
+
+   The `animate-in / fade-in / slide-in-from-*` classes scattered through the
+   components come from `tailwindcss-animate`, which this project never
+   installed — so all 17 of them were inert. These are the real thing, named
+   so it is obvious they are local.
+   ────────────────────────────────────────────────────────────────────────── */
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
 @keyframes fadeInUp {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 
-.animate-fade-up {
-  animation: fadeInUp 360ms cubic-bezier(.22,.9,.31,1) both;
+@keyframes dialogIn {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* Soft hover lift for cards and buttons */
-.card-hover {
-  transition: transform 180ms cubic-bezier(.22,.9,.31,1), box-shadow 180ms ease;
-}
-.card-hover:hover {
-  transform: translateY(-6px);
-  box-shadow: 0 18px 40px rgba(2,6,23,0.55);
+@keyframes sheetIn {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
 }
 
-.btn-animated {
-  transition: transform 160ms ease, box-shadow 160ms ease, background-color 120ms ease;
-}
-.btn-animated:hover {
-  transform: translateY(-3px) scale(1.02);
-  box-shadow: 0 10px 30px rgba(6,182,212,0.12);
+@keyframes menuIn {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* Subtle table row hover */
-.table-row-anim {
-  transition: background-color 160ms ease, transform 160ms ease;
-}
-.table-row-anim:hover {
-  background-color: rgba(255,255,255,0.02);
-  transform: translateY(-2px);
-}
+@media (prefers-reduced-motion: no-preference) {
+  .anim-fade-in    { animation: fadeIn 150ms ease-out both; }
+  .anim-fade-up    { animation: fadeInUp 360ms cubic-bezier(.22,.9,.31,1) both; }
+  .anim-dialog-in  { animation: dialogIn 180ms cubic-bezier(.16,.84,.44,1) both; }
+  .anim-menu-in    { animation: menuIn 140ms cubic-bezier(.16,.84,.44,1) both; }
 
-/* Smooth width transition for sidebars */
-.sidebar-width-transition {
-  transition: width 260ms cubic-bezier(.22,.9,.31,1), opacity 220ms ease;
+  /* On a phone the dialog is a bottom sheet, so it rises from the edge it is
+     attached to rather than scaling in the middle of the screen. */
+  @media (max-width: 640px) {
+    .anim-dialog-in { animation: sheetIn 220ms cubic-bezier(.16,.84,.44,1) both; }
+  }
 }
 
 /* Landing-page anchors (#features / #templates) glide rather than jump. Respects the
@@ -143,8 +182,8 @@ h1, h2, h3, h4 {
 
    The theme is that the page performs what the product does: a schema that
    assembles itself, edges that draw, data that moves along them. Everything
-   here is decorative, so it is all wrapped in a reduced-motion guard further
-   down — the content itself never depends on an animation having run.
+   here is decorative, so it is all wrapped in a reduced-motion guard — the
+   content itself never depends on an animation having run.
    ────────────────────────────────────────────────────────────────────────── */
 
 @keyframes revealUp {
@@ -162,11 +201,6 @@ h1, h2, h3, h4 {
 @keyframes drawLine {
   from { stroke-dashoffset: var(--dash, 300); }
   to   { stroke-dashoffset: 0; }
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
 }
 
 /* Cards drift so the hero never looks like a screenshot. */
@@ -241,57 +275,45 @@ h1, h2, h3, h4 {
   .caret {
     animation: caretBlink 1.05s step-end infinite;
   }
-}
 
-/* A lift with a coloured glow, for feature and template cards. */
-.lift-card {
-  transition:
-    transform 260ms cubic-bezier(.16, .84, .44, 1),
-    box-shadow 260ms ease,
-    border-color 200ms ease;
-}
-@media (prefers-reduced-motion: no-preference) {
+  /* The big editor mockup assembles itself, like the hero. */
+  .mock-card {
+    opacity: 0;
+    animation: popIn 640ms cubic-bezier(.16, .84, .44, 1) both;
+  }
+  .mock-edge {
+    stroke-dasharray: var(--dash, 400);
+    animation: drawLine 1000ms cubic-bezier(.16, .84, .44, 1) both;
+  }
+  .mock-chrome {
+    opacity: 0;
+    animation: fadeIn 500ms ease-out both;
+  }
+
+  /* A lift with a coloured glow, for feature and template cards. */
   .lift-card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 18px 40px -12px rgba(37, 99, 235, 0.28);
+    transform: translateY(-6px);
+    box-shadow: var(--glow-md);
   }
   /* The icon reacts too, so the whole tile feels like one object. */
   .lift-card:hover .lift-icon {
     transform: scale(1.1) rotate(-5deg);
   }
 }
+
+.lift-card {
+  transition:
+    transform 260ms cubic-bezier(.16, .84, .44, 1),
+    box-shadow 260ms ease,
+    border-color 200ms ease;
+}
 .lift-icon {
   transition: transform 300ms cubic-bezier(.16, .84, .44, 1), background-color 200ms ease;
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
-   Landing palette.
-
-   The page read flat because everything was a single solid blue on neutral
-   grey. Three changes fix that without abandoning blue-and-white:
-
-   1. The primary is a gradient (blue -> indigo), not a fill, so large areas
-      have direction and depth.
-   2. Neutrals carry a blue undertone (slate rather than zinc), so white areas
-      sit in the same family as the accent instead of beside it.
-   3. Shadows are tinted blue rather than black. Black shadows on a blue page
-      read as grime; tinted ones read as light.
+   Shared surface utilities. Used by both the landing page and the editor.
    ────────────────────────────────────────────────────────────────────────── */
-
-:root {
-  --brand-600: #2563eb;
-  --brand-500: #3b82f6;
-  --brand-400: #60a5fa;
-  --brand-deep: #1d4ed8;
-  --brand-violet: #4f46e5;
-
-  --surface-tint: #f6f8fd;   /* white with a blue cast */
-  --surface-line: #e2e8f5;   /* borders that belong to the blue family */
-
-  --glow-sm: 0 1px 2px rgba(37, 99, 235, 0.06), 0 4px 12px -4px rgba(37, 99, 235, 0.10);
-  --glow-md: 0 4px 10px -2px rgba(37, 99, 235, 0.10), 0 18px 38px -14px rgba(37, 99, 235, 0.22);
-  --glow-lg: 0 10px 24px -6px rgba(30, 64, 175, 0.18), 0 40px 70px -22px rgba(30, 64, 175, 0.30);
-}
 
 /* The primary gradient, for buttons and headers. */
 .brand-gradient {
@@ -331,16 +353,9 @@ h1, h2, h3, h4 {
   box-shadow: var(--glow-sm);
 }
 
+.shadow-glow-sm { box-shadow: var(--glow-sm); }
 .shadow-glow-md { box-shadow: var(--glow-md); }
 .shadow-glow-lg { box-shadow: var(--glow-lg); }
-
-/* Replaces the plain lift: the card rises *and* its shadow warms up. */
-@media (prefers-reduced-motion: no-preference) {
-  .lift-card:hover {
-    transform: translateY(-6px);
-    box-shadow: var(--glow-md);
-  }
-}
 
 /* A hairline gradient rule, for section edges that should not look stamped on. */
 .rule-gradient {
@@ -348,18 +363,26 @@ h1, h2, h3, h4 {
   background-image: linear-gradient(90deg, transparent, var(--surface-line) 15%, var(--surface-line) 85%, transparent);
 }
 
-/* The big editor mockup assembles itself, like the hero. */
-@media (prefers-reduced-motion: no-preference) {
-  .mock-card {
-    opacity: 0;
-    animation: popIn 640ms cubic-bezier(.16, .84, .44, 1) both;
-  }
-  .mock-edge {
-    stroke-dasharray: var(--dash, 400);
-    animation: drawLine 1000ms cubic-bezier(.16, .84, .44, 1) both;
-  }
-  .mock-chrome {
-    opacity: 0;
-    animation: fadeIn 500ms ease-out both;
-  }
+/* ──────────────────────────────────────────────────────────────────────────
+   Scrollbars. The editor is full of small scrolling panes; the default
+   Windows/Chrome scrollbar is wide enough to unbalance a 256px sidebar.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.scroll-slim {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-ink-300) transparent;
+}
+.scroll-slim::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-slim::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroll-slim::-webkit-scrollbar-thumb {
+  background-color: var(--color-ink-300);
+  border-radius: 9999px;
+}
+.scroll-slim::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-ink-400);
 }

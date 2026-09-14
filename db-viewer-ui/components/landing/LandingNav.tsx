@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Database, Menu, X } from 'lucide-react';
+import { Database, Menu, X, Settings } from 'lucide-react';
 import { AuthUser } from '@/services/api';
 
 interface LandingNavProps {
@@ -11,6 +11,7 @@ interface LandingNavProps {
     onLogin: () => void;
     onSignup: () => void;
     onSignOut: () => void;
+    onEditProfile: () => void;
 }
 
 /** In-page anchors on the landing page. */
@@ -32,7 +33,7 @@ const PAGES = [
  * own chrome. White, so the hero reads as the page's own surface rather than as an extension
  * of the editor's blue header.
  */
-export const LandingNav = ({ user, onLogin, onSignup, onSignOut }: LandingNavProps) => {
+export const LandingNav = ({ user, onLogin, onSignup, onSignOut, onEditProfile }: LandingNavProps) => {
     const pathname = usePathname();
     // Off the landing page the anchors have to point back at it, or they resolve against
     // the current route and go nowhere.
@@ -77,26 +78,29 @@ export const LandingNav = ({ user, onLogin, onSignup, onSignOut }: LandingNavPro
     const navLinkClass = (isActive: boolean) =>
         `px-4 py-2 rounded-full text-[15px] font-medium transition-colors ${
             isActive
-                ? 'bg-blue-50 text-blue-700'
-                : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100'
+                ? 'bg-brand-50 text-brand-700'
+                : 'text-ink-600 hover:text-ink-900 hover:bg-ink-100'
         }`;
 
     return (
-        <header className="fixed top-0 inset-x-0 z-50 px-4 pt-4">
+        <header className="fixed top-0 inset-x-0 z-50 px-3 sm:px-4 pt-3 sm:pt-4">
             <nav
-                className={`mx-auto max-w-6xl rounded-full border border-zinc-200/80 bg-white/90 backdrop-blur-md transition-shadow ${
-                    isScrolled ? 'shadow-lg shadow-zinc-900/[0.07]' : 'shadow-sm'
+                className={`mx-auto max-w-6xl rounded-full border border-ink-200/80 bg-white/90 backdrop-blur-md transition-shadow ${
+                    isScrolled ? 'shadow-lg shadow-ink-900/[0.07]' : 'shadow-sm'
                 }`}
             >
-                <div className="flex items-center justify-between gap-4 pl-6 pr-4 py-3.5">
+                <div className="flex items-center justify-between gap-2 sm:gap-4 pl-3 sm:pl-6 pr-3 sm:pr-4 py-2.5 sm:py-3.5">
 
                     {/* Left: brand */}
-                    <Link href="/" className="flex items-center gap-3 shrink-0 group">
-                        <span className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center shadow-sm transition-transform group-hover:scale-105">
+                    <Link href="/" className="flex items-center gap-2.5 sm:gap-3 shrink-0 group">
+                        <span className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl brand-gradient flex items-center justify-center shadow-sm transition-transform group-hover:scale-105">
                             <Database size={20} className="text-white" />
                         </span>
-                        <span className="text-[17px] font-semibold text-zinc-900 tracking-tight">
-                            SQL <span className="text-blue-600">Visualizer</span>
+                        {/* The wordmark is the first thing to go on a narrow screen: the mark
+                            alone still identifies the product, and three controls plus a menu
+                            button already fill a 360px bar. */}
+                        <span className="hidden xs:inline text-[17px] font-semibold text-ink-900 tracking-tight">
+                            SQL <span className="text-brand-600">Visualizer</span>
                         </span>
                     </Link>
 
@@ -121,14 +125,20 @@ export const LandingNav = ({ user, onLogin, onSignup, onSignOut }: LandingNavPro
                             <>
                                 <Link
                                     href="/app"
-                                    className="hidden sm:inline-flex px-5 py-2 rounded-full text-[15px] font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                                    className="hidden sm:inline-flex px-5 py-2 rounded-full text-[15px] font-semibold bg-brand-600 text-white hover:bg-brand-700 transition-colors"
                                 >
                                     Open app
                                 </Link>
                                 <button
+                                    onClick={onEditProfile}
+                                    className="hidden sm:inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-[15px] font-medium text-ink-600 hover:text-ink-900 hover:bg-ink-100 transition-colors"
+                                    title={`Signed in as ${user.email}`}
+                                >
+                                    <Settings size={15} /> {user.displayName}
+                                </button>
+                                <button
                                     onClick={onSignOut}
-                                    className="px-4 py-2 rounded-full text-[15px] font-medium text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 transition-colors"
-                                    title={user.email}
+                                    className="hidden sm:inline-flex px-4 py-2 rounded-full text-[15px] font-medium text-ink-600 hover:text-ink-900 hover:bg-ink-100 transition-colors"
                                 >
                                     Sign out
                                 </button>
@@ -137,14 +147,14 @@ export const LandingNav = ({ user, onLogin, onSignup, onSignOut }: LandingNavPro
                             <>
                                 <button
                                     onClick={onLogin}
-                                    className="px-4 py-2 rounded-full text-[15px] font-medium text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 transition-colors"
+                                    className="hidden sm:inline-flex px-4 py-2 rounded-full text-[15px] font-medium text-ink-600 hover:text-ink-900 hover:bg-ink-100 transition-colors"
                                 >
                                     Login
                                 </button>
                                 {/* The coloured outline the design calls for. */}
                                 <button
                                     onClick={onSignup}
-                                    className="px-5 py-2 rounded-full text-[15px] font-semibold text-blue-700 border-2 border-blue-600 hover:bg-blue-600 hover:text-white transition-colors"
+                                    className="px-4 sm:px-5 py-2 rounded-full text-sm sm:text-[15px] font-semibold text-brand-700 border-2 border-brand-600 hover:bg-brand-600 hover:text-white transition-colors whitespace-nowrap"
                                 >
                                     Sign up
                                 </button>
@@ -153,7 +163,7 @@ export const LandingNav = ({ user, onLogin, onSignup, onSignOut }: LandingNavPro
 
                         <button
                             onClick={() => setMenuOpen(v => !v)}
-                            className="md:hidden p-2 rounded-full text-zinc-500 hover:bg-zinc-100 transition-colors"
+                            className="md:hidden p-2 rounded-full text-ink-500 hover:bg-ink-100 transition-colors"
                             aria-label="Menu"
                             aria-expanded={isMenuOpen}
                         >
@@ -163,13 +173,13 @@ export const LandingNav = ({ user, onLogin, onSignup, onSignOut }: LandingNavPro
                 </div>
 
                 {isMenuOpen && (
-                    <div className="md:hidden border-t border-zinc-200/80 px-4 py-2 flex flex-col">
+                    <div className="md:hidden border-t border-ink-200/80 px-4 py-2 flex flex-col">
                         {SECTIONS.map(({ id, label }) => (
                             <a
                                 key={id}
                                 href={sectionHref(id)}
                                 onClick={() => setMenuOpen(false)}
-                                className="px-3 py-2.5 rounded-lg text-[15px] font-medium text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100"
+                                className="px-3 py-2.5 rounded-lg text-[15px] font-medium text-ink-600 hover:text-ink-900 hover:bg-ink-100"
                             >
                                 {label}
                             </a>
@@ -179,11 +189,37 @@ export const LandingNav = ({ user, onLogin, onSignup, onSignOut }: LandingNavPro
                                 key={href}
                                 href={href}
                                 onClick={() => setMenuOpen(false)}
-                                className="px-3 py-2.5 rounded-lg text-[15px] font-medium text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100"
+                                className="px-3 py-2.5 rounded-lg text-[15px] font-medium text-ink-600 hover:text-ink-900 hover:bg-ink-100"
                             >
                                 {label}
                             </Link>
                         ))}
+
+                        {/* Below sm these are hidden in the bar itself, so the menu is the
+                            only way to reach them. */}
+                        <div className="sm:hidden border-t border-ink-200/80 mt-2 pt-2 flex flex-col">
+                            <Link
+                                href="/app"
+                                onClick={() => setMenuOpen(false)}
+                                className="px-3 py-2.5 rounded-lg text-[15px] font-semibold text-brand-700 hover:bg-brand-50"
+                            >
+                                Open app
+                            </Link>
+                            {user && (
+                                <button
+                                    onClick={() => { setMenuOpen(false); onEditProfile(); }}
+                                    className="px-3 py-2.5 rounded-lg text-left text-[15px] font-medium text-ink-600 hover:text-ink-900 hover:bg-ink-100"
+                                >
+                                    Edit profile
+                                </button>
+                            )}
+                            <button
+                                onClick={() => { setMenuOpen(false); if (user) onSignOut(); else onLogin(); }}
+                                className="px-3 py-2.5 rounded-lg text-left text-[15px] font-medium text-ink-600 hover:text-ink-900 hover:bg-ink-100"
+                            >
+                                {user ? 'Sign out' : 'Login'}
+                            </button>
+                        </div>
                     </div>
                 )}
             </nav>

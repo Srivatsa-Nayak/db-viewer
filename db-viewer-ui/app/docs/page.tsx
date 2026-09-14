@@ -10,10 +10,12 @@ import {
 
 import { LandingNav } from "@/components/landing/LandingNav";
 import { AuthModal } from "@/components/modal/AuthModal";
+import { ProfileModal } from "@/components/modal/ProfileModal";
 import {
     DocsSidebar, DocsGroup, Section, Steps, Step, ActionTable, Callout, UI, Code, Key,
 } from "@/components/docs/DocsChrome";
 import { authService, AuthUser } from "@/services/api";
+import { clearSession } from "@/services/sessionStorage";
 
 /**
  * The documentation page.
@@ -89,6 +91,7 @@ export default function DocsPage() {
     const [user, setUser] = useState<AuthUser | null>(null);
     const [isAuthOpen, setAuthOpen] = useState(false);
     const [authMode, setAuthMode] = useState<"login" | "signup">("signup");
+    const [isProfileOpen, setProfileOpen] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -96,37 +99,54 @@ export default function DocsPage() {
         return () => { cancelled = true; };
     }, []);
 
+    /** The open-files list belongs to the account being left, so it goes with it. */
+    const handleSignOut = () => {
+        authService.logout();
+        setUser(null);
+        clearSession();
+    };
+
     const openAuth = (mode: "login" | "signup") => {
         setAuthMode(mode);
         setAuthOpen(true);
     };
 
     return (
-        <div className="min-h-screen bg-white text-zinc-800">
+        <div className="min-h-screen bg-white text-ink-800">
             <LandingNav
                 user={user}
                 onLogin={() => openAuth("login")}
                 onSignup={() => openAuth("signup")}
-                onSignOut={() => { authService.logout(); setUser(null); }}
+                onSignOut={handleSignOut}
+                onEditProfile={() => setProfileOpen(true)}
             />
+
+            {isProfileOpen && user && (
+                <ProfileModal
+                    isOpen
+                    user={user}
+                    onClose={() => setProfileOpen(false)}
+                    onUpdated={setUser}
+                />
+            )}
 
             {/* ── Header ───────────────────────────────────────────────────────── */}
             <header className="section-wash relative overflow-hidden border-b border-[var(--surface-line)] pt-36 pb-14 sm:pt-44">
                 <div
                     aria-hidden
-                    className="pointer-events-none absolute -left-24 -top-20 h-[26rem] w-[26rem] rounded-full bg-blue-400/15 blur-3xl"
+                    className="pointer-events-none absolute -left-24 -top-20 h-[26rem] w-[26rem] rounded-full bg-brand-400/15 blur-3xl"
                 />
                 <div className="relative mx-auto max-w-6xl px-6">
-                    <span className="mb-4 inline-block rounded-full border border-blue-200/70 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-wide text-blue-700 shadow-sm">
+                    <span className="mb-4 inline-block rounded-full border border-brand-200/70 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-wide text-brand-700 shadow-sm">
                         Documentation
                     </span>
-                    <h1 className="text-4xl font-bold tracking-tight text-zinc-900 sm:text-5xl">
+                    <h1 className="text-4xl font-bold tracking-tight text-ink-900 sm:text-5xl">
                         The editor, <span className="brand-text-gradient">button by button</span>
                     </h1>
-                    <p className="mt-4 max-w-2xl text-lg leading-relaxed text-zinc-600">
+                    <p className="mt-4 max-w-2xl text-lg leading-relaxed text-ink-600">
                         What every control does, what it changes in your database, and where the
                         edges are. If you only read one section, make it{" "}
-                        <a href="#quick-start" className="font-medium text-blue-700 underline decoration-blue-300 underline-offset-4 hover:decoration-blue-600">
+                        <a href="#quick-start" className="font-medium text-brand-700 underline decoration-brand-300 underline-offset-4 hover:decoration-brand-600">
                             Your first diagram
                         </a>.
                     </p>
@@ -139,7 +159,7 @@ export default function DocsPage() {
                 {/* The rail sticks below the nav on wide screens; above the prose on narrow
                     ones, where a sticky column would eat most of the viewport. */}
                 <aside className="mb-12 shrink-0 lg:mb-0 lg:w-60">
-                    <div className="lg:sticky lg:top-32 lg:max-h-[calc(100vh-10rem)] lg:overflow-y-auto lg:pr-2">
+                    <div className="lg:sticky lg:top-32 lg:max-h-[calc(100vh-10rem)] lg:overflow-y-auto lg:pr-2 scroll-slim">
                         <DocsSidebar groups={GROUPS} />
                     </div>
                 </aside>
@@ -202,7 +222,7 @@ export default function DocsPage() {
                         </Steps>
                         <p>
                             No file to hand?{" "}
-                            <Link href="/#templates" className="font-medium text-blue-700 underline decoration-blue-300 underline-offset-4 hover:decoration-blue-600">
+                            <Link href="/#templates" className="font-medium text-brand-700 underline decoration-brand-300 underline-offset-4 hover:decoration-brand-600">
                                 Start from a template
                             </Link>{" "}
                             — each one arrives with a schema and sample data already in it.
@@ -222,7 +242,7 @@ export default function DocsPage() {
                                 {
                                     icon: <Files size={15} />,
                                     action: "File",
-                                    effect: <>Everything that opens or produces a file: new, import, export, and delete. See <a href="#importing" className="text-blue-700 underline underline-offset-2">Importing</a>.</>,
+                                    effect: <>Everything that opens or produces a file: new, import, export, and delete. See <a href="#importing" className="text-brand-700 underline underline-offset-2">Importing</a>.</>,
                                 },
                                 {
                                     icon: <Share2 size={15} />,
@@ -257,7 +277,7 @@ export default function DocsPage() {
                                 {
                                     icon: <Plus size={15} />,
                                     action: "New file",
-                                    effect: <>Asks for a name and creates an empty database. See <a href="#files" className="text-blue-700 underline underline-offset-2">Files are databases</a>.</>,
+                                    effect: <>Asks for a name and creates an empty database. See <a href="#files" className="text-brand-700 underline underline-offset-2">Files are databases</a>.</>,
                                 },
                                 {
                                     icon: <Search size={15} />,
@@ -282,7 +302,7 @@ export default function DocsPage() {
                         <p>
                             In the expanded column list, primary keys are shown in blue. That marking
                             comes from the real schema, unlike the key icons on the canvas — see{" "}
-                            <a href="#relationships" className="text-blue-700 underline underline-offset-2">Relationships</a> for why those differ.
+                            <a href="#relationships" className="text-brand-700 underline underline-offset-2">Relationships</a> for why those differ.
                         </p>
                     </Section>
 
@@ -296,7 +316,7 @@ export default function DocsPage() {
                                 {
                                     icon: <Plus size={15} />,
                                     action: "New Table",
-                                    effect: <>Opens the table builder. See <a href="#create-table" className="text-blue-700 underline underline-offset-2">Creating a table</a>.</>,
+                                    effect: <>Opens the table builder. See <a href="#create-table" className="text-brand-700 underline underline-offset-2">Creating a table</a>.</>,
                                 },
                                 {
                                     icon: <HelpCircle size={15} />,
@@ -444,17 +464,17 @@ export default function DocsPage() {
                                 {
                                     icon: <StickyNote size={15} />,
                                     action: "Notes",
-                                    effect: <>Opens the table&apos;s to-do list. An amber badge shows how many items are still open. See <a href="#notes" className="text-blue-700 underline underline-offset-2">Notes</a>.</>,
+                                    effect: <>Opens the table&apos;s to-do list. An amber badge shows how many items are still open. See <a href="#notes" className="text-brand-700 underline underline-offset-2">Notes</a>.</>,
                                 },
                                 {
                                     icon: <Edit3 size={15} />,
                                     action: "Edit Data",
-                                    effect: <>Opens the row editor for this table. See <a href="#data-editor" className="text-blue-700 underline underline-offset-2">Viewing and editing rows</a>.</>,
+                                    effect: <>Opens the row editor for this table. See <a href="#data-editor" className="text-brand-700 underline underline-offset-2">Viewing and editing rows</a>.</>,
                                 },
                                 {
                                     icon: <Plus size={15} />,
                                     action: "Add Column",
-                                    effect: <>Adds one column via <Code>ALTER TABLE</Code>. See <a href="#columns" className="text-blue-700 underline underline-offset-2">Adding a column</a>.</>,
+                                    effect: <>Adds one column via <Code>ALTER TABLE</Code>. See <a href="#columns" className="text-brand-700 underline underline-offset-2">Adding a column</a>.</>,
                                 },
                                 {
                                     icon: <Download size={15} />,
@@ -464,12 +484,12 @@ export default function DocsPage() {
                                 {
                                     icon: <Trash2 size={15} />,
                                     action: "Delete table",
-                                    effect: <>Drops the table, after a confirmation. See <a href="#delete-table" className="text-blue-700 underline underline-offset-2">Deleting a table</a>.</>,
+                                    effect: <>Drops the table, after a confirmation. See <a href="#delete-table" className="text-brand-700 underline underline-offset-2">Deleting a table</a>.</>,
                                 },
                                 {
                                     icon: <Pencil size={15} />,
                                     action: "Pencil on a column",
-                                    effect: <>Appears when you hover a column row. Renames or retypes that column — see <a href="#edit-column" className="text-blue-700 underline underline-offset-2">Editing a column</a>.</>,
+                                    effect: <>Appears when you hover a column row. Renames or retypes that column — see <a href="#edit-column" className="text-brand-700 underline underline-offset-2">Editing a column</a>.</>,
                                 },
                             ]}
                         />
@@ -530,7 +550,7 @@ export default function DocsPage() {
                             <div className="overflow-x-auto">
                                 <table className="w-full border-collapse text-left text-[13.5px]">
                                     <thead>
-                                        <tr className="border-b border-zinc-200/80 text-[11px] uppercase tracking-wide text-zinc-400">
+                                        <tr className="border-b border-ink-200/80 text-[11px] uppercase tracking-wide text-ink-400">
                                             <th scope="col" className="px-4 py-2 font-semibold">Type</th>
                                             <th scope="col" className="px-4 py-2 font-semibold">Use it for</th>
                                         </tr>
@@ -546,11 +566,11 @@ export default function DocsPage() {
                                             ["TIME", "A time of day with no date."],
                                             ["DATETIME", "A date and time together — timestamps, created_at."],
                                         ].map(([type, use]) => (
-                                            <tr key={type} className="border-b border-zinc-100 last:border-0 align-top">
+                                            <tr key={type} className="border-b border-ink-100 last:border-0 align-top">
                                                 <td className="whitespace-nowrap px-4 py-3">
                                                     <Code>{type}</Code>
                                                 </td>
-                                                <td className="px-4 py-3 text-zinc-600">{use}</td>
+                                                <td className="px-4 py-3 text-ink-600">{use}</td>
                                             </tr>
                                         ))}
                                     </tbody>
@@ -571,7 +591,7 @@ export default function DocsPage() {
                     >
                         <p>
                             A line appears when a real foreign key exists. Define one when you{" "}
-                            <a href="#create-table" className="text-blue-700 underline underline-offset-2">create a table</a>, or
+                            <a href="#create-table" className="text-brand-700 underline underline-offset-2">create a table</a>, or
                             import a file that already has them, and the edge is drawn for you.
                         </p>
                         <Callout tone="warn" title="The key icons follow a naming convention, not the schema">
@@ -722,7 +742,7 @@ export default function DocsPage() {
                                 "at least one special character",
                             ].map(rule => (
                                 <li key={rule} className="flex items-start gap-2.5">
-                                    <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
+                                    <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-brand-500" />
                                     {rule}
                                 </li>
                             ))}
@@ -779,8 +799,8 @@ export default function DocsPage() {
                                 },
                             ].map(({ q, a }) => (
                                 <div key={q} className="surface-card rounded-xl border p-5">
-                                    <p className="font-semibold text-zinc-900">{q}</p>
-                                    <p className="mt-1.5 text-[14px] leading-relaxed text-zinc-600">{a}</p>
+                                    <p className="font-semibold text-ink-900">{q}</p>
+                                    <p className="mt-1.5 text-[14px] leading-relaxed text-ink-600">{a}</p>
                                 </div>
                             ))}
                         </div>
@@ -795,13 +815,13 @@ export default function DocsPage() {
                         <div className="relative sm:flex sm:items-center sm:justify-between sm:gap-6">
                             <div>
                                 <h2 className="text-xl font-bold text-white">Ready to try it?</h2>
-                                <p className="mt-1.5 text-[14px] leading-relaxed text-blue-100">
+                                <p className="mt-1.5 text-[14px] leading-relaxed text-brand-100">
                                     Open a file and the rest of this page will make more sense.
                                 </p>
                             </div>
                             <Link
                                 href="/app"
-                                className="mt-5 inline-flex shrink-0 items-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-semibold text-blue-700 shadow-lg transition-all hover:-translate-y-0.5 sm:mt-0"
+                                className="mt-5 inline-flex shrink-0 items-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-semibold text-brand-700 shadow-lg transition-all hover:-translate-y-0.5 sm:mt-0"
                             >
                                 Open the app <ArrowRight size={16} />
                             </Link>

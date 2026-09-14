@@ -1,5 +1,41 @@
 import axios from 'axios';
-import { RowData, SchemaResponse, TableDataResponse } from '@/types';
+import { getClientId } from './clientId';
+import {
+    ColumnInfo, RawColumnInfo, RawRelationship, RawSchemaResponse, Relationship,
+    RowData, SchemaResponse, TableDataResponse, TableInfo,
+} from '@/types';
+
+/* ── Wire -> UI normalisation ─────────────────────────────────────────────
+   The backend answers with `is_pk` in some places and `isPk` in others. Folding
+   both into one shape here is the only way the rest of the app can trust
+   `types/index.ts` as ground truth. */
+
+export const normaliseColumn = (c: RawColumnInfo): ColumnInfo => ({
+    name: c.name,
+    type: c.type,
+    isPk: c.isPk ?? c.is_pk ?? false,
+    notNull: c.notNull ?? c.not_null ?? false,
+});
+
+/** Drops a relationship that is missing an endpoint rather than drawing half an edge. */
+export const normaliseRelationships = (raw: RawRelationship[] = []): Relationship[] =>
+    raw.flatMap(r => {
+        const sourceTable = r.sourceTable ?? r.source_table;
+        const targetTable = r.targetTable ?? r.target_table;
+        const sourceColumn = r.sourceColumn ?? r.source_column;
+        const targetColumn = r.targetColumn ?? r.target_column ?? 'id';
+        if (!sourceTable || !targetTable || !sourceColumn) return [];
+        return [{ sourceTable, targetTable, sourceColumn, targetColumn }];
+    });
+
+export const normaliseSchema = (raw: RawSchemaResponse | undefined): SchemaResponse => ({
+    tables: (raw?.tables ?? []).map((t): TableInfo => ({
+        name: t.name,
+        columns: (t.columns ?? []).map(normaliseColumn),
+        rows: t.rows ?? [],
+    })),
+    relationships: normaliseRelationships(raw?.relationships),
+});
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
@@ -26,6 +62,13 @@ export const getActiveWorkspace = () => activeWorkspaceId;
 api.interceptors.request.use((config) => {
     if (activeWorkspaceId) {
         config.headers.set('X-Workspace-Id', activeWorkspaceId);
+    }
+    // Identifies the browser so the backend can keep two signed-out sessions apart. Sent on
+    // every request, not just workspace ones, because signing in is where it matters most:
+    // that is when the backend moves this browser's anonymous files onto the new account.
+    const clientId = getClientId();
+    if (clientId) {
+        config.headers.set('X-Client-Id', clientId);
     }
     return config;
 });
@@ -74,6 +117,18 @@ api.interceptors.request.use((config) => {
 export const isAuthRequired = (error: unknown): boolean =>
     typeof error === 'object' && error !== null && 'response' in error
     && (error as { response?: { status?: number } }).response?.status === 401;
+
+/**
+ * The workspace belongs to a different session.
+ *
+ * Distinct from a 401: the caller is identified perfectly well and simply does not own this
+ * file, so prompting them to sign in would be the wrong thing to do. It happens legitimately
+ * after signing out, when the files left open in the browser belong to the account that just
+ * left.
+ */
+export const isForeignWorkspace = (error: unknown): boolean =>
+    typeof error === 'object' && error !== null && 'response' in error
+    && (error as { response?: { status?: number } }).response?.status === 403;
 
 /**
  * Saves a response body as a file.
@@ -257,14 +312,13 @@ export const dbService = {
 
     // Get Schema & Relationships
     getSchema: async (): Promise<SchemaResponse> => {
-        const res = await api.get<SchemaResponse>(`/db-info?_t=${new Date().getTime()}`);
-        console.log("Schema Response:", res.data);
-        return res.data;
+        const res = await api.get<RawSchemaResponse>(`/db-info?_t=${new Date().getTime()}`);
+        return normaliseSchema(res.data);
     },
 
     /** Downloads one table as CSV. Requires an account. */
     downloadTableCsv: async (tableName: string) => {
-        const res = await api.get(`/export/${tableName}?t=${new Date().getTime()}`, {
+        const res = await api.get(`/export/${encodeURIComponent(tableName)}?t=${new Date().getTime()}`, {
             responseType: 'blob',
         });
         saveBlob(res.data, `${tableName}.csv`, 'text/csv');
@@ -272,8 +326,17 @@ export const dbService = {
 
     // Get fresh data for a single table
     getTableData: async (tableName: string): Promise<TableDataResponse | RowData[]> => {
-        const res = await api.get<TableDataResponse | RowData[]>(`/table-data/${tableName}?_t=${new Date().getTime()}`);
-        return res.data;
+        const res = await api.get<{ columns?: (RawColumnInfo | string)[]; rows?: RowData[] } | RowData[]>(
+            `/table-data/${encodeURIComponent(tableName)}?_t=${new Date().getTime()}`);
+        const body = res.data;
+        if (Array.isArray(body)) return body;
+        const rawCols = body?.columns ?? [];
+        return {
+            columns: rawCols.every((c): c is string => typeof c === 'string')
+                ? rawCols
+                : (rawCols as RawColumnInfo[]).map(normaliseColumn),
+            rows: body?.rows ?? [],
+        };
     },
 
     // Update a specific cell
@@ -299,11 +362,6 @@ export const dbService = {
             tableName, 
             recordId: String(recordId) 
         });
-    },
-
-    async clearDatabase() {
-        const response = await api.delete('/clear');
-        return response.data;
     },
 
     /**
@@ -367,6 +425,19 @@ export const authService = {
     },
 
     logout: () => setAuthToken(null),
+
+    /** Changes the display name and/or password. Send only what is changing. */
+    updateProfile: async (changes: {
+        displayName?: string;
+        currentPassword?: string;
+        newPassword?: string;
+    }): Promise<AuthUser> => {
+        const res = await api.patch<Partial<AuthUser>>('/auth/profile', changes);
+        return {
+            email: res.data?.email ?? '',
+            displayName: res.data?.displayName ?? res.data?.email ?? '',
+        };
+    },
 
     /** Resolves the stored token to a user, or null if there is none / it expired. */
     me: async (): Promise<AuthUser | null> => {
@@ -445,7 +516,13 @@ export interface SchemaTemplate {
     tables: string[];
     tableCount: number;
     relationshipCount: number;
-    /** Detail endpoint only — omitted from the list so the catalogue stays small. */
+    /**
+     * Detail endpoint only — omitted from the list so the catalogue stays small.
+     *
+     * Nothing renders this any more. The preview used to show it beside the diagram, which
+     * spent half the dialog on DDL nobody was choosing a template by; anyone who wants the SQL
+     * can open the template and export it, and get their own edits with it.
+     */
     sql?: string | null;
     /** Detail endpoint only. */
     schema?: TemplateSchema | null;

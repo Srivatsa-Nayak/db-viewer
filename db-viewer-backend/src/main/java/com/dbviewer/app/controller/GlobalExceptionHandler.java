@@ -1,5 +1,7 @@
 package com.dbviewer.app.controller;
 
+import com.dbviewer.app.exception.UnauthorizedException;
+import com.dbviewer.app.exception.WorkspaceForbiddenException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.http.ResponseEntity;
@@ -20,6 +22,22 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<?> handleIllegalArgument(IllegalArgumentException e) {
         return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+    }
+
+    /**
+     * The caller is identified perfectly well and simply does not own the workspace, so this is
+     * 403 and not 401 — signing in again would change nothing.
+     */
+    @ExceptionHandler(WorkspaceForbiddenException.class)
+    public ResponseEntity<?> handleWorkspaceForbidden(WorkspaceForbiddenException e) {
+        return ResponseEntity.status(403).body(Map.of(
+                "error", e.getMessage(),
+                "notYourWorkspace", true));
+    }
+
+    @ExceptionHandler(UnauthorizedException.class)
+    public ResponseEntity<?> handleUnauthorized(UnauthorizedException e) {
+        return ResponseEntity.status(401).body(Map.of("error", e.getMessage()));
     }
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)

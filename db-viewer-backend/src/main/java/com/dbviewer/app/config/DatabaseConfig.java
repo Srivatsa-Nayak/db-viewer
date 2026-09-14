@@ -47,6 +47,15 @@ public class DatabaseConfig {
         jdbcTemplate.execute(Constants.Ddl.CREATE_APP_USERS_TABLE.formatted(autoIncrementKey));
 
         jdbcTemplate.execute(Constants.Ddl.CREATE_SHARED_LINKS_TABLE);
+
+        jdbcTemplate.execute(Constants.Ddl.CREATE_WORKSPACE_OWNERS_TABLE);
+        try {
+            jdbcTemplate.execute(Constants.Ddl.CREATE_WORKSPACE_OWNERS_INDEX);
+        } catch (Exception e) {
+            // An index is an optimisation, not a correctness requirement, and older MySQL
+            // rejects IF NOT EXISTS here. Losing it must not stop the app booting.
+            log.debug("Workspace owner index not created: {}", e.getMessage());
+        }
     }
 
     public String getCurrentDriver() {
