@@ -44,20 +44,22 @@ Built with **Spring Boot 3.3 (Java 17)** on the backend and **Next.js 16** on th
 | **🧱 Schema editing** | Create tables with primary keys, `NOT NULL` constraints and foreign keys; add columns, and rename or retype existing ones, through dedicated modals. |
 | **⬇️ Export** | Download one table as CSV, the whole file as a round-trippable SQL dump, or the diagram as a PNG for reading the schema offline. |
 | **🏠 Landing page** | `/` introduces the app, with in-page Features and Templates sections; the editor lives at `/app`. |
-| **🧩 Starter templates** | Twelve ready-made schemas across seven categories. Preview shows the diagram *and* the SQL side by side. Authored on the backend — the frontend only renders them. |
+| **🧩 Starter templates** | Twelve ready-made schemas across seven categories. Preview shows the diagram — the SQL is not repeated there, since opening a template and exporting gives you your own edits with it. Authored on the backend — the frontend only renders them. |
 | **✨ Example schema** | The canvas's empty state loads the Online Store template, so it is never a blank page. |
 | **🗑️ Safe table deletion** | Delete a table from its node — refused with a clear message when another table's foreign key still references it. |
 | **📝 Table notes** | A to-do list per table, stored with the file. Tick items off and come back to them later. |
 | **🔗 Share links** | Create a read-only link to a file. Anyone with the link can view the schema; nobody can edit it. |
-| **👤 Optional accounts** | Everything works signed out. Only exporting and sharing need a free account (password: 8+ chars, a capital and a special character). |
+| **👤 Optional accounts** | Everything works signed out. Only exporting and sharing need a free account (password: 8+ chars, a capital and a special character). Signed in, you can change your display name and password from **Edit profile**. |
+| **🔒 Private workspaces** | Every file belongs to whoever made it. A signed-in user's files follow their account to any browser; a signed-out visitor's files belong to that browser alone. Knowing a workspace id is no longer enough to open it — the API answers 403. |
 | **💾 Session persistence** | The files you have open survive a browser refresh — the list and your canvas layout are remembered locally, and the schema is re-read from the databases, which are the source of truth. |
 | **📑 API docs** | OpenAPI/Swagger UI generated from the backend controllers. |
 
-> ⚠️ **This is a developer tool, not a multi-tenant service.** Accounts gate exporting and
-> sharing, but they are not an authorisation model: any caller can still read and edit any
-> workspace whose id they know, CORS is wide open, and `POST /query` executes arbitrary SQL by
-> design. Run it locally or behind your own access control — never expose the API to untrusted
-> callers.
+> ⚠️ **This is a developer tool, not a multi-tenant service.** Workspaces are now owned, so one
+> user's files are not readable by another, but the anonymous half of that ownership rests on an
+> `X-Client-Id` header the browser generates — a name for a session, not a credential, and
+> trivially forged by anything that is not a browser. CORS is also wide open. Treat it as
+> isolation between honest sessions, not as a security boundary: run it locally or behind your
+> own access control, and never expose the API to untrusted callers.
 
 ---
 
@@ -154,7 +156,7 @@ db-viewer/
 | Styling | Tailwind CSS v4 (CSS-first config) |
 | HTTP | Axios |
 | Icons | Lucide React |
-| Font | JetBrains Mono via `next/font/google` |
+| Fonts | Inter (UI) + Geist Mono (code) via `next/font/google` |
 
 ---
 

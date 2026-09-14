@@ -54,7 +54,7 @@ const EDGES = [
 
 const TableCard = ({ table }: { table: TableSpec }) => (
     <div
-        className="hero-card absolute w-[168px] rounded-lg border border-blue-200 bg-white shadow-xl shadow-blue-900/5"
+        className="hero-card absolute w-[168px] rounded-lg border border-brand-200 bg-white shadow-xl shadow-brand-900/5"
         style={{ ...table.style, animationDelay: `${table.delay}ms` }}
     >
         {/* The float lives on an inner element so it does not fight the pop-in transform. */}
@@ -62,22 +62,22 @@ const TableCard = ({ table }: { table: TableSpec }) => (
             className="hero-card-float"
             style={{ animationDelay: `${1200 + table.delay * 3}ms` }}
         >
-            <div className="flex items-center gap-1.5 rounded-t-lg bg-blue-600 px-2.5 py-1.5">
+            <div className="flex items-center gap-1.5 rounded-t-lg bg-brand-600 px-2.5 py-1.5">
                 <Database size={10} className="shrink-0 text-white" />
                 <span className="truncate text-[11px] font-bold text-white">{table.name}</span>
             </div>
-            <div className="rounded-b-lg bg-zinc-50 py-1">
+            <div className="rounded-b-lg bg-ink-50 py-1">
                 {table.columns.map(([column, type]) => (
                     <div key={column} className="flex h-[21px] items-center justify-between px-2.5">
                         <span className="flex items-center gap-1 overflow-hidden">
                             {(column === 'id' || column.endsWith('_id')) && (
-                                <KeyRound size={8} className="shrink-0 text-blue-500" />
+                                <KeyRound size={8} className="shrink-0 text-brand-500" />
                             )}
-                            <span className="truncate font-mono text-[9px] font-medium text-zinc-700">
+                            <span className="truncate font-mono text-[9px] font-medium text-ink-700">
                                 {column}
                             </span>
                         </span>
-                        <span className="ml-2 shrink-0 font-mono text-[8px] uppercase text-zinc-400">
+                        <span className="ml-2 shrink-0 font-mono text-[8px] uppercase text-ink-400">
                             {type}
                         </span>
                     </div>
@@ -91,7 +91,7 @@ export const HeroDiagram = () => (
     <div aria-hidden className="relative mx-auto h-[340px] w-full max-w-[480px] select-none">
         {/* Dotted canvas, matching the editor's own backdrop. */}
         <div
-            className="absolute inset-0 rounded-2xl border border-zinc-200 bg-white/70 shadow-sm backdrop-blur-sm"
+            className="absolute inset-0 rounded-2xl border border-ink-200 bg-white/70 shadow-sm backdrop-blur-sm"
             style={{
                 backgroundImage: 'radial-gradient(#d4d4d8 1.1px, transparent 1.1px)',
                 backgroundSize: '20px 20px',
@@ -144,7 +144,7 @@ export const HeroDiagram = () => (
 
         {/* Lands last, once the schema is complete. */}
         <div
-            className="hero-label absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-zinc-200 bg-white/90 px-3 py-1 text-[11px] font-medium text-zinc-500 shadow-sm backdrop-blur-sm"
+            className="hero-label absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-ink-200 bg-white/90 px-3 py-1 text-[11px] font-medium text-ink-500 shadow-sm backdrop-blur-sm"
             style={{ animationDelay: '1500ms' }}
         >
             <span className="relative flex h-1.5 w-1.5">

@@ -29,4 +29,17 @@ public interface AuthService {
 
     /** The signed-in user's profile, or {@code null} when the request is anonymous. */
     Map<String, Object> currentUser();
+
+    /**
+     * Updates the signed-in user's display name and/or password.
+     *
+     * <p>Both are optional; passing neither is a no-op that still returns the current profile.
+     * Changing the password requires the current one, because a session token is a weaker
+     * credential than the password it was issued for — anyone who borrows an unlocked browser
+     * should not be able to lock the owner out of their own account.
+     *
+     * @throws com.dbviewer.app.exception.UnauthorizedException if nobody is signed in
+     * @throws IllegalArgumentException if the current password is wrong or the new one is weak
+     */
+    Map<String, Object> updateProfile(String displayName, String currentPassword, String newPassword);
 }

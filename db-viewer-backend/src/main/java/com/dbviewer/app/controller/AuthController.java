@@ -31,6 +31,10 @@ public class AuthController {
     public record Credentials(String email, String password, String displayName) {
     }
 
+    /** Both halves are optional; send only what is changing. */
+    public record ProfileUpdate(String displayName, String currentPassword, String newPassword) {
+    }
+
     @PostMapping("/signup")
     @Operation(summary = "Create an account")
     public ResponseEntity<?> signup(@RequestBody Credentials request) {
@@ -64,6 +68,25 @@ public class AuthController {
         } catch (Exception e) {
             log.error("Login failed", e);
             return ResponseEntity.internalServerError().body(Map.of("error", "Could not sign in."));
+        }
+    }
+
+    @PatchMapping("/profile")
+    @Operation(summary = "Update profile",
+            description = "Changes the signed-in user's display name and/or password. Changing "
+                    + "the password requires the current one.")
+    public ResponseEntity<?> updateProfile(@RequestBody ProfileUpdate request) {
+        try {
+            return ResponseEntity.ok(authService.updateProfile(
+                    request.displayName(), request.currentPassword(), request.newPassword()));
+        } catch (UnauthorizedException e) {
+            return ResponseEntity.status(401).body(Map.of("error", e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Profile update failed", e);
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("error", "Could not update your profile."));
         }
     }
 

@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import {
     Upload, FileText, Trash2, Database, HelpCircle, FileCode,
-    Image as ImageIcon, ChevronDown, Files, Share2, LogIn, LogOut, User, Plus, Lock
+    Image as ImageIcon, ChevronDown, Files, Share2, LogIn, LogOut, User, Plus, Lock, Settings,
 } from 'lucide-react';
 import { AuthUser } from '@/services/api';
 
@@ -17,6 +18,7 @@ interface HeaderProps {
     onShare: () => void;
     onSignIn: () => void;
     onSignOut: () => void;
+    onEditProfile: () => void;
     isUploading: boolean;
     fileName: string | null;
     hasData: boolean;
@@ -42,34 +44,41 @@ const useDismissable = (isOpen: boolean, close: () => void) => {
     return ref;
 };
 
-const MenuItem = ({ icon, title, description, onClick, disabled, locked }: {
+const MenuItem = ({ icon, title, description, onClick, disabled, locked, danger }: {
     icon: React.ReactNode;
     title: string;
     description: string;
     onClick: () => void;
     disabled?: boolean;
     locked?: boolean;
+    danger?: boolean;
 }) => (
     <button
         role="menuitem"
+        type="button"
         onClick={onClick}
         disabled={disabled}
-        className="w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-zinc-50 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent transition-colors"
+        className={`w-full flex items-start gap-3 px-4 py-3 text-left transition-colors
+            disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent
+            ${danger ? 'hover:bg-red-50' : 'hover:bg-ink-50'}`}
     >
-        <span className="text-blue-600 mt-0.5 shrink-0">{icon}</span>
+        <span className={`mt-0.5 shrink-0 ${danger ? 'text-red-500' : 'text-brand-600'}`}>{icon}</span>
         <span className="min-w-0">
-            <span className="flex items-center gap-1.5 text-sm font-medium text-zinc-900">
+            <span className={`flex items-center gap-1.5 text-sm font-medium ${danger ? 'text-red-600' : 'text-ink-900'}`}>
                 {title}
-                {locked && <Lock size={11} className="text-zinc-400" />}
+                {locked && <Lock size={11} className="text-ink-400" />}
             </span>
-            <span className="block text-xs text-zinc-500 mt-0.5 leading-relaxed">{description}</span>
+            <span className="block text-xs text-ink-500 mt-0.5 leading-relaxed">{description}</span>
         </span>
     </button>
 );
 
+/** Plain text until hovered, then a white button — the shared treatment for header controls. */
+const HEADER_BUTTON = 'flex items-center gap-2 px-2.5 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors';
+
 export const Header = ({
     onUpload, onNewFile, onClear, onShowInfo, onExportSql, onExportImage,
-    onShare, onSignIn, onSignOut, isUploading, fileName, hasData, user,
+    onShare, onSignIn, onSignOut, onEditProfile, isUploading, fileName, hasData, user,
 }: HeaderProps) => {
     const [isFileOpen, setFileOpen] = useState(false);
     const [isAccountOpen, setAccountOpen] = useState(false);
@@ -81,32 +90,30 @@ export const Header = ({
     const run = (action: () => void) => { setFileOpen(false); action(); };
 
     return (
-        <div className="h-16 bg-blue-600 border-b border-blue-700 flex items-center justify-between px-6 shadow-md z-50 animate-fade-up">
+        <header className="h-16 shrink-0 brand-gradient border-b border-brand-800/40 flex items-center justify-between px-3 sm:px-6 shadow-glow-md z-50">
 
             {/* Left: brand, then the File and Share controls */}
-            <div className="flex items-center gap-4">
-                <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shadow-sm">
-                        <Database size={18} className="text-blue-600" />
-                    </div>
-                    <h1 className="text-white font-semibold text-xl tracking-tight hidden sm:block">
-                        SQL <span className="text-blue-100">Visualizer</span>
-                    </h1>
-                </div>
+            <div className="flex items-center gap-2 sm:gap-4 min-w-0">
+                <Link href="/" className="flex items-center gap-3 shrink-0" title="Back to the home page">
+                    <span className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shadow-sm">
+                        <Database size={18} className="text-brand-600" />
+                    </span>
+                    <span className="text-white font-semibold text-lg sm:text-xl tracking-tight hidden md:block">
+                        SQL <span className="text-brand-100">Visualizer</span>
+                    </span>
+                </Link>
 
-                <div className="h-6 w-px bg-blue-400/40" />
+                <div className="h-6 w-px bg-white/25 hidden sm:block" />
 
                 {/* FILE MENU — import and export live here */}
                 <div className="relative" ref={fileRef}>
                     <button
+                        type="button"
                         onClick={() => setFileOpen(v => !v)}
-                        // Plain text until hovered, then a white button. The open state keeps
-                        // that white treatment, so the control does not appear to switch off
-                        // while its own menu is showing.
-                        className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                            isFileOpen
-                                ? 'bg-white text-blue-700'
-                                : 'text-blue-50 hover:bg-white hover:text-blue-700'
+                        // The open state keeps the white treatment, so the control does not
+                        // appear to switch off while its own menu is showing.
+                        className={`${HEADER_BUTTON} ${
+                            isFileOpen ? 'bg-white text-brand-700' : 'text-brand-50 hover:bg-white hover:text-brand-700'
                         }`}
                         aria-haspopup="menu"
                         aria-expanded={isFileOpen}
@@ -117,7 +124,10 @@ export const Header = ({
                     </button>
 
                     {isFileOpen && (
-                        <div role="menu" className="absolute left-0 mt-2 w-80 bg-white border border-zinc-200 rounded-lg shadow-2xl overflow-hidden z-50 animate-in fade-in slide-in-from-top-1 duration-150">
+                        <div
+                            role="menu"
+                            className="absolute left-0 mt-2 w-[min(20rem,calc(100vw-1.5rem))] bg-white border border-line rounded-lg shadow-glow-lg overflow-hidden z-50 anim-menu-in"
+                        >
                             <MenuItem
                                 icon={<Plus size={16} />}
                                 title="New file"
@@ -131,27 +141,14 @@ export const Header = ({
                                 has to close the menu, which unmounts the label before that step
                                 is reached, so the picker never opened. Calling click() directly
                                 does not depend on the element still being in the document. */}
-                            <button
-                                role="menuitem"
-                                type="button"
-                                onClick={() => {
-                                    fileInputRef.current?.click();
-                                    setFileOpen(false);
-                                }}
-                                className="w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-zinc-50 transition-colors cursor-pointer"
-                            >
-                                <span className="text-blue-600 mt-0.5 shrink-0"><Upload size={16} /></span>
-                                <span>
-                                    <span className="block text-sm font-medium text-zinc-900">
-                                        {isUploading ? 'Importing...' : 'Import'}
-                                    </span>
-                                    <span className="block text-xs text-zinc-500 mt-0.5 leading-relaxed">
-                                        Open a .csv or .sql file in a new tab.
-                                    </span>
-                                </span>
-                            </button>
+                            <MenuItem
+                                icon={<Upload size={16} />}
+                                title={isUploading ? 'Importing...' : 'Import'}
+                                description="Open a .csv or .sql file in a new tab."
+                                onClick={() => { fileInputRef.current?.click(); setFileOpen(false); }}
+                            />
 
-                            <div className="h-px bg-zinc-100" />
+                            <div className="h-px bg-ink-100" />
 
                             <MenuItem
                                 icon={<FileCode size={16} />}
@@ -169,39 +166,46 @@ export const Header = ({
                                 disabled={!hasData}
                             />
 
+                            {/* Share lives in the menu too below sm, where its own button is hidden. */}
+                            <div className="sm:hidden">
+                                <div className="h-px bg-ink-100" />
+                                <MenuItem
+                                    icon={<Share2 size={16} />}
+                                    title="Share"
+                                    description="Create a read-only link to this file."
+                                    onClick={() => run(onShare)}
+                                    disabled={!hasData}
+                                    locked={!user}
+                                />
+                            </div>
+
                             {hasData && (
                                 <>
-                                    <div className="h-px bg-zinc-100" />
-                                    <button
-                                        role="menuitem"
+                                    <div className="h-px bg-ink-100" />
+                                    <MenuItem
+                                        icon={<Trash2 size={16} />}
+                                        title="Delete file"
+                                        description="Permanently deletes this file and its database."
                                         onClick={() => run(onClear)}
-                                        className="w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-red-50 transition-colors"
-                                    >
-                                        <span className="text-red-500 mt-0.5 shrink-0"><Trash2 size={16} /></span>
-                                        <span>
-                                            <span className="block text-sm font-medium text-red-600">Delete file</span>
-                                            <span className="block text-xs text-zinc-500 mt-0.5">
-                                                Permanently deletes this file and its database.
-                                            </span>
-                                        </span>
-                                    </button>
+                                        danger
+                                    />
                                 </>
                             )}
                         </div>
                     )}
                 </div>
 
-                {/* SHARE — right beside File */}
+                {/* SHARE — right beside File, from sm up */}
                 <button
+                    type="button"
                     onClick={onShare}
                     disabled={!hasData}
-                    // Matches the File control: plain text, white button on hover. The
-                    // disabled overrides stop a dead button lighting up under the cursor.
-                    className="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors text-blue-50 hover:bg-white hover:text-blue-700 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-blue-50"
+                    className={`${HEADER_BUTTON} hidden sm:flex text-brand-50 hover:bg-white hover:text-brand-700
+                        disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-brand-50`}
                     title={hasData ? 'Create a shareable link' : 'Open a file first'}
                 >
                     <Share2 size={16} />
-                    <span className="hidden sm:inline">Share</span>
+                    <span className="hidden md:inline">Share</span>
                     {!user && <Lock size={11} className="opacity-70" />}
                 </button>
 
@@ -226,11 +230,11 @@ export const Header = ({
             </div>
 
             {/* Right: current file, account, help */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
                 {fileName && (
-                    <div className="flex items-center gap-2 bg-blue-700/40 border border-blue-400/40 rounded-md px-3 py-1 animate-in fade-in slide-in-from-top-2 duration-300">
-                        <FileText size={14} className="text-blue-100" />
-                        <span className="text-xs font-medium max-w-[160px] truncate text-blue-50" title={fileName}>
+                    <div className="hidden md:flex items-center gap-2 bg-black/15 border border-white/25 rounded-md px-3 py-1 min-w-0">
+                        <FileText size={14} className="text-brand-100 shrink-0" />
+                        <span className="text-xs font-medium max-w-[160px] truncate text-brand-50" title={fileName}>
                             {fileName}
                         </span>
                     </div>
@@ -239,11 +243,14 @@ export const Header = ({
                 {user ? (
                     <div className="relative" ref={accountRef}>
                         <button
+                            type="button"
                             onClick={() => setAccountOpen(v => !v)}
-                            className="flex items-center gap-2 bg-white/95 hover:bg-white text-blue-700 px-3 py-2 rounded-md text-sm font-semibold transition-colors"
+                            className="flex items-center gap-2 bg-white/95 hover:bg-white text-brand-700 px-2.5 sm:px-3 py-2 rounded-md text-sm font-semibold transition-colors"
                             title={user.email}
+                            aria-haspopup="menu"
+                            aria-expanded={isAccountOpen}
                         >
-                            <span className="w-5 h-5 rounded-full bg-blue-600 text-white text-[10px] flex items-center justify-center font-bold">
+                            <span className="w-5 h-5 rounded-full brand-gradient text-white text-[10px] flex items-center justify-center font-bold shrink-0">
                                 {(user.displayName || user.email).charAt(0).toUpperCase()}
                             </span>
                             <span className="hidden sm:inline max-w-[110px] truncate">{user.displayName}</span>
@@ -251,40 +258,55 @@ export const Header = ({
                         </button>
 
                         {isAccountOpen && (
-                            <div className="absolute right-0 mt-2 w-64 bg-white border border-zinc-200 rounded-lg shadow-2xl overflow-hidden z-50 animate-in fade-in slide-in-from-top-1 duration-150">
-                                <div className="px-4 py-3 border-b border-zinc-100">
-                                    <p className="text-sm font-medium text-zinc-900 flex items-center gap-2">
-                                        <User size={14} className="text-zinc-400" /> {user.displayName}
+                            <div role="menu" className="absolute right-0 mt-2 w-64 bg-white border border-line rounded-lg shadow-glow-lg overflow-hidden z-50 anim-menu-in">
+                                <div className="px-4 py-3 border-b border-ink-100">
+                                    <p className="text-sm font-medium text-ink-900 flex items-center gap-2">
+                                        <User size={14} className="text-ink-400 shrink-0" />
+                                        <span className="truncate">{user.displayName}</span>
                                     </p>
-                                    <p className="text-xs text-zinc-500 mt-0.5 truncate">{user.email}</p>
+                                    <p className="text-xs text-ink-500 mt-0.5 truncate">{user.email}</p>
                                 </div>
                                 <button
-                                    onClick={() => { setAccountOpen(false); onSignOut(); }}
-                                    className="w-full flex items-center gap-2 px-4 py-3 text-left text-sm text-zinc-700 hover:bg-zinc-50 transition-colors"
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => { setAccountOpen(false); onEditProfile(); }}
+                                    className="w-full flex items-center gap-2 px-4 py-3 text-left text-sm text-ink-700 hover:bg-ink-50 transition-colors"
                                 >
-                                    <LogOut size={14} className="text-zinc-400" /> Sign out
+                                    <Settings size={14} className="text-ink-400" /> Edit profile
+                                </button>
+                                <div className="h-px bg-ink-100" />
+                                <button
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => { setAccountOpen(false); onSignOut(); }}
+                                    className="w-full flex items-center gap-2 px-4 py-3 text-left text-sm text-ink-700 hover:bg-ink-50 transition-colors"
+                                >
+                                    <LogOut size={14} className="text-ink-400" /> Sign out
                                 </button>
                             </div>
                         )}
                     </div>
                 ) : (
                     <button
+                        type="button"
                         onClick={onSignIn}
-                        className="flex items-center gap-2 bg-white hover:bg-blue-50 px-4 py-2 rounded-md text-sm font-semibold text-blue-700 shadow-sm transition-colors"
+                        className="flex items-center gap-2 bg-white hover:bg-brand-50 px-3 sm:px-4 py-2 rounded-md text-sm font-semibold text-brand-700 shadow-sm transition-colors"
                     >
                         <LogIn size={16} />
-                        <span>Sign in</span>
+                        <span className="hidden sm:inline">Sign in</span>
                     </button>
                 )}
 
                 <button
+                    type="button"
                     onClick={onShowInfo}
-                    className="p-2 text-blue-200 hover:text-white transition-colors"
+                    className="p-2 text-brand-100 hover:text-white transition-colors shrink-0"
+                    aria-label="About this app"
                     title="About this app"
                 >
                     <HelpCircle size={20} />
                 </button>
             </div>
-        </div>
+        </header>
     );
 };

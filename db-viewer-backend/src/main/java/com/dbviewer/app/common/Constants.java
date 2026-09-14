@@ -71,6 +71,24 @@ public final class Constants {
                 )
                 """;
 
+        /**
+         * Who each workspace belongs to.
+         *
+         * <p>Kept out of the workspace databases themselves: a workspace must be attributable
+         * before it is opened, and opening it is exactly what the check is meant to prevent.
+         */
+        public static final String CREATE_WORKSPACE_OWNERS_TABLE = """
+                CREATE TABLE IF NOT EXISTS workspace_owners (
+                    workspace_id VARCHAR(64) NOT NULL PRIMARY KEY,
+                    owner_key VARCHAR(400) NOT NULL,
+                    created_at VARCHAR(40) NOT NULL
+                )
+                """;
+
+        /** Owner lookups are the hot path — every request that names a workspace does one. */
+        public static final String CREATE_WORKSPACE_OWNERS_INDEX =
+                "CREATE INDEX IF NOT EXISTS idx_workspace_owners_owner ON workspace_owners (owner_key)";
+
         public static final String CREATE_SHARED_LINKS_TABLE = """
                 CREATE TABLE IF NOT EXISTS shared_links (
                     token VARCHAR(64) NOT NULL PRIMARY KEY,
@@ -103,6 +121,42 @@ public final class Constants {
 
         public static final String SELECT_USER_BY_EMAIL =
                 "SELECT * FROM app_users WHERE email = ?";
+
+        public static final String UPDATE_DISPLAY_NAME =
+                "UPDATE app_users SET display_name = ? WHERE email = ?";
+
+        public static final String UPDATE_PASSWORD_HASH =
+                "UPDATE app_users SET password_hash = ? WHERE email = ?";
+    }
+
+    /**
+     * Workspace ownership.
+     *
+     * <p>Lives in the default database beside accounts and share links, because the question
+     * "may this caller open that workspace?" has to be answerable without opening it.
+     */
+    public static final class Ownership {
+        private Ownership() { }
+
+        public static final String SELECT_OWNER =
+                "SELECT owner_key FROM workspace_owners WHERE workspace_id = ?";
+
+        public static final String INSERT_OWNER =
+                "INSERT INTO workspace_owners (workspace_id, owner_key, created_at) VALUES (?, ?, ?)";
+
+        public static final String SELECT_WORKSPACES_BY_OWNER =
+                "SELECT workspace_id FROM workspace_owners WHERE owner_key = ?";
+
+        public static final String DELETE_OWNER =
+                "DELETE FROM workspace_owners WHERE workspace_id = ?";
+
+        /**
+         * Hands a browser's anonymous workspaces to the account it has just signed into, so the
+         * work someone did before making an account is not stranded behind an identity they can
+         * never present again.
+         */
+        public static final String ADOPT_ANONYMOUS =
+                "UPDATE workspace_owners SET owner_key = ? WHERE owner_key = ?";
     }
 
     /** Read-only share links. Also in the default database — a link outlives any one file. */

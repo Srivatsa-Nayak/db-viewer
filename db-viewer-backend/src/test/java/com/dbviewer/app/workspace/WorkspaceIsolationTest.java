@@ -3,6 +3,7 @@ package com.dbviewer.app.workspace;
 import com.dbviewer.app.dto.ColumnDefinition;
 import com.dbviewer.app.dto.CreateTableRequest;
 import com.dbviewer.app.dto.TableInfo;
+import com.dbviewer.app.service.WorkspaceOwnershipService;
 import com.dbviewer.app.service.impl.DatabaseServiceImpl;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -38,9 +39,13 @@ class WorkspaceIsolationTest {
     @Autowired
     private WorkspaceManager workspaceManager;
 
+    @Autowired
+    private WorkspaceOwnershipService ownershipService;
+
     @AfterEach
     void clearContext() {
         WorkspaceContext.clear();
+        ClientContext.clear();
     }
 
     private CreateTableRequest customersTable() {
@@ -128,7 +133,11 @@ class WorkspaceIsolationTest {
     @Test
     void listWorkspaces_shouldReportOpenWorkspacesAndForgetDeletedOnes() {
         String workspaceId = "isotestlisted";
+        // The listing is scoped to whoever is asking, and in a real request WorkspaceOwnershipFilter
+        // is what claims the workspace. Calling the service directly, the test has to do both.
+        ClientContext.set("isotestclient");
         WorkspaceContext.set(workspaceId);
+        ownershipService.claimOrVerify(workspaceId);
         service.createTable(new CreateTableRequest("listed", List.of(
                 new ColumnDefinition("id", "INT", 0, true, false, null, null))));
 
@@ -144,7 +153,10 @@ class WorkspaceIsolationTest {
 
     @Test
     void sanitize_shouldAcceptTheIdsTheUiGenerates() {
-        // The UI uses Date.now().toString().
+        // services/workspaceId.ts mints "<epoch millis>-<8 random chars>". The bare timestamp is
+        // the older shape and still has to be accepted: sessions stored before that change are
+        // restored by id.
+        assertThat(WorkspaceManager.sanitize("1736512345678-a1b2c3d4")).isEqualTo("1736512345678-a1b2c3d4");
         assertThat(WorkspaceManager.sanitize("1736512345678")).isEqualTo("1736512345678");
         assertThat(WorkspaceManager.sanitize(" file-A_1 ")).isEqualTo("file-A_1");
     }

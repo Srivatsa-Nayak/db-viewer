@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
-import { X, FileCode } from 'lucide-react';
+"use client";
+
+import React, { useRef, useState } from 'react';
+import { FileCode } from 'lucide-react';
+import { GhostButton, Modal, ModalActions, PrimaryButton } from '@/components/ui/Modal';
 
 interface NewFileModalProps {
     isOpen: boolean;
@@ -9,75 +12,57 @@ interface NewFileModalProps {
 }
 
 export const NewFileModal = ({ isOpen, onClose, onConfirm, defaultName }: NewFileModalProps) => {
+    // Seeded once, at mount. The page renders this dialog only while it is open, so
+    // mounting *is* the reset — which is also why the old `key`-bumping trick that used to
+    // force a remount (and threw away the dialog's focus bookkeeping with it) is gone.
     const [fileName, setFileName] = useState(defaultName);
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    const trimmed = fileName.trim();
 
     const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault(); // Prevent form reload
-        if (!fileName.trim()) return;
-
-        // Ensure it ends in .sql
-        let finalName = fileName.trim();
-        if (!finalName.toLowerCase().endsWith('.sql')) {
-            finalName += '.sql';
-        }
-
-        onConfirm(finalName);
+        e.preventDefault();
+        if (!trimmed) return;
+        onConfirm(trimmed.toLowerCase().endsWith('.sql') ? trimmed : `${trimmed}.sql`);
         onClose();
     };
 
-    if (!isOpen) return null;
-
     return (
-        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
-            <div className="bg-white border border-zinc-200 rounded-xl w-full max-w-md shadow-2xl overflow-hidden">
-
-                {/* Header */}
-                <div className="p-4 border-b border-zinc-200 flex justify-between items-center bg-white">
-                    <h3 className="font-bold text-zinc-900 flex items-center gap-2">
-                        <FileCode size={18} className="text-blue-600" />
-                        New SQL File
-                    </h3>
-                    <button onClick={onClose} className="text-zinc-400 hover:text-zinc-900 transition-colors">
-                        <X size={20} />
-                    </button>
-                </div>
-
-                {/* Body */}
-                <form onSubmit={handleSubmit} className="p-6 space-y-4">
-                    <div>
-                        <label className="block text-xs font-bold text-zinc-500 uppercase mb-2">
-                            File name
-                        </label>
-                        <div className="relative">
-                            <FileCode className="absolute left-3 top-2.5 text-zinc-400" size={16} />
-                            <input
-                                autoFocus
-                                type="text"
-                                className="w-full bg-white border border-zinc-300 rounded-md py-2 pl-10 pr-4 text-zinc-900 placeholder-zinc-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all font-mono text-sm"
-                                value={fileName}
-                                onChange={(e) => setFileName(e.target.value)}
-                                onFocus={(e) => e.target.select()}
-                            />
-                        </div>
-                    </div>
-
-                    <div className="flex justify-end gap-3 pt-2">
-                        <button
-                            type="button"
-                            onClick={onClose}
-                            className="px-4 py-2 text-zinc-500 hover:text-zinc-900 text-sm hover:bg-zinc-100 rounded-md transition-colors"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            type="submit"
-                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-bold shadow-sm transition-all"
-                        >
-                            Create
-                        </button>
-                    </div>
-                </form>
+        <Modal
+            isOpen={isOpen}
+            onClose={onClose}
+            title="New SQL file"
+            subtitle="Starts an empty database of its own."
+            icon={<FileCode size={18} className="text-brand-600 shrink-0" />}
+            size="md"
+            closeOnBackdrop={false}
+            initialFocusRef={inputRef}
+            onSubmit={handleSubmit}
+            footer={
+                <ModalActions>
+                    <GhostButton onClick={onClose}>Cancel</GhostButton>
+                    <PrimaryButton type="submit" disabled={!trimmed}>Create</PrimaryButton>
+                </ModalActions>
+            }
+        >
+            <label htmlFor="new-file-name" className="block text-xs font-bold text-ink-500 uppercase mb-2">
+                File name
+            </label>
+            <div className="relative">
+                <FileCode className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none" size={16} />
+                <input
+                    id="new-file-name"
+                    ref={inputRef}
+                    type="text"
+                    className="w-full bg-white border border-ink-300 rounded-md py-2.5 pl-10 pr-4 text-ink-900 placeholder:text-ink-400 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-all font-mono text-sm"
+                    value={fileName}
+                    onChange={(e) => setFileName(e.target.value)}
+                    onFocus={(e) => e.target.select()}
+                />
             </div>
-        </div>
+            <p className="text-xs text-ink-400 mt-2">
+                <span className="font-mono">.sql</span> is added for you if you leave it off.
+            </p>
+        </Modal>
     );
 };

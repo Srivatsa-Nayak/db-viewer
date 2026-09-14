@@ -42,14 +42,14 @@ interface ReadOnlyNodeData {
  * still gets drawn.
  */
 const ReadOnlyTableNode = ({ data }: { data: ReadOnlyNodeData }) => (
-    <div className="bg-white border border-blue-200 rounded-md min-w-[180px] max-w-[220px] shadow-xl">
-        <div className="bg-blue-600 px-2 py-1.5 flex items-center gap-1.5 rounded-t-md">
+    <div className="bg-white border border-brand-200 rounded-md min-w-[180px] max-w-[220px] shadow-xl">
+        <div className="bg-brand-600 px-2 py-1.5 flex items-center gap-1.5 rounded-t-md">
             <Database size={10} className="text-white shrink-0" />
             <span className="font-bold text-white text-[10px] truncate" title={data.label}>
                 {data.label}
             </span>
         </div>
-        <div className="flex flex-col bg-zinc-50 py-0.5 rounded-b-md">
+        <div className="flex flex-col bg-ink-50 py-0.5 rounded-b-md">
             {data.columns.map((col, i) => {
                 const isSource = data.sourceColumns.includes(col.name);
                 const isTarget = data.targetColumns.includes(col.name);
@@ -62,18 +62,18 @@ const ReadOnlyTableNode = ({ data }: { data: ReadOnlyNodeData }) => (
                                     position={Position.Left}
                                     id={`${col.name}-left`}
                                     isConnectable={false}
-                                    className="!w-2.5 !h-2.5 !bg-blue-500 !border-2 !border-white"
+                                    className="!w-2.5 !h-2.5 !bg-brand-500 !border-2 !border-white"
                                 />
                             </div>
                         )}
 
                         <span className="flex items-center gap-1.5 overflow-hidden">
-                            {(col.isPk || col.is_pk || isSource || isTarget) && (
-                                <KeyRound size={8} className="text-blue-500 shrink-0" />
+                            {(col.isPk || isSource || isTarget) && (
+                                <KeyRound size={8} className="text-brand-500 shrink-0" />
                             )}
-                            <span className="truncate font-mono text-[9px] text-zinc-700 font-medium">{col.name}</span>
+                            <span className="truncate font-mono text-[9px] text-ink-700 font-medium">{col.name}</span>
                         </span>
-                        <span className="text-zinc-400 font-mono uppercase text-[8px] shrink-0 ml-2">{col.type}</span>
+                        <span className="text-ink-400 font-mono uppercase text-[8px] shrink-0 ml-2">{col.type}</span>
 
                         {isSource && (
                             <div className="absolute -right-1.5 top-1/2 -translate-y-1/2 z-50">
@@ -82,7 +82,7 @@ const ReadOnlyTableNode = ({ data }: { data: ReadOnlyNodeData }) => (
                                     position={Position.Right}
                                     id={`${col.name}-right`}
                                     isConnectable={false}
-                                    className="!w-2.5 !h-2.5 !bg-blue-500 !border-2 !border-white"
+                                    className="!w-2.5 !h-2.5 !bg-brand-500 !border-2 !border-white"
                                 />
                             </div>
                         )}
@@ -129,19 +129,17 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
             if (!map[table].includes(column)) map[table].push(column);
         };
 
-        const edges: Edge[] = (schema.relationships || []).flatMap((rel, index): Edge[] => {
+        const edges: Edge[] = (schema.relationships || []).map((rel, index): Edge => {
             // The edge runs parent -> child, matching the main canvas.
-            const parentTable = rel.target_table ?? rel.targetTable;
-            const parentColumn = rel.target_column ?? rel.targetColumn ?? "id";
-            const childTable = rel.source_table ?? rel.sourceTable;
-            const childColumn = rel.source_column ?? rel.sourceColumn;
-
-            if (!parentTable || !childTable || !childColumn) return [];
+            const parentTable = rel.targetTable;
+            const parentColumn = rel.targetColumn;
+            const childTable = rel.sourceTable;
+            const childColumn = rel.sourceColumn;
 
             push(sourceColumns, parentTable, parentColumn);
             push(targetColumns, childTable, childColumn);
 
-            return [{
+            return {
                 id: `e-${index}`,
                 source: parentTable,
                 target: childTable,
@@ -151,7 +149,7 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
                 animated: true,
                 style: { stroke: "#2563eb", strokeWidth: 1.5 },
                 markerEnd: { type: MarkerType.ArrowClosed, color: "#2563eb" },
-            }];
+            };
         });
 
         const nodes: Node[] = (schema.tables || []).map((table, index) => ({
@@ -170,39 +168,39 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
     }, [schema]);
 
     return (
-        <div className="h-screen w-full flex flex-col bg-white">
-            <header className="h-16 bg-blue-600 flex items-center justify-between px-6 shadow-md shrink-0">
-                <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
-                        <Database size={18} className="text-blue-600" />
+        <div className="h-[100dvh] w-full flex flex-col bg-white">
+            <header className="h-16 brand-gradient flex items-center justify-between px-3 sm:px-6 shadow-glow-md shrink-0 gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shrink-0">
+                        <Database size={18} className="text-brand-600" />
                     </div>
-                    <div>
-                        <h1 className="text-white font-semibold text-lg leading-tight">
+                    <div className="min-w-0">
+                        <h1 className="text-white font-semibold text-base sm:text-lg leading-tight truncate">
                             {schema?.fileName || "Shared schema"}
                         </h1>
                         {schema?.sharedBy && (
-                            <p className="text-[11px] text-blue-100">shared by {schema.sharedBy}</p>
+                            <p className="text-[11px] text-brand-100 truncate">shared by {schema.sharedBy}</p>
                         )}
                     </div>
                 </div>
 
-                <div className="flex items-center gap-3">
-                    <span className="flex items-center gap-1.5 bg-blue-700/40 border border-blue-400/40 text-blue-50 px-3 py-1 rounded-md text-xs font-medium">
+                <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+                    <span className="hidden sm:flex items-center gap-1.5 bg-black/15 border border-white/25 text-brand-50 px-3 py-1 rounded-md text-xs font-medium">
                         <Eye size={13} /> Read-only
                     </span>
                     <Link
                         href="/app"
-                        className="flex items-center gap-2 bg-white hover:bg-blue-50 text-blue-700 px-3 py-2 rounded-md text-sm font-semibold transition-colors"
+                        className="flex items-center gap-2 bg-white hover:bg-brand-50 text-brand-700 px-3 py-2 rounded-md text-sm font-semibold transition-colors"
                     >
-                        <ExternalLink size={15} /> Open the app
+                        <ExternalLink size={15} /> <span className="hidden sm:inline">Open the app</span><span className="sm:hidden">Open</span>
                     </Link>
                 </div>
             </header>
 
-            <div className="flex-1 bg-zinc-50 relative">
+            <div className="flex-1 bg-ink-50 relative min-h-0">
                 {isLoading && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-zinc-400">
-                        <Loader2 size={28} className="animate-spin text-blue-500" />
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-ink-400">
+                        <Loader2 size={28} className="animate-spin text-brand-500" />
                         <p className="text-sm">Loading the shared schema...</p>
                     </div>
                 )}
@@ -210,9 +208,9 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
                 {error && !isLoading && (
                     <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
                         <AlertCircle size={32} className="text-red-500" />
-                        <p className="text-base font-semibold text-zinc-800">Link unavailable</p>
-                        <p className="text-sm text-zinc-500 max-w-sm leading-relaxed">{error}</p>
-                        <Link href="/" className="mt-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium">
+                        <p className="text-base font-semibold text-ink-800">Link unavailable</p>
+                        <p className="text-sm text-ink-500 max-w-sm leading-relaxed">{error}</p>
+                        <Link href="/" className="mt-2 px-4 py-2 brand-gradient brand-gradient-hover text-white rounded-md text-sm font-medium">
                             Go to SQL Visualizer
                         </Link>
                     </div>
@@ -229,8 +227,8 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
                         elementsSelectable={false}
                         proOptions={{ hideAttribution: true }}
                     >
-                        <Background color="#a1a1aa" gap={24} size={1.5} variant={BackgroundVariant.Dots} />
-                        <Controls showInteractive={false} className="bg-white border-zinc-200 fill-zinc-700" />
+                        <Background color="#94a3b8" gap={24} size={1.5} variant={BackgroundVariant.Dots} />
+                        <Controls showInteractive={false} className="bg-white border-line fill-ink-700" />
                     </ReactFlow>
                 )}
             </div>

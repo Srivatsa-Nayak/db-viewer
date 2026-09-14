@@ -141,7 +141,7 @@ export const TemplateDiagram = ({ schema, width = 560, height = 380 }: Props) =>
     return (
         <div
             ref={containerRef}
-            className="relative h-full w-full overflow-hidden rounded-lg border border-zinc-200"
+            className="relative h-full w-full overflow-hidden rounded-lg border border-ink-200"
             style={{
                 backgroundColor: '#fafafa',
                 backgroundImage: 'radial-gradient(#d4d4d8 1px, transparent 1px)',
@@ -149,7 +149,7 @@ export const TemplateDiagram = ({ schema, width = 560, height = 380 }: Props) =>
             }}
         >
             {!layout && (
-                <div className="flex h-full items-center justify-center text-sm text-zinc-400">
+                <div className="flex h-full items-center justify-center text-sm text-ink-400">
                     No diagram to show.
                 </div>
             )}
@@ -198,16 +198,16 @@ export const TemplateDiagram = ({ schema, width = 560, height = 380 }: Props) =>
                     return (
                         <div
                             key={table.name}
-                            className="absolute rounded-md border border-blue-200 bg-white shadow-lg"
+                            className="absolute rounded-md border border-brand-200 bg-white shadow-lg"
                             style={{ left: pos.x, top: pos.y, width: CARD_W }}
                         >
-                            <div className="flex items-center gap-1.5 rounded-t-md bg-blue-600 px-2 py-1.5">
+                            <div className="flex items-center gap-1.5 rounded-t-md bg-brand-600 px-2 py-1.5">
                                 <Database size={10} className="shrink-0 text-white" />
                                 <span className="truncate text-[10px] font-bold leading-tight text-white">
                                     {table.name}
                                 </span>
                             </div>
-                            <div className="rounded-b-md bg-zinc-50 py-0.5">
+                            <div className="rounded-b-md bg-ink-50 py-0.5">
                                 {table.columns.map(column => (
                                     <div
                                         key={column.name}
@@ -216,13 +216,13 @@ export const TemplateDiagram = ({ schema, width = 560, height = 380 }: Props) =>
                                     >
                                         <span className="flex items-center gap-1 overflow-hidden">
                                             {(column.pk || column.name.endsWith('_id')) && (
-                                                <KeyRound size={8} className="shrink-0 text-blue-500" />
+                                                <KeyRound size={8} className="shrink-0 text-brand-500" />
                                             )}
-                                            <span className="truncate font-mono text-[9px] font-medium leading-none text-zinc-700">
+                                            <span className="truncate font-mono text-[9px] font-medium leading-none text-ink-700">
                                                 {column.name}
                                             </span>
                                         </span>
-                                        <span className="ml-2 shrink-0 font-mono text-[8px] uppercase leading-none text-zinc-400">
+                                        <span className="ml-2 shrink-0 font-mono text-[8px] uppercase leading-none text-ink-400">
                                             {column.type}
                                         </span>
                                     </div>
