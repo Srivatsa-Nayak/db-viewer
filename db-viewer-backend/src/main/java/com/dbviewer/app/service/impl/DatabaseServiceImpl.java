@@ -350,6 +350,7 @@ public class DatabaseServiceImpl implements DatabaseService {
 
     private static final String INTERNAL_TABLE_PREFIX = Constants.Identifiers.INTERNAL_TABLE_PREFIX;
     private static final String NOTES_TABLE = Constants.Identifiers.NOTES_TABLE;
+    private static final String CANVAS_META_TABLE = Constants.Identifiers.CANVAS_META_TABLE;
 
     /** Created lazily so an untouched workspace stays completely empty. */
     private void ensureNotesTable() {
@@ -358,31 +359,95 @@ public class DatabaseServiceImpl implements DatabaseService {
                           : Constants.Ddl.SQLITE_AUTO_INCREMENT_PK));
     }
 
+    /** Likewise: a file nobody has annotated carries no annotations table. */
+    private void ensureCanvasMetaTable() {
+        jdbc().execute(String.format(Constants.Ddl.CREATE_CANVAS_META_TABLE, CANVAS_META_TABLE));
+    }
+
     private List<ColumnInfo> getColumnsForTable(String tableName) {
         List<ColumnInfo> columns = new ArrayList<>();
+        Set<String> unique = uniqueColumns(tableName);
         if (isMysql()) {
             jdbc().query(String.format(Constants.Introspection.MYSQL_DESCRIBE_TABLE, tableName), rs -> {
+                String name = rs.getString("Field");
+                boolean pk = "PRI".equalsIgnoreCase(rs.getString("Key"));
                 columns.add(ColumnInfo.builder()
-                        .name(rs.getString("Field"))
+                        .name(name)
                         .type(rs.getString("Type"))
-                        .pk("PRI".equalsIgnoreCase(rs.getString("Key")))
+                        .pk(pk)
                         .notNull("NO".equalsIgnoreCase(rs.getString("Null")))
+                        .unique(pk || unique.contains(name) || "UNI".equalsIgnoreCase(rs.getString("Key")))
+                        .defaultValue(rs.getString("Default"))
+                        .autoIncrement(rs.getString("Extra") != null
+                                && rs.getString("Extra").toLowerCase().contains("auto_increment"))
                         .build());
             });
         } else {
+            boolean tableAutoIncrements = hasAutoIncrement(tableName);
             jdbc().query(String.format(Constants.Introspection.SQLITE_TABLE_INFO, tableName), rs -> {
                 String type = rs.getString("type");
                 if (type == null || type.isEmpty()) type = "TEXT";
+                String name = rs.getString("name");
+                // PRAGMA table_info reports pk as a 1-based position, 0 meaning "not a key".
+                int pkPosition = rs.getInt("pk");
                 columns.add(ColumnInfo.builder()
-                        .name(rs.getString("name"))
+                        .name(name)
                         .type(type)
-                        // PRAGMA table_info reports pk as a 1-based position, 0 meaning "not a key".
-                        .pk(rs.getInt("pk") > 0)
+                        .pk(pkPosition > 0)
                         .notNull(rs.getInt("notnull") == 1)
+                        // A *sole* primary key is unique; one column of a composite key is not,
+                        // and treating it as though it were would turn a one-to-many into a
+                        // one-to-one on the diagram.
+                        .unique(unique.contains(name))
+                        .defaultValue(rs.getString("dflt_value"))
+                        .autoIncrement(tableAutoIncrements && pkPosition > 0)
                         .build());
             });
         }
         return columns;
+    }
+
+    /**
+     * Columns that can hold at most one row's worth of a value: a sole primary key, or a column
+     * covered by a single-column UNIQUE index.
+     *
+     * <p>Composite keys and multi-column unique indexes are deliberately excluded. Neither makes
+     * any one of its columns unique, and the caller uses this to decide whether a relationship is
+     * one-to-one — a question only a single-column constraint can answer.
+     */
+    private Set<String> uniqueColumns(String tableName) {
+        Set<String> unique = new HashSet<>();
+        try {
+            if (isMysql()) {
+                unique.addAll(jdbc().queryForList(
+                        Constants.Introspection.MYSQL_UNIQUE_COLUMNS, String.class, tableName));
+                return unique;
+            }
+
+            List<String> pk = new ArrayList<>();
+            jdbc().query(String.format(Constants.Introspection.SQLITE_TABLE_INFO, tableName), rs -> {
+                if (rs.getInt("pk") > 0) pk.add(rs.getString("name"));
+            });
+            if (pk.size() == 1) unique.add(pk.get(0));
+
+            List<String> uniqueIndexes = new ArrayList<>();
+            jdbc().query(String.format(Constants.Introspection.SQLITE_INDEX_LIST, tableName), rs -> {
+                if (rs.getInt("unique") == 1) uniqueIndexes.add(rs.getString("name"));
+            });
+            for (String index : uniqueIndexes) {
+                List<String> cols = new ArrayList<>();
+                // Braces matter: `List.add` returns boolean, which makes the lambda match both
+                // `query(String, ResultSetExtractor)` and `query(String, RowCallbackHandler)`.
+                jdbc().query(String.format(Constants.Introspection.SQLITE_INDEX_INFO, index),
+                        rs -> { cols.add(rs.getString("name")); });
+                if (cols.size() == 1) unique.add(cols.get(0));
+            }
+        } catch (Exception e) {
+            // A diagram drawn without uniqueness is still a correct diagram, just a less precise
+            // one. Failing the whole schema read over it would not be.
+            log.debug("Could not read unique columns for {}: {}", tableName, e.getMessage());
+        }
+        return unique;
     }
 
     private List<Relationship> getForeignKeys(String tableName) {
@@ -398,11 +463,17 @@ public class DatabaseServiceImpl implements DatabaseService {
             }, tableName);
         } else {
             jdbc().query(String.format(Constants.Introspection.SQLITE_FOREIGN_KEY_LIST, tableName), rs -> {
+                String onDelete = rs.getString("on_delete");
                 rels.add(Relationship.builder()
                         .sourceTable(tableName)
                         .sourceColumn(rs.getString("from"))
                         .targetTable(rs.getString("table"))
                         .targetColumn(rs.getString("to"))
+                        // Both were read and discarded before. The id is what groups the columns
+                        // of a composite key into one relationship.
+                        .constraintId(rs.getInt("id"))
+                        .onDelete(onDelete == null || onDelete.isBlank()
+                                || "NO ACTION".equalsIgnoreCase(onDelete) ? null : onDelete)
                         .build());
             });
         }
@@ -791,11 +862,16 @@ public class DatabaseServiceImpl implements DatabaseService {
     @Override
     public void clearDatabase() {
         List<String> tables = getTableNames();
-        // Notes describe tables that are about to stop existing.
+        // Notes and annotations both describe tables that are about to stop existing.
         try {
             jdbc().execute(String.format(Constants.Tables.DROP_TABLE_IF_EXISTS_QUOTED, NOTES_TABLE));
         } catch (Exception e) {
             log.warn("Could not clear table notes: {}", e.getMessage());
+        }
+        try {
+            jdbc().execute(String.format(Constants.Tables.DROP_TABLE_IF_EXISTS_QUOTED, CANVAS_META_TABLE));
+        } catch (Exception e) {
+            log.warn("Could not clear canvas annotations: {}", e.getMessage());
         }
         if (isMysql()) {
             jdbc().execute(Constants.Session.MYSQL_FOREIGN_KEY_CHECKS_OFF);
@@ -925,12 +1001,18 @@ public class DatabaseServiceImpl implements DatabaseService {
 
         jdbc().execute(String.format(Constants.Tables.DROP_TABLE, quote(table)));
 
-        // The notes were about a table that no longer exists.
+        // The notes and the colour were about a table that no longer exists.
         try {
             ensureNotesTable();
             jdbc().update(String.format(Constants.Notes.DELETE_FOR_TABLE, NOTES_TABLE), table);
         } catch (Exception e) {
             log.warn("Could not clean up notes for dropped table {}: {}", table, e.getMessage());
+        }
+        try {
+            ensureCanvasMetaTable();
+            jdbc().update(String.format(Constants.CanvasMeta.DELETE_FOR_TABLE, CANVAS_META_TABLE), table);
+        } catch (Exception e) {
+            log.warn("Could not clean up annotations for dropped table {}: {}", table, e.getMessage());
         }
     }
 
@@ -1006,6 +1088,55 @@ public class DatabaseServiceImpl implements DatabaseService {
         if (removed == 0) {
             throw new IllegalArgumentException("No such note.");
         }
+    }
+
+    // ─── Canvas annotations ───────────────────────────────────────────────────────
+
+    /** Largest annotation we will store, so a malformed client cannot fill the file. */
+    private static final int MAX_PAYLOAD_LENGTH = 4000;
+
+    @Override
+    public List<Map<String, Object>> getCanvasMeta() {
+        ensureCanvasMetaTable();
+        return jdbc().queryForList(String.format(Constants.CanvasMeta.SELECT_ALL, CANVAS_META_TABLE));
+    }
+
+    /**
+     * Stores one annotation, replacing any previous one for the same kind and ref.
+     *
+     * <p>{@code payload} is passed through as opaque JSON. The backend has no opinion on what a
+     * colour or a group contains — encoding that here would mean a migration every time the canvas
+     * learned a new adjective — but it does bound the size, and it does validate the {@code ref},
+     * because that is an identifier the rest of the system will hand back to SQL.
+     */
+    @Override
+    public void setCanvasMeta(String kind, String ref, String payload) {
+        ensureCanvasMetaTable();
+        String checkedKind = requireKind(kind);
+        String checkedRef = safeIdentifier(ref, "annotation reference");
+        if (payload == null || payload.isBlank()) {
+            throw new IllegalArgumentException("An annotation cannot be empty.");
+        }
+        if (payload.length() > MAX_PAYLOAD_LENGTH) {
+            throw new IllegalArgumentException(
+                    "An annotation can be at most " + MAX_PAYLOAD_LENGTH + " characters.");
+        }
+        jdbc().update(String.format(Constants.CanvasMeta.UPSERT, CANVAS_META_TABLE),
+                checkedKind, checkedRef, payload, java.time.Instant.now().toString());
+    }
+
+    @Override
+    public void deleteCanvasMeta(String kind, String ref) {
+        ensureCanvasMetaTable();
+        jdbc().update(String.format(Constants.CanvasMeta.DELETE_ONE, CANVAS_META_TABLE),
+                requireKind(kind), safeIdentifier(ref, "annotation reference"));
+    }
+
+    private String requireKind(String kind) {
+        if (Constants.CanvasMeta.KIND_TABLE.equals(kind) || Constants.CanvasMeta.KIND_GROUP.equals(kind)) {
+            return kind;
+        }
+        throw new IllegalArgumentException("Unknown annotation kind: \"" + kind + "\"");
     }
 
     // ─── Create Table ─────────────────────────────────────────────────────────────

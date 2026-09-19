@@ -419,6 +419,58 @@ public class DatabaseController {
         }
     }
 
+    // ─── Canvas annotations ───────────────────────────────────────────────────────
+
+    /** Body for {@link #setCanvasMeta}. {@code payload} is JSON the backend stores verbatim. */
+    public record CanvasMetaRequest(String payload) { }
+
+    @GetMapping("/canvas-meta")
+    @Operation(summary = "List Canvas Annotations",
+            description = "Table colours and tags, and domain groups, for this workspace. "
+                    + "Returned in one call because the canvas needs all of them to draw once.")
+    public ResponseEntity<?> getCanvasMeta() {
+        try {
+            return ResponseEntity.ok(Map.of("meta", databaseService.getCanvasMeta()));
+        } catch (Exception e) {
+            log.error("Get canvas meta error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PutMapping("/canvas-meta/{kind}/{ref}")
+    @Operation(summary = "Set Canvas Annotation",
+            description = "Stores one annotation, replacing any previous one for the same kind "
+                    + "and reference. Kind is 'table' or 'group'.")
+    public ResponseEntity<?> setCanvasMeta(@PathVariable String kind,
+                                           @PathVariable String ref,
+                                           @RequestBody CanvasMetaRequest request) {
+        try {
+            databaseService.setCanvasMeta(kind, ref, request.payload());
+            return ResponseEntity.ok(Map.of("message", "Annotation saved"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Set canvas meta error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/canvas-meta/{kind}/{ref}")
+    @Operation(summary = "Remove Canvas Annotation",
+            description = "Clears one annotation — a table back to its default colour, or a "
+                    + "domain group removed.")
+    public ResponseEntity<?> deleteCanvasMeta(@PathVariable String kind, @PathVariable String ref) {
+        try {
+            databaseService.deleteCanvasMeta(kind, ref);
+            return ResponseEntity.ok(Map.of("message", "Annotation removed"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Delete canvas meta error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
     // ─── Delete Workspace ─────────────────────────────────────────────────────────
 
     @DeleteMapping("/workspace")

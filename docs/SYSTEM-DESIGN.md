@@ -275,7 +275,7 @@ client that knows an id can reach that workspace. This matches the app's current
 | `POST` | `/import/analyze` | Dry run: the tables, columns and inferred types an import would produce, plus the dialect detected and everything that would be skipped. Writes nothing | ✅ header |
 | `POST` | `/upload` | Import `.csv` or `.sql`, applying any `columnTypes` corrections; returns a report of what ran and what was skipped | ✅ header |
 | `POST` | `/query` | Execute raw SQL | ✅ header |
-| `GET` | `/db-info` | All tables, columns, row previews, relationships | ✅ header |
+| `GET` | `/db-info` | All tables, columns, row previews, relationships. Columns carry `unique` / `defaultValue` / `autoIncrement`, relationships carry `constraintId` / `onDelete` — the canvas needs all five to draw cardinality and column definitions | ✅ header |
 | `GET` | `/table-data/{table}` | Columns + up to 100 rows | ✅ header |
 | `POST` | `/create-table` | `CREATE TABLE` with PK/NOT NULL/FK | ✅ header |
 | `POST` | `/alter-table` | `ALTER TABLE ... ADD COLUMN` | ✅ header |
@@ -286,6 +286,8 @@ client that knows an id can reach that workspace. This matches the app's current
 | `DELETE` | `/clear` | Drop every table, keep the workspace | ✅ header |
 | `GET` | `/workspaces` | The caller's files, `{id, name}` each, that still have a database | — |
 | `POST` | `/workspace/name` | Record the file name against the workspace | ✅ header |
+| `GET` | `/canvas-meta` | Table colours and tags, and domain groups | ✅ header |
+| `PUT` `DELETE` | `/canvas-meta/{kind}/{ref}` | Set or clear one annotation | ✅ header |
 | `GET` | `/templates` | The starter-schema catalogue | — |
 | `GET` | `/templates/{id}` | One template, including its SQL | — |
 | `POST` | `/templates/{id}/apply` | Create a template's tables in the workspace | ✅ header |

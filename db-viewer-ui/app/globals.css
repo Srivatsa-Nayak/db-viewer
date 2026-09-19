@@ -103,6 +103,18 @@
   --color-key-pk: #b45309;
   --color-key-fk: #2563eb;
 
+  /* Table tags.
+     The only categorical palette in the product - everything else here is one blue ramp plus
+     neutrals, which is right for chrome and useless for "these six things are different kinds
+     of thing". Six hues, far enough apart to survive being 4px wide on a zoomed-out canvas, and
+     each one redefined for dark below rather than reused: #f43f5e on #0b111b is a glare. */
+  --color-tag-slate: #64748b;
+  --color-tag-brand: #2563eb;
+  --color-tag-violet: #7c3aed;
+  --color-tag-teal: #0d9488;
+  --color-tag-amber: #d97706;
+  --color-tag-rose: #e11d48;
+
   /* Tailwind's smallest default breakpoint is 640px, which leaves the whole 320-639px band
      with no way to make a distinction. `xs` splits it where a second control stops fitting
      on one line. */
@@ -216,6 +228,15 @@
      the light theme's #b45309 is invisible against a dark panel. */
   --color-key-pk: #fbbf24;
   --color-key-fk: #7dd3fc;
+
+  /* Lifted the same way the brand ramp is: these sit on a near-black canvas, and the light
+     values are muddy against it. */
+  --color-tag-slate: #94a3b8;
+  --color-tag-brand: #60a5fa;
+  --color-tag-violet: #a78bfa;
+  --color-tag-teal: #2dd4bf;
+  --color-tag-amber: #fbbf24;
+  --color-tag-rose: #fb7185;
 
   /* Aliases used by the plain-CSS utilities below. */
   --brand-600: #3b82f6;
@@ -896,6 +917,16 @@ body[data-dialog-open="true"] {
 }
 /* The table the search is pointing at, so the map answers "where am I" as well as
    "what is there". */
+/* A tagged table keeps its colour on the map. Three classes, so this outranks the plain
+   `.react-flow__minimap-node` rule above; the hit rule below outranks both, because when you
+   are searching the whole point is that one dot stands out. */
+.react-flow .react-flow__minimap-node.minimap-tag-slate { fill: var(--color-tag-slate); }
+.react-flow .react-flow__minimap-node.minimap-tag-brand { fill: var(--color-tag-brand); }
+.react-flow .react-flow__minimap-node.minimap-tag-violet { fill: var(--color-tag-violet); }
+.react-flow .react-flow__minimap-node.minimap-tag-teal { fill: var(--color-tag-teal); }
+.react-flow .react-flow__minimap-node.minimap-tag-amber { fill: var(--color-tag-amber); }
+.react-flow .react-flow__minimap-node.minimap-tag-rose { fill: var(--color-tag-rose); }
+
 .react-flow .react-flow__minimap-node.minimap-node-hit {
   fill: var(--color-brand-600);
   stroke: var(--color-brand-700);
@@ -928,8 +959,46 @@ body[data-dialog-open="true"] {
     transition: none;
   }
 }
+
+/* Table tags.
+   One `--tag` variable per class, and every rule below reads that — so a seventh colour is one
+   more class here and one more token above, not a seventh copy of the styling.
+
+   The colour lands on the node's header bar and its border rather than washing the whole card:
+   the body holds column names that have to stay readable, and a tinted background at 25% zoom
+   turns into a coloured smear. `:where()` keeps the specificity at zero so the search dim/hit
+   rules still win when both apply. */
+.react-flow .react-flow__node.tag-slate { --tag: var(--color-tag-slate); }
+.react-flow .react-flow__node.tag-brand { --tag: var(--color-tag-brand); }
+.react-flow .react-flow__node.tag-violet { --tag: var(--color-tag-violet); }
+.react-flow .react-flow__node.tag-teal { --tag: var(--color-tag-teal); }
+.react-flow .react-flow__node.tag-amber { --tag: var(--color-tag-amber); }
+.react-flow .react-flow__node.tag-rose { --tag: var(--color-tag-rose); }
+
+.react-flow .react-flow__node[class*="tag-"] :where(.node-card) {
+  border-color: var(--tag);
+}
+.react-flow .react-flow__node[class*="tag-"] :where(.node-header) {
+  background: var(--tag);
+  background-image: none;
+}
+
 .react-flow .react-flow__edge-path {
   transition: stroke 160ms ease, opacity 160ms ease;
+}
+
+/* The "1" / "N" beside each end of a relationship.
+   Not selectable and not a pointer target: they sit on top of the line, and a text cursor or a
+   stray selection while dragging a table is pure noise. */
+.react-flow .react-flow__edge-endlabel {
+  font-family: var(--font-mono);
+  pointer-events: none;
+  user-select: none;
+  paint-order: stroke;
+  /* A halo in the canvas colour, so a label crossing another line stays readable. */
+  stroke: var(--color-canvas);
+  stroke-width: 3px;
+  stroke-linejoin: round;
 }
 .react-flow .react-flow__handle {
   border-color: var(--color-surface);

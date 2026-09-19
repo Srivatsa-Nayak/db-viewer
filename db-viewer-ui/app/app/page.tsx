@@ -6,6 +6,7 @@ import { FileCode, Plus, Loader2, Sparkles } from 'lucide-react';
 
 import { Header } from "@/components/header/Header";
 import { Visualizer } from "@/components/canvas/Visualizer";
+import type { EdgeCardinality } from "@/components/canvas/OrthogonalEdge";
 import { FileExplorer, ExplorerFile } from "@/components/editor/FileExplorer";
 import { Notice } from '@/components/modal/NoticeModal';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
@@ -17,7 +18,7 @@ import {
 import { clearSession, loadSession, saveSession } from "@/services/sessionStorage";
 import { newWorkspaceId } from "@/services/workspaceId";
 import { downloadCanvasImage } from "@/services/exportImage";
-import { ImportPlan, Relationship, SqlDialectId, TableInfo } from "@/types";
+import { ImportPlan, Relationship, SqlDialectId, TableInfo, TagColour } from "@/types";
 
 /**
  * Dialogs are code-split.
@@ -57,6 +58,30 @@ interface Workspace {
     relationships: Relationship[];
     fileData: ExplorerFile;
     isImported: boolean;
+    /**
+     * Everything the user has said *about* a table, as opposed to what the database says.
+     *
+     * Kept out of the nodes on purpose. `refreshActiveSchema` rebuilds every node from the server
+     * response, so anything living on a node is destroyed by the next refresh — colour was the
+     * first thing to hit that, and grouping, ghosting and collapsed state would each hit it again.
+     * Decorations live here, keyed by table name, and are folded onto the nodes at render time.
+     */
+    decorations: Record<string, NodeDecoration>;
+}
+
+/**
+ * A user's annotations on one table.
+ *
+ * Presentational fields are applied as a `className`, never through node `data`: React Flow
+ * compares `data` by reference, so putting a colour in it would rebuild every node's data object
+ * and re-render the whole canvas on each frame of a drag. `DemoCanvas` documents the same rule for
+ * its refused-delete styling.
+ */
+export interface NodeDecoration {
+    /** A token name (`brand`, `teal`, …), never a hex value — see the `--color-tag-*` ramp. */
+    colour?: TagColour;
+    /** A short free-text label, e.g. "Billing". */
+    tag?: string;
 }
 
 /**
@@ -67,9 +92,81 @@ interface Workspace {
  */
 const EDGE_COLOUR = 'var(--color-edge)';
 
-const transformRelationshipsToEdges = (relationships: Relationship[]): Edge[] =>
-    relationships.map((rel, index) => ({
-        id: `e-${index}`,
+/**
+ * A stable identity for a relationship, independent of where it sits in the list.
+ *
+ * Edge ids used to be positional (`e-0`, `e-1`…), which meant every id shifted the moment a
+ * foreign key was added or removed. Anything keyed by edge id — per-edge state, a selection, a
+ * cardinality override — would silently reattach to a different edge.
+ */
+const edgeIdFor = (rel: Relationship): string =>
+    `${rel.targetTable}.${rel.targetColumn}->${rel.sourceTable}.${rel.sourceColumn}`;
+
+/**
+ * Tables that exist only to join two others.
+ *
+ * A many-to-many relationship is not something a relational database can hold: it is always two
+ * one-to-many relationships through a junction table, and that is what the canvas draws. Rather
+ * than inventing an M:N edge that corresponds to nothing in the schema, the junction itself is
+ * labelled — which says the same thing and stays true to what is actually there.
+ *
+ * The test is the one that does not produce false positives: every column of a composite primary
+ * key is also a foreign key. A table with a surrogate `id` is a real entity with its own identity,
+ * even when it happens to hold two foreign keys.
+ */
+const junctionTables = (tables: TableInfo[], relationships: Relationship[]): Set<string> => {
+    const fkColumns = new Map<string, Set<string>>();
+    for (const rel of relationships) {
+        let columns = fkColumns.get(rel.sourceTable);
+        if (!columns) { columns = new Set(); fkColumns.set(rel.sourceTable, columns); }
+        columns.add(rel.sourceColumn);
+    }
+
+    const junctions = new Set<string>();
+    for (const table of tables) {
+        const keys = table.columns.filter(c => c.isPk);
+        if (keys.length < 2) continue;
+        const foreign = fkColumns.get(table.name);
+        if (foreign && keys.every(k => foreign.has(k.name))) junctions.add(table.name);
+    }
+    return junctions;
+};
+
+/**
+ * How many rows can sit at each end of a relationship.
+ *
+ * Inferred, never stored — the database already knows, and a second copy of the answer would be
+ * a second thing to keep in step. The parent end is always "one": a foreign key must reference a
+ * unique column, so at most one row can be on that side. The child end is "one" only when the
+ * foreign key column is itself unique, which is exactly what makes a 1:1 a 1:1; otherwise many
+ * child rows can share a parent.
+ *
+ * Optionality is the column's nullability: a nullable foreign key means the child may have no
+ * parent, which crow's-foot notation draws as a circle rather than a bar.
+ */
+const cardinalityFor = (rel: Relationship, tables: TableInfo[]): EdgeCardinality => {
+    const child = tables.find(t => t.name === rel.sourceTable);
+    const column = child?.columns.find(c => c.name === rel.sourceColumn);
+    return {
+        childMany: !(column?.isUnique || column?.isPk),
+        childOptional: !column?.notNull,
+        onDelete: rel.onDelete,
+        // Carried so the edge can describe itself in words. The edge knows its two node ids, but
+        // not which columns joined them, and "customers has many orders" is the sentence that
+        // makes the notation mean something to somebody who has not met it before.
+        parentTable: rel.targetTable,
+        parentColumn: rel.targetColumn,
+        childTable: rel.sourceTable,
+        childColumn: rel.sourceColumn,
+    };
+};
+
+const transformRelationshipsToEdges = (relationships: Relationship[], tables: TableInfo[]): Edge[] =>
+    relationships.map(rel => ({
+        id: edgeIdFor(rel),
+        // `data` was unread by OrthogonalEdge until now, so carrying the notation here costs
+        // nothing and keeps the edge component free of schema lookups.
+        data: cardinalityFor(rel, tables),
         source: rel.targetTable,
         target: rel.sourceTable,
         sourceHandle: `${rel.targetColumn}-right`,
@@ -95,18 +192,53 @@ const transformRelationshipsToEdges = (relationships: Relationship[]): Edge[] =>
 const keyColumnsByTable = (relationships: Relationship[]) => {
     const foreignKeys: Record<string, string[]> = {};
     const referenced: Record<string, string[]> = {};
+    /** `table -> { column -> "target.column" }`, so a node can say where its keys lead. */
+    const references: Record<string, Record<string, string>> = {};
 
     for (const rel of relationships) {
         (foreignKeys[rel.sourceTable] ??= []).push(rel.sourceColumn);
         (referenced[rel.targetTable] ??= []).push(rel.targetColumn);
+        (references[rel.sourceTable] ??= {})[rel.sourceColumn] =
+            `${rel.targetTable}.${rel.targetColumn}`;
     }
-    return { foreignKeys, referenced };
+    return { foreignKeys, referenced, references };
 };
 
-const defaultPosition = (index: number) => ({
-    x: 250 * (index % 3),
-    y: 100 + Math.floor(index / 3) * 300,
-});
+/**
+ * Where a table lands before anyone has arranged it.
+ *
+ * The step has to clear the widest a node can be, with room to spare: a relationship line needs
+ * somewhere to go, and its cardinality marks sit 8-16px outside each table. At the old 250px step
+ * — set when nodes were at most 230px wide — adjacent tables very nearly touched and every edge
+ * between two of them was a cramped stub with the notation piled on top of it.
+ */
+const GRID_STEP_X = 360;
+const GRID_STEP_Y = 340;
+
+/**
+ * How many tables to put in a row: √n, so the block stays roughly square.
+ *
+ * It used to be three, always, which is fine for a handful and wrong for anything more. Eighteen
+ * tables became a three-wide, six-deep strip, and "fit to view" then had to shrink it to 42% to
+ * get the *height* on screen — 400px of dead canvas down either side and not one table readable.
+ *
+ * Square rather than screen-shaped, which is the thing worth writing down: a wide grid looks like
+ * the better match for a wide pane, and measures worse. Tables are much shorter than the vertical
+ * step (that step has to clear a twenty-column table, and most have five), so a row of them is far
+ * wider than it is tall and width becomes the binding constraint long before height does. Measured
+ * across the bundled example and an eighteen-table file, √n beat √(1.2n) and √(1.7n) on resulting
+ * zoom — 0.64 against 0.52 for the larger one.
+ */
+const gridColumns = (total: number): number =>
+    Math.max(1, Math.min(total, Math.ceil(Math.sqrt(total))));
+
+const defaultPosition = (index: number, total: number) => {
+    const columns = gridColumns(total);
+    return {
+        x: GRID_STEP_X * (index % columns),
+        y: 120 + Math.floor(index / columns) * GRID_STEP_Y,
+    };
+};
 
 const errorMessage = (err: unknown): string | undefined =>
     err && typeof err === "object" && "response" in err
@@ -193,9 +325,26 @@ export default function Home() {
      */
     const nodesWithNotes = useMemo(() => {
         if (!activeWorkspace) return [];
+        const decorations = activeWorkspace.decorations;
         return activeWorkspace.nodes.map(n => {
             const openNotes = openNoteCounts[n.id] ?? 0;
-            return openNotes === n.data.openNotes ? n : { ...n, data: { ...n.data, openNotes } };
+            const decoration = decorations[n.id];
+            // The colour rides on `className`, so `data` identity survives a drag; the tag is
+            // text the node renders, so it has to be in `data`.
+            const className = decoration?.colour ? `tag-${decoration.colour}` : undefined;
+            const tag = decoration?.tag;
+
+            const colour = decoration?.colour;
+
+            const dataUnchanged = openNotes === n.data.openNotes
+                && tag === n.data.tag
+                && colour === n.data.colour;
+            if (dataUnchanged && className === n.className) return n;
+            return {
+                ...n,
+                className,
+                data: dataUnchanged ? n.data : { ...n.data, openNotes, tag, colour },
+            };
         });
     }, [activeWorkspace, openNoteCounts]);
 
@@ -257,6 +406,48 @@ export default function Home() {
 
     const requestTableDelete = useCallback((tableName: string) => setTableToDelete(tableName), []);
 
+    /**
+     * Sets or clears a table's colour, optimistically.
+     *
+     * Optimistic because the alternative is a visible lag on what reads as a pure UI gesture, and
+     * the cost of being wrong is one wrong colour until the next refresh — not lost work. On
+     * failure the previous decoration goes back, so the canvas never disagrees with the server
+     * for longer than the round trip.
+     */
+    const handleColourChange = useCallback(async (tableName: string, colour: TagColour | undefined) => {
+        const workspaceId = activeWorkspaceIdRef.current;
+        if (!workspaceId) return;
+
+        let previous: NodeDecoration | undefined;
+        setWorkspaces(prev => prev.map(w => {
+            if (w.id !== workspaceId) return w;
+            previous = w.decorations[tableName];
+            const next = { ...w.decorations };
+            const decoration = { ...next[tableName], colour };
+            if (!decoration.colour && !decoration.tag) delete next[tableName];
+            else next[tableName] = decoration;
+            return { ...w, decorations: next };
+        }));
+
+        try {
+            const decoration = { ...previous, colour };
+            if (!decoration.colour && !decoration.tag) {
+                await dbService.deleteCanvasMeta('table', tableName);
+            } else {
+                await dbService.setCanvasMeta('table', tableName, decoration);
+            }
+        } catch (e) {
+            console.error('Could not save the table colour', e);
+            setWorkspaces(prev => prev.map(w => {
+                if (w.id !== workspaceId) return w;
+                const next = { ...w.decorations };
+                if (previous) next[tableName] = previous;
+                else delete next[tableName];
+                return { ...w, decorations: next };
+            }));
+        }
+    }, []);
+
     /** Drops a file that is no longer ours, rather than leaving a tab that 403s on every action. */
     const closeForeignWorkspace = useCallback((workspaceId: string) => {
         setWorkspaces(prev => {
@@ -286,8 +477,9 @@ export default function Home() {
         try {
             const response = await dbService.getSchema();
             const tables = response.tables;
-            const edges = transformRelationshipsToEdges(response.relationships);
+            const edges = transformRelationshipsToEdges(response.relationships, tables);
             const keys = keyColumnsByTable(response.relationships);
+            const junctions = junctionTables(tables, response.relationships);
 
             setWorkspaces(prev => prev.map(w => {
                 if (w.id !== workspaceId) return w;
@@ -297,18 +489,21 @@ export default function Home() {
                     return {
                         id: tbl.name,
                         type: "tableNode",
-                        position: existing ? existing.position : defaultPosition(index),
+                        position: existing ? existing.position : defaultPosition(index, tables.length),
                         data: {
                             label: tbl.name,
                             columns: tbl.columns,
                             foreignKeyColumns: keys.foreignKeys[tbl.name] ?? [],
                             referencedColumns: keys.referenced[tbl.name] ?? [],
+                            references: keys.references[tbl.name],
+                            isJunction: junctions.has(tbl.name),
                             openNotes: existing?.data?.openNotes ?? 0,
                             onRefresh: refreshActiveSchema,
                             onEdit: setEditingTable,
                             onDelete: requestTableDelete,
                             onDownloadCsv: handleDownloadCsv,
                             onNotesChanged: refreshNotes,
+                            onColourChange: handleColourChange,
                         },
                     };
                 });
@@ -330,7 +525,7 @@ export default function Home() {
         }
         // All four are stable useCallbacks, so this array never actually changes - it is
         // declared so the dependency is explicit rather than silently captured.
-    }, [handleDownloadCsv, requestTableDelete, refreshNotes, closeForeignWorkspace]);
+    }, [handleDownloadCsv, requestTableDelete, refreshNotes, closeForeignWorkspace, handleColourChange]);
 
     const transformSchemaToWorkspace = useCallback((
         tables: TableInfo[],
@@ -338,9 +533,11 @@ export default function Home() {
         fileName: string,
         id: string,
         isImported: boolean,
-        savedPositions: Record<string, { x: number; y: number }> = {}
+        savedPositions: Record<string, { x: number; y: number }> = {},
+        decorations: Record<string, NodeDecoration> = {}
     ): Workspace => {
         const keys = keyColumnsByTable(relationships);
+        const junctions = junctionTables(tables, relationships);
         return {
         id,
         name: fileName,
@@ -350,29 +547,33 @@ export default function Home() {
             type: "tableNode",
             // Restore the layout the user arranged; fall back to the default grid for a table
             // that did not exist when the session was saved.
-            position: savedPositions[tbl.name] ?? defaultPosition(index),
+            position: savedPositions[tbl.name] ?? defaultPosition(index, tables.length),
             data: {
                 label: tbl.name,
                 columns: tbl.columns,
                 foreignKeyColumns: keys.foreignKeys[tbl.name] ?? [],
                 referencedColumns: keys.referenced[tbl.name] ?? [],
+                references: keys.references[tbl.name],
+                isJunction: junctions.has(tbl.name),
                 openNotes: 0,
                 onRefresh: refreshActiveSchema,
                 onEdit: setEditingTable,
                 onDelete: requestTableDelete,
                 onDownloadCsv: handleDownloadCsv,
                 onNotesChanged: refreshNotes,
+                onColourChange: handleColourChange,
             },
         })),
-        edges: transformRelationshipsToEdges(relationships),
+        edges: transformRelationshipsToEdges(relationships, tables),
         relationships,
         fileData: {
             id,
             name: fileName,
             tables: tables.map(t => ({ name: t.name, columns: t.columns })),
         },
+        decorations,
         };
-    }, [refreshActiveSchema, requestTableDelete, handleDownloadCsv, refreshNotes]);
+    }, [refreshActiveSchema, requestTableDelete, handleDownloadCsv, refreshNotes, handleColourChange]);
 
     /**
      * Rebuilds the open-file list for whoever is signed in now.
@@ -387,6 +588,27 @@ export default function Home() {
      * only record of a user's files. They were still on disk and still owned, and nothing ever
      * asked for them again.
      */
+    /**
+     * Reads this workspace's annotations back into the shape the canvas wants.
+     *
+     * Failure is deliberately soft: a file that opens without its colours is a worse-looking
+     * canvas, while a file that refuses to open because a colour could not be read is lost work.
+     */
+    const loadDecorations = useCallback(async (): Promise<Record<string, NodeDecoration>> => {
+        try {
+            const meta = await dbService.getCanvasMeta();
+            return Object.fromEntries(meta
+                .filter(m => m.kind === 'table')
+                .map(m => [m.ref, {
+                    colour: m.payload.colour as TagColour | undefined,
+                    tag: typeof m.payload.tag === 'string' ? m.payload.tag : undefined,
+                }]));
+        } catch (e) {
+            console.error('Could not read canvas annotations', e);
+            return {};
+        }
+    }, []);
+
     const restoreOpenFiles = useCallback(async (): Promise<void> => {
         const saved = loadSession();
         const savedById = new Map((saved?.workspaces ?? []).map(w => [w.id, w]));
@@ -410,9 +632,10 @@ export default function Home() {
             const name = entry.name ?? stored?.name ?? 'Untitled.sql';
             try {
                 const schema = await dbService.getSchema();
+                const decorations = await loadDecorations();
                 restored.push(transformSchemaToWorkspace(
                     schema.tables, schema.relationships,
-                    name, entry.id, stored?.isImported ?? false, stored?.positions ?? {}
+                    name, entry.id, stored?.isImported ?? false, stored?.positions ?? {}, decorations
                 ));
             } catch (e) {
                 // A file that is no longer ours is simply dropped. Not worth interrupting the
@@ -437,7 +660,7 @@ export default function Home() {
         setWorkspaces(restored);
         setActiveWorkspaceId(nextActive);
         setActiveWorkspace(nextActive);
-    }, [transformSchemaToWorkspace]);
+    }, [transformSchemaToWorkspace, loadDecorations]);
 
     /**
      * Rebuild the file list on mount, and again whenever the identity changes.
@@ -600,6 +823,7 @@ export default function Home() {
             relationships: [],
             fileData: { id: newId, name: fileName, tables: [] },
             isImported: false,
+            decorations: {},
         }]);
         setActiveWorkspaceId(newId);
     };

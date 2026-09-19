@@ -5,7 +5,8 @@ import Link from "next/link";
 import {
     ArrowRight, StickyNote, Pencil, Plus, Download, Trash2, Edit3,
     Files, Share2, HelpCircle, LayoutPanelLeft, Search, ZoomIn, Database,
-    FileCode, Image as ImageIcon, KeyRound, GitBranch, Table2 as TableIcon, Map as MapIcon, Moon,
+    FileCode, Image as ImageIcon, KeyRound, GitBranch, Table2 as TableIcon, Map as MapIcon, Moon, Palette,
+    Minus, Circle,
 } from "lucide-react";
 
 import { LandingNav } from "@/components/landing/LandingNav";
@@ -62,6 +63,7 @@ const GROUPS: DocsGroup[] = [
         items: [
             { id: "create-table", label: "Creating a table" },
             { id: "table-actions", label: "Table actions" },
+            { id: "colour-tagging", label: "Colour-coding tables" },
             { id: "columns", label: "Adding a column" },
             { id: "edit-column", label: "Editing a column" },
             { id: "types", label: "Column types" },
@@ -565,8 +567,16 @@ export default function DocsPage() {
                     <Section
                         id="table-actions"
                         title="Table actions"
-                        lead="The icons in a table's blue header, left to right."
+                        lead="Everything you can do to a table, from the menu in its header."
                     >
+                        <p>
+                            Each table header carries one control: the <UI>⋮</UI> button on the
+                            right. It opens a menu of everything you can do to that table. The only
+                            other thing that ever appears in the header is an amber count, when the
+                            table has open <a href="#notes" className="text-brand-700 underline underline-offset-2">notes</a> —
+                            that is information rather than an action, so it stays where you can
+                            see it without opening anything.
+                        </p>
                         <ActionTable
                             rows={[
                                 {
@@ -590,6 +600,11 @@ export default function DocsPage() {
                                     effect: <>Downloads this table&apos;s rows as a CSV. Needs an account.</>,
                                 },
                                 {
+                                    icon: <Palette size={15} />,
+                                    action: "Colour",
+                                    effect: <>A row of swatches at the bottom of the menu. See <a href="#colour-tagging" className="text-brand-700 underline underline-offset-2">Colour-coding tables</a>.</>,
+                                },
+                                {
                                     icon: <Trash2 size={15} />,
                                     action: "Delete table",
                                     effect: <>Drops the table, after a confirmation. See <a href="#delete-table" className="text-brand-700 underline underline-offset-2">Deleting a table</a>.</>,
@@ -601,6 +616,38 @@ export default function DocsPage() {
                                 },
                             ]}
                         />
+                    </Section>
+
+                    <Section
+                        id="colour-tagging"
+                        title="Colour-coding tables"
+                        lead="Six colours, to tell kinds of table apart at a glance."
+                    >
+                        <p>
+                            Open a table&apos;s <UI>⋮</UI> menu and pick one of the six swatches
+                            under <UI>Colour</UI>. The table&apos;s header and border take it; the
+                            crossed-out swatch puts it back to the default blue.
+                        </p>
+                        <p>
+                            The point is legibility at scale. On a schema of ten tables you can read
+                            every name; on one of a hundred you cannot, and colour is the only thing
+                            that still carries meaning when a table is a few pixels wide. Typical
+                            uses: reference data one colour, transactional tables another, join
+                            tables a third. The <UI>minimap</UI> picks the colours up too, which is
+                            where they do the most work.
+                        </p>
+                        <Callout tone="note" title="Colours belong to the file, not to you">
+                            A colour is saved with the file on the server, so it is there when you
+                            open it on another machine, and anyone you share the file with sees the
+                            same one. Where tables sit on the canvas is the opposite — that is
+                            remembered in your browser alone, because a layout is one person&apos;s
+                            arrangement on one screen.
+                        </Callout>
+                        <p>
+                            Colours never reach your data. They are kept apart from your tables and
+                            are not written into a SQL export, so a script you generate is exactly
+                            the schema and nothing else.
+                        </p>
                     </Section>
 
                     <Section
@@ -701,6 +748,55 @@ export default function DocsPage() {
                             A line appears when a real foreign key exists. Define one when you{" "}
                             <a href="#create-table" className="text-brand-700 underline underline-offset-2">create a table</a>, or
                             import a file that already has them, and the edge is drawn for you.
+                        </p>
+                        <p>
+                            Each line is marked at both ends with <strong>crow&apos;s foot
+                            notation</strong>, so how many rows sit at each end is readable without
+                            opening anything:
+                        </p>
+                        <ActionTable
+                            caption="What the marks at the end of a line mean"
+                            rows={[
+                                {
+                                    icon: <Minus size={15} />,
+                                    action: "A single bar",
+                                    effect: <>Exactly one row. Always shown at the parent end, and at both ends when the relationship is one-to-one.</>,
+                                },
+                                {
+                                    icon: <GitBranch size={15} />,
+                                    action: "A three-pronged foot",
+                                    effect: <>Many rows. The usual case: many orders per customer.</>,
+                                },
+                                {
+                                    icon: <Circle size={15} />,
+                                    action: "A small circle",
+                                    effect: <>Optional — the foreign key allows nulls, so a row on that side may have no counterpart.</>,
+                                },
+                            ]}
+                        />
+                        <p>
+                            None of this is stored anywhere; it is read from the schema. A foreign
+                            key on a <Code>UNIQUE</Code> column can only ever match one row, so the
+                            relationship is drawn one-to-one; on an ordinary column it is drawn
+                            one-to-many. Whether the column allows nulls decides the circle. Prefer
+                            plain arrowheads? The <UI>notation</UI> button in the canvas toolbar
+                            switches between the two.
+                        </p>
+                        <Callout tone="note" title="Many-to-many is drawn as what it really is">
+                            A relational database cannot store a many-to-many relationship directly
+                            — it is always two one-to-many relationships through a join table. So
+                            rather than draw an edge that matches nothing in your schema, the join
+                            table itself is marked <UI>join</UI>. A table earns that label when its
+                            whole primary key is made of foreign keys. One with its own{" "}
+                            <Code>id</Code> is a table in its own right and is left alone, even if
+                            it holds two foreign keys.
+                        </Callout>
+                        <p>
+                            Hovering a column name shows its full definition — type, length,{" "}
+                            <Code>NOT NULL</Code>, <Code>UNIQUE</Code>, any default, and what a
+                            foreign key points at. The node itself stays narrow enough to read at a
+                            glance; the detail is one hover away, or one <Key>Tab</Key> away if you
+                            are on the keyboard.
                         </p>
                         <Callout tone="warn" title="The key icons follow a naming convention, not the schema">
                             On the canvas, the small <KeyRound size={12} className="inline -mt-0.5" /> icon and the

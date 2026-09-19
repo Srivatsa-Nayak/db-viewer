@@ -367,11 +367,21 @@ The transform tolerates both `snake_case` and `camelCase` on relationship fields
 | `NewFileModal` | Name a new empty file | Appends `.sql` if omitted |
 | `InfoModal` | Five-line description of the app, the version badge, and developer credits | Opened from the **header's** help button. Version comes from `GET /version`, i.e. the backend's `pom.xml` |
 | `NewTableHelpModal` | What the **New Table** button does, step by step | Opened from the info button in the **canvas toolbar**. Deliberately distinct from `InfoModal`: help for a control lives next to that control |
+| `AnchoredMenu` | Portalled dropdown for controls that live on the canvas | Caller captures the anchor rect on click; closes on wheel/resize rather than following the canvas. See [Gotchas](#gotchas) |
+| `Tooltip` | Hover/focus definition popover | Portals to `document.body` and renders its own trigger `<span>`; see [Gotchas](#gotchas) |
+| `ColorSwatchPicker` | The six table colours plus "none", as a `radiogroup` | Deliberately not `<input type="color">`: an arbitrary hex is unreadable in one of the two themes and indistinguishable from its neighbours at canvas zoom |
 | `NoticeModal` | Any error/warning the user must see | Used for import reports — a `.sql` dump is rarely fully portable, so skipped statements are listed here instead of only in the server log |
 
 ---
 
 ## Styling
+
+- **`--color-tag-*` is the one categorical palette.** Six hues (`slate`, `brand`, `violet`,
+  `teal`, `amber`, `rose`), defined in `@theme` and redefined in `[data-theme="dark"]`. The rest
+  of the system is one blue ramp plus neutrals, which is right for chrome and useless for
+  "these are six different kinds of thing". A table's colour is stored as the **token name**,
+  never a hex, so it resolves correctly in both themes. A seventh colour is one token plus one
+  `.tag-*` rule plus one `.minimap-tag-*` rule.
 
 - **Tailwind CSS v4**, configured entirely from CSS (`app/globals.css`). There is no
   `tailwind.config.js` — the scaffolded one pointed at `./src/**` paths that do not exist here.
@@ -415,6 +425,21 @@ The transform tolerates both `snake_case` and `camelCase` on relationship fields
 ---
 
 ## Gotchas
+
+**0c. `fitView` measures nodes only, and will happily zoom *in*.** Pass the same `fitViewOptions` to `<ReactFlow>` and `<Controls>` (the button has its own defaults otherwise), cap `maxZoom` at 1 so a single table is not blown up to 200%, and keep the padding generous because edge notation is drawn outside the node boxes that `fitView` measures. Whenever the node width changes, `GRID_STEP_X` in `page.tsx` has to change with it — at a 250px step the 265px nodes nearly touched.
+
+**0b. A dismissal listener must not depend on a prop that changes identity every render.** `AnchoredMenu`'s Escape/outside-click effect originally listed `onClose` in its deps. Callers pass an inline arrow, so the effect re-ran on every render — and a real Escape keypress makes React Flow re-render the node *while the event is still bubbling*, so the cleanup removed the listener before the event reached `document`. Escape did nothing, while a synthetically dispatched Escape worked, which is exactly the shape of bug a test can miss. `onClose` now goes through a ref so the effect depends only on whether the menu is open.
+
+**0a. A tooltip inside the canvas must be portalled, and must not be a cloned child.** React Flow transforms its viewport, so a `position: fixed` tooltip rendered in place anchors to the canvas pane *and is scaled by the current zoom* — unreadable at 25%. `components/ui/Tooltip.tsx` portals to `document.body`. It also renders its own trigger element rather than `cloneElement`-ing the caller's child, because the lint config rejects that (`react-hooks/refs`).
+
+**0. A node's `className` is shared, so append to it — never assign.** The table colour rides on
+`className` (not in `data`, which React Flow compares by reference — putting it there rebuilds
+every node's data object on each frame of a drag). `Visualizer.displayNodes` also writes
+`node-hit` / `node-dim` there for canvas search. It used to *replace* the string, so every colour
+vanished the moment search opened. Relatedly, the minimap cannot be coloured with React Flow's
+`nodeColor` prop: that lands in a `fill` **attribute**, and the `.react-flow__minimap-node` rule
+in `globals.css` is a CSS rule, which always wins. Measured — the attribute read back as the tag
+colour while the computed fill stayed `brand-400`. Use `nodeClassName` and a CSS rule.
 
 **1. Build dialogs with `components/ui/Modal.tsx`. Never hand-roll an overlay.** React Flow
 transforms its viewport, which makes it the containing block for any `position: fixed` descendant —

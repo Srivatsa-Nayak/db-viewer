@@ -42,6 +42,16 @@ public final class Constants {
         /** Per-workspace to-do notes. Prefixed so it never reaches the canvas or an export. */
         public static final String NOTES_TABLE = "__table_notes";
 
+        /**
+         * Per-workspace canvas annotations: table colours and tags, and domain groups.
+         *
+         * <p>Inside the workspace rather than the default database for the same reason as notes —
+         * an annotation is about this file's tables, so it should travel with the file and go when
+         * the file goes. Node <em>positions</em> stay client-side; a colour is a statement about
+         * the schema, a position is a preference about one screen.
+         */
+        public static final String CANVAS_META_TABLE = "__canvas_meta";
+
         /** Suffix for the scratch table used while rebuilding a SQLite table. */
         public static final String REBUILD_TABLE_SUFFIX = "__rebuild";
     }
@@ -119,6 +129,28 @@ public final class Constants {
                     note TEXT NOT NULL,
                     done INTEGER NOT NULL DEFAULT 0,
                     created_at VARCHAR(40) NOT NULL
+                )
+                """;
+
+        /**
+         * Canvas annotations. %s: the table name.
+         *
+         * <p>One table for two kinds of thing, distinguished by {@code kind}: a {@code 'table'} row
+         * annotates the table named in {@code ref}, and a {@code 'group'} row is a domain box whose
+         * {@code ref} is its own generated id. Keeping them together means grouping needs no new
+         * schema, and the UI reads every annotation in one request.
+         *
+         * <p>{@code payload} is JSON, and deliberately opaque to the backend: which fields a colour
+         * or a group carries is a question about the canvas, and the server has no opinion worth
+         * encoding in columns it would have to migrate.
+         */
+        public static final String CREATE_CANVAS_META_TABLE = """
+                CREATE TABLE IF NOT EXISTS "%s" (
+                    kind VARCHAR(16) NOT NULL,
+                    ref VARCHAR(255) NOT NULL,
+                    payload TEXT NOT NULL,
+                    updated_at VARCHAR(40) NOT NULL,
+                    PRIMARY KEY (kind, ref)
                 )
                 """;
     }
@@ -218,6 +250,24 @@ public final class Constants {
 
         /** %s: table name. Reports pk as a 1-based position, 0 meaning "not a key". */
         public static final String SQLITE_TABLE_INFO = "PRAGMA table_info(\"%s\")";
+
+        /**
+         * Indexes on a table. %s: table name.
+         *
+         * <p>The only way to learn that a column is UNIQUE: {@code PRAGMA table_info} does not
+         * report it, so before this the schema had no way to tell a one-to-one relationship
+         * from a one-to-many.
+         */
+        public static final String SQLITE_INDEX_LIST = "PRAGMA index_list(\"%s\")";
+
+        /** Columns in one index. %s: index name. */
+        public static final String SQLITE_INDEX_INFO = "PRAGMA index_info(\"%s\")";
+
+        /** Single-column unique indexes, MySQL. ?: table name. */
+        public static final String MYSQL_UNIQUE_COLUMNS =
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS "
+                        + "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND NON_UNIQUE = 0 "
+                        + "GROUP BY INDEX_NAME, COLUMN_NAME HAVING COUNT(*) OVER (PARTITION BY INDEX_NAME) = 1";
 
         /** ?: table name. */
         public static final String MYSQL_FOREIGN_KEYS = """
@@ -357,6 +407,42 @@ public final class Constants {
 
         /** %s: notes table. ?: table name. */
         public static final String DELETE_FOR_TABLE = "DELETE FROM \"%s\" WHERE table_name = ?";
+    }
+
+    /**
+     * Canvas annotations — table colours and tags, and (later) domain groups.
+     *
+     * <p>Every statement takes the annotations table name as its first {@code %s}, like
+     * {@link Notes}.
+     */
+    public static final class CanvasMeta {
+        private CanvasMeta() { }
+
+        public static final String KIND_TABLE = "table";
+        public static final String KIND_GROUP = "group";
+
+        /** %s: annotations table. */
+        public static final String SELECT_ALL =
+                "SELECT kind, ref, payload FROM \"%s\" ORDER BY kind, ref";
+
+        /**
+         * %s: annotations table. ?: kind, ref, payload, updated-at timestamp.
+         *
+         * <p>An upsert, because setting a colour twice is one annotation and not two. Both engines
+         * in play accept this spelling — SQLite since 3.24, MySQL since 8.0.19 — and the bundled
+         * driver is well past both.
+         */
+        public static final String UPSERT =
+                "INSERT INTO \"%s\" (kind, ref, payload, updated_at) VALUES (?, ?, ?, ?) "
+                        + "ON CONFLICT (kind, ref) DO UPDATE SET payload = excluded.payload, "
+                        + "updated_at = excluded.updated_at";
+
+        /** %s: annotations table. ?: kind, ref. */
+        public static final String DELETE_ONE = "DELETE FROM \"%s\" WHERE kind = ? AND ref = ?";
+
+        /** %s: annotations table. ?: table name. Used so a colour cannot outlive its table. */
+        public static final String DELETE_FOR_TABLE =
+                "DELETE FROM \"%s\" WHERE kind = 'table' AND ref = ?";
     }
 
     /** Creating and discarding the per-file databases themselves. */

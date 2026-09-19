@@ -303,6 +303,9 @@ set headers.
 | `DELETE` | `/clear` | Drop every table in the workspace (workspace survives) |
 | `GET` | `/workspaces` | The caller's files — `{id, name}` each — that still have a database. The UI rebuilds its file list from this, on refresh and on sign-in |
 | `POST` | `/workspace/name` | Records the file name for the current workspace, so it survives a sign-out and reaches any other machine |
+| `GET` | `/canvas-meta` | Canvas annotations for this file — table colours and tags, and domain groups |
+| `PUT` | `/canvas-meta/{kind}/{ref}` | Set one annotation (`kind` is `table` or `group`) |
+| `DELETE` | `/canvas-meta/{kind}/{ref}` | Clear one annotation |
 | `DELETE` | `/workspace` | Delete the workspace's database entirely |
 | `GET` | `/export/{table}?workspaceId=` | Download the table as CSV |
 | `GET` | `/export-sql?filename=&dialect=&workspaceId=` | Download the workspace as a SQL script, written for `dialect` (`mysql` \| `mariadb` \| `postgres` \| `sqlserver` \| `sqlite` \| `generic`) |

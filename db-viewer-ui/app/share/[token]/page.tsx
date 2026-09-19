@@ -4,11 +4,12 @@ import { use, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Database, Loader2, AlertCircle, KeyRound, Eye, ExternalLink } from "lucide-react";
 import ReactFlow, {
-    Background, BackgroundVariant, Controls, Edge, Handle, MarkerType, Node, Position,
+    Background, BackgroundVariant, Controls, Edge, Handle, Node, Position,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { shareService } from "@/services/api";
 import { ColumnInfo, Relationship, TableInfo } from "@/types";
+import { OrthogonalEdge } from "@/components/canvas/OrthogonalEdge";
 
 /**
  * Read-only view of a shared file.
@@ -94,6 +95,10 @@ const ReadOnlyTableNode = ({ data }: { data: ReadOnlyNodeData }) => (
 );
 
 const nodeTypes = { sharedTable: ReadOnlyTableNode };
+// The editor's own edge, so a shared link shows the same orthogonal routing and the same
+// crow's-foot notation. This page used to draw built-in `smoothstep` diagonals, which meant the
+// diagram someone shared did not look like the diagram they were looking at.
+const edgeTypes = { orthogonal: OrthogonalEdge };
 
 export default function SharedFilePage({ params }: { params: Promise<{ token: string }> }) {
     const { token } = use(params);
@@ -139,18 +144,27 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
             push(sourceColumns, parentTable, parentColumn);
             push(targetColumns, childTable, childColumn);
 
+            const childColumnInfo = (schema.tables || [])
+                .find(t => t.name === childTable)?.columns
+                .find(c => c.name === childColumn);
+
             return {
                 id: `e-${index}`,
                 source: parentTable,
                 target: childTable,
                 sourceHandle: `${parentColumn}-right`,
                 targetHandle: `${childColumn}-left`,
-                type: "smoothstep",
-                animated: true,
+                type: "orthogonal",
+                animated: false,
+                data: {
+                    // The shared view has the same schema the editor does, so it can infer the
+                    // same cardinality.
+                    childMany: !(childColumnInfo?.isUnique || childColumnInfo?.isPk),
+                    childOptional: !childColumnInfo?.notNull,
+                },
                 // A variable, not a hex value, so a shared diagram follows the viewer's theme
                 // rather than the one it was created in.
                 style: { stroke: "var(--color-edge)", strokeWidth: 1.6 },
-                markerEnd: { type: MarkerType.ArrowClosed, color: "var(--color-edge)", width: 16, height: 16 },
             };
         });
 
@@ -223,6 +237,7 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
                         nodes={nodes}
                         edges={edges}
                         nodeTypes={nodeTypes}
+                        edgeTypes={edgeTypes}
                         fitView
                         nodesDraggable={false}
                         nodesConnectable={false}

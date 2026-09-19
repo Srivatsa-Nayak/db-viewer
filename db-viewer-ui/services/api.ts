@@ -15,6 +15,10 @@ export const normaliseColumn = (c: RawColumnInfo): ColumnInfo => ({
     type: c.type,
     isPk: c.isPk ?? c.is_pk ?? false,
     notNull: c.notNull ?? c.not_null ?? false,
+    isUnique: c.isUnique ?? c.unique ?? false,
+    // Null and empty string both mean "no default"; only a real value is worth showing.
+    defaultValue: c.defaultValue ?? c.default_value ?? undefined,
+    autoIncrement: c.autoIncrement ?? c.auto_increment ?? false,
 });
 
 /** Drops a relationship that is missing an endpoint rather than drawing half an edge. */
@@ -25,7 +29,11 @@ export const normaliseRelationships = (raw: RawRelationship[] = []): Relationshi
         const sourceColumn = r.sourceColumn ?? r.source_column;
         const targetColumn = r.targetColumn ?? r.target_column ?? 'id';
         if (!sourceTable || !targetTable || !sourceColumn) return [];
-        return [{ sourceTable, targetTable, sourceColumn, targetColumn }];
+        return [{
+            sourceTable, targetTable, sourceColumn, targetColumn,
+            constraintId: r.constraintId ?? r.constraint_id,
+            onDelete: r.onDelete ?? r.on_delete ?? undefined,
+        }];
     });
 
 export const normaliseSchema = (raw: RawSchemaResponse | undefined): SchemaResponse => ({
@@ -172,6 +180,22 @@ interface UpdateCellParams {
     recordId: string | number;
     columnName: string;
     newValue: string;
+}
+
+/** Annotations the canvas keeps about a workspace: `table` colours/tags, `group` domain boxes. */
+export type CanvasAnnotationKind = 'table' | 'group';
+
+interface RawCanvasAnnotation {
+    kind?: CanvasAnnotationKind;
+    ref?: string;
+    payload?: string;
+}
+
+export interface CanvasAnnotation {
+    kind: CanvasAnnotationKind;
+    /** Table name for `table`, the group's own id for `group`. */
+    ref: string;
+    payload: Record<string, unknown>;
 }
 
 /** A file the signed-in user owns, as the backend reports it. */
@@ -354,6 +378,36 @@ export const dbService = {
         } catch (e) {
             console.error('Could not record the file name', e);
         }
+    },
+
+    /**
+     * Every canvas annotation in the active workspace — table colours and tags, and groups.
+     *
+     * One call, because the canvas needs all of them before it can draw once. The payload is
+     * JSON the backend stores verbatim, so parsing it is this layer's job.
+     */
+    getCanvasMeta: async (): Promise<CanvasAnnotation[]> => {
+        const res = await api.get<{ meta?: RawCanvasAnnotation[] }>(
+            `/canvas-meta?_t=${new Date().getTime()}`);
+        return (res.data?.meta ?? []).flatMap(row => {
+            if (!row?.kind || !row?.ref) return [];
+            try {
+                return [{ kind: row.kind, ref: row.ref, payload: JSON.parse(row.payload ?? '{}') }];
+            } catch {
+                // A payload we cannot read is a bad row, not a reason to lose the other colours.
+                console.error('Ignoring an unreadable canvas annotation', row.ref);
+                return [];
+            }
+        });
+    },
+
+    setCanvasMeta: async (kind: CanvasAnnotationKind, ref: string, payload: unknown): Promise<void> => {
+        await api.put(`/canvas-meta/${kind}/${encodeURIComponent(ref)}`,
+            { payload: JSON.stringify(payload) });
+    },
+
+    deleteCanvasMeta: async (kind: CanvasAnnotationKind, ref: string): Promise<void> => {
+        await api.delete(`/canvas-meta/${kind}/${encodeURIComponent(ref)}`);
     },
 
     /** Version declared in the backend's pom.xml; shown in the info modal. */

@@ -9,6 +9,17 @@
  * downstream has to know the wire format ever had two.
  */
 
+/**
+ * The colours a table can be tagged with.
+ *
+ * Token names, not hex values. The palette is defined once as `--color-tag-*` in `globals.css`
+ * with a dark-theme counterpart, so a tagged table reads correctly in both themes; a hex chosen
+ * for light mode is unreadable in dark, which is exactly the mistake the token system exists to
+ * prevent.
+ */
+export const TAG_COLOURS = ['slate', 'brand', 'violet', 'teal', 'amber', 'rose'] as const;
+export type TagColour = typeof TAG_COLOURS[number];
+
 export interface ColumnInfo {
     name: string;
     type: string;
@@ -16,6 +27,17 @@ export interface ColumnInfo {
     isPk?: boolean;
     /** True when the column is declared NOT NULL. */
     notNull?: boolean;
+    /**
+     * True when a single-column UNIQUE index covers this column, or it is the sole primary key.
+     *
+     * This is what separates a 1:1 relationship from a 1:N — a foreign key pointing at a unique
+     * column can match at most one row. Composite keys report false for every member, because
+     * none of them is unique alone.
+     */
+    isUnique?: boolean;
+    /** The DEFAULT as written in the schema (`'active'`, `0`), or undefined. */
+    defaultValue?: string;
+    autoIncrement?: boolean;
 }
 
 export type RowData = Record<string, string | number | boolean | null>;
@@ -27,10 +49,21 @@ export interface TableInfo {
 }
 
 export interface Relationship {
+    /** The table holding the foreign key — the "many" end, usually. */
     sourceTable: string;
     sourceColumn: string;
+    /** The table being pointed at — the "one" end. */
     targetTable: string;
     targetColumn: string;
+    /**
+     * The engine's id for the constraint. Columns of a composite key share one.
+     *
+     * Without it two columns of a single constraint look like two constraints, and the canvas
+     * draws two edges on top of each other where there is one relationship.
+     */
+    constraintId?: number;
+    /** Declared ON DELETE action, or undefined when none was written. */
+    onDelete?: string;
 }
 
 export interface SchemaResponse {
@@ -105,9 +138,19 @@ export interface RawColumnInfo {
     isPk?: boolean;
     not_null?: boolean;
     notNull?: boolean;
+    unique?: boolean;
+    isUnique?: boolean;
+    default_value?: string | null;
+    defaultValue?: string | null;
+    auto_increment?: boolean;
+    autoIncrement?: boolean;
 }
 
 export interface RawRelationship {
+    constraintId?: number;
+    constraint_id?: number;
+    onDelete?: string | null;
+    on_delete?: string | null;
     source_table?: string;
     target_table?: string;
     source_column?: string;

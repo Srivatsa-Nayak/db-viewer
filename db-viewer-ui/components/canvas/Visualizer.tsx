@@ -13,9 +13,10 @@ import ReactFlow, {
     OnNodesChange,
     BackgroundVariant,
     Viewport,
+    MarkerType,
 } from 'reactflow';
 import "reactflow/dist/style.css";
-import { ZoomIn, Info, Plus, Search, Map as MapIcon } from "lucide-react";
+import { ZoomIn, Info, Plus, Search, Map as MapIcon, Spline } from "lucide-react";
 import TableNode from "@/components/tables/TableNode";
 import { OrthogonalEdge } from "@/components/canvas/OrthogonalEdge";
 import { CanvasSearch, SearchHit } from "@/components/canvas/CanvasSearch";
@@ -35,6 +36,20 @@ const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.5, 2] as const;
 /** Zoom used when jumping to a search hit — close enough to read the column names. */
 const FOCUS_ZOOM = 1.2;
 
+/**
+ * Shared by the fit on load and the toolbar's fit button, which otherwise use different defaults.
+ *
+ * `maxZoom: 1` because fitting should never *magnify*. React Flow will happily scale up to the
+ * canvas `maxZoom` when the content is small, so a file with one table opened at 200% with the
+ * table marooned in the middle of an empty pane — technically fitted, and not what anyone means
+ * by it. Extra padding because the cardinality marks and the 1/N labels are drawn outside the
+ * node boxes, and `fitView` only measures nodes.
+ */
+const FIT_VIEW_OPTIONS = { padding: 0.18, maxZoom: 1 };
+
+/** Matches the edge colour the page assigns, so a toggled-back arrowhead is not a different blue. */
+const EDGE_COLOUR = 'var(--color-edge)';
+
 interface VisualizerProps {
     nodes: Node[];
     edges: Edge[];
@@ -52,6 +67,10 @@ export const Visualizer = ({ nodes, edges, onNodesChange, onRefreshRequest }: Vi
     // Off on a small canvas, where it would cover more than it helps. Remembered per session
     // only: a preference this cheap to re-set is not worth persisting.
     const [isMinimapOpen, setMinimapOpen] = useState(true);
+    // Crow's foot by default: it says how many rows sit at each end, which an arrowhead cannot.
+    // The arrow stays available because it is what the rest of the product's diagrams use, and
+    // somebody reading a screenshot beside one of those should be able to match them.
+    const [showNotation, setShowNotation] = useState(true);
 
     const handleZoomChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
         const zoom = parseFloat(e.target.value);
@@ -121,9 +140,12 @@ export const Visualizer = ({ nodes, edges, onNodesChange, onRefreshRequest }: Vi
         if (!activeHit) return nodes;
         return nodes.map(node => {
             const isHit = node.id === activeHit.nodeId;
+            // Appended, not assigned. A tagged table carries its colour in `className`, and
+            // overwriting it here made every colour vanish the moment search was opened.
+            const focus = isHit ? 'node-hit' : 'node-dim';
             return {
                 ...node,
-                className: isHit ? 'node-hit' : 'node-dim',
+                className: node.className ? `${node.className} ${focus}` : focus,
                 data: isHit && activeHit.column
                     ? { ...node.data, highlightColumn: activeHit.column }
                     : node.data,
@@ -132,14 +154,22 @@ export const Visualizer = ({ nodes, edges, onNodesChange, onRefreshRequest }: Vi
     }, [nodes, activeHit]);
 
     const displayEdges = useMemo(() => {
-        if (!activeHit) return edges;
+        if (!activeHit && showNotation) return edges;
         return edges.map(edge => {
+            // Dropping `data` is what turns the notation off: OrthogonalEdge falls back to the
+            // plain arrowhead when it has no cardinality to draw.
+            const base = showNotation ? edge : {
+                ...edge,
+                data: undefined,
+                markerEnd: { type: MarkerType.ArrowClosed, color: EDGE_COLOUR, width: 16, height: 16 },
+            };
+            if (!activeHit) return base;
             const touchesHit = edge.source === activeHit.nodeId || edge.target === activeHit.nodeId;
             return touchesHit
-                ? edge
-                : { ...edge, style: { ...edge.style, opacity: 0.15 }, animated: false };
+                ? base
+                : { ...base, style: { ...base.style, opacity: 0.15 }, animated: false };
         });
-    }, [edges, activeHit]);
+    }, [edges, activeHit, showNotation]);
 
     const existingTables = useMemo(
         () => Array.from(new Set(nodes.map(n => String(n.data?.label ?? '')).filter(Boolean))),
@@ -170,6 +200,7 @@ export const Visualizer = ({ nodes, edges, onNodesChange, onRefreshRequest }: Vi
                     onInit={setRfInstance}
                     onMove={handleMove}
                     fitView
+                    fitViewOptions={FIT_VIEW_OPTIONS}
                     minZoom={0.1}
                     maxZoom={2}
                     proOptions={proOptions}
@@ -186,7 +217,9 @@ export const Visualizer = ({ nodes, edges, onNodesChange, onRefreshRequest }: Vi
                         value below is only what shows if that rule is ever lost. */}
                     <Background color="#94a3b8" gap={24} size={1.5} variant={BackgroundVariant.Dots} />
 
-                    <Controls showInteractive={false} />
+                    {/* Given the same options as the initial fit: the button reads its own
+                        defaults otherwise, so the two disagreed about what "fit" meant. */}
+                    <Controls showInteractive={false} fitViewOptions={FIT_VIEW_OPTIONS} />
 
                     {/* The minimap earns its space only once the diagram outgrows the window,
                         which is also the point at which panning stops being self-explanatory. */}
@@ -198,8 +231,20 @@ export const Visualizer = ({ nodes, edges, onNodesChange, onRefreshRequest }: Vi
                             nodeBorderRadius={3}
                             // Coloured by CSS rather than by prop, so the map follows the theme
                             // with everything else - see `.react-flow__minimap-node` in globals.
-                            nodeClassName={(node) =>
-                                node.id === activeHit?.nodeId ? 'minimap-node-hit' : 'minimap-node'}
+                            // Still by class, not by `nodeColor`. React Flow puts nodeColor in a
+                            // `fill` *attribute*, and the `.react-flow__minimap-node` rule in
+                            // globals.css is a CSS rule — which beats any presentation attribute,
+                            // so a colour passed that way is silently ignored. Measured: the
+                            // attribute read back as the tag colour while the computed fill stayed
+                            // brand-400. A class lets the cascade do it properly.
+                            //
+                            // Search focus wins over the tag: at minimap scale the point of the
+                            // highlight is that exactly one dot stands out.
+                            nodeClassName={(node) => {
+                                if (node.id === activeHit?.nodeId) return 'minimap-node-hit';
+                                const tag = node.data?.colour as string | undefined;
+                                return tag ? `minimap-node minimap-tag-${tag}` : 'minimap-node';
+                            }}
                             // Sized through `style`, which is where React Flow reads it from -
                             // a width utility class lands on the panel and leaves the svg at its
                             // default 200x150. Hidden on a phone, where it would cover the
@@ -220,6 +265,21 @@ export const Visualizer = ({ nodes, edges, onNodesChange, onRefreshRequest }: Vi
                             </button>
 
                             <div className="w-px mx-1 my-1 bg-ink-200" />
+
+                            <button
+                                type="button"
+                                onClick={() => setShowNotation(v => !v)}
+                                className={`p-1.5 rounded transition-colors ${
+                                    showNotation ? 'bg-brand-50 text-brand-700' : 'text-ink-600 hover:bg-ink-100'
+                                }`}
+                                aria-pressed={showNotation}
+                                aria-label="Show relationship cardinality"
+                                title={showNotation
+                                    ? 'Crow’s foot notation — click for plain arrows'
+                                    : 'Plain arrows — click for crow’s foot notation'}
+                            >
+                                <Spline size={16} />
+                            </button>
 
                             {/* Ctrl+F is the real entry point; this is how anyone finds out it
                                 exists. */}

@@ -157,6 +157,20 @@ public interface DatabaseService {
     void setWorkspaceName(String fileName);
 
     /**
+     * Every canvas annotation in this workspace: table colours and tags, and domain groups.
+     *
+     * <p>Rows are {@code {kind, ref, payload}}; {@code payload} is JSON the backend does not
+     * interpret. One call returns all of them, because the canvas needs all of them at once.
+     */
+    List<Map<String, Object>> getCanvasMeta();
+
+    /** Stores one annotation, replacing any previous one with the same {@code kind} and {@code ref}. */
+    void setCanvasMeta(String kind, String ref, String payload);
+
+    /** Removes one annotation. Silent when there was none. */
+    void deleteCanvasMeta(String kind, String ref);
+
+    /**
      * Discards the workspace bound to the current request: its database file (SQLite)
      * or schema (MySQL) is deleted outright. Without a workspace id on the request this
      * degrades to {@link #clearDatabase()} against the default datasource.
