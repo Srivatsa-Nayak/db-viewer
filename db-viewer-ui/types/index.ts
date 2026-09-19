@@ -43,6 +43,58 @@ export interface TableDataResponse {
     rows: RowData[];
 }
 
+/* ── Import staging ───────────────────────────────────────────────────────
+   What an upload *would* create, worked out by the backend without running any
+   of it. The whole point of the shape is that it can be shown to someone and
+   then thrown away: `POST /import/analyze` touches no database, so cancelling
+   the dialog it feeds leaves nothing behind. */
+
+/** The engines a script can be read from and an export can be written for. */
+export type SqlDialectId = 'mysql' | 'mariadb' | 'postgres' | 'sqlserver' | 'sqlite' | 'generic';
+
+export interface PlannedColumn {
+    name: string;
+    type: string;
+    /** Why this type was chosen. Null for a script, whose types are declared rather than guessed. */
+    reason?: string | null;
+    /** A few real values from the file, so the guess can be sanity-checked against the data. */
+    samples: string[];
+    nullable: boolean;
+    primaryKey: boolean;
+}
+
+export interface PlannedTable {
+    name: string;
+    columns: PlannedColumn[];
+}
+
+export interface PlannedRelationship {
+    sourceTable: string;
+    sourceColumn: string;
+    targetTable: string;
+    targetColumn: string;
+}
+
+export interface ImportPlan {
+    type: 'csv' | 'sql';
+    fileName: string;
+    dialect: SqlDialectId;
+    dialectLabel: string;
+    /** Rows in a CSV, or INSERT statements in a script. */
+    dataRowCount: number;
+    statementCount: number;
+    /**
+     * True when the types are inferred and worth correcting — a CSV. A script declares its own
+     * types, so its dialog is a review rather than an editor.
+     */
+    editable: boolean;
+    tables: PlannedTable[];
+    relationships: PlannedRelationship[];
+    typeOptions: string[];
+    /** Everything that will be skipped, and why. */
+    notes: string[];
+}
+
 /* ── Wire formats ─────────────────────────────────────────────────────────
    Only `services/api.ts` should need these. */
 

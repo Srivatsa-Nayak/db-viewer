@@ -3,10 +3,18 @@ package com.dbviewer.app.service.impl;
 import com.dbviewer.app.common.Constants;
 import com.dbviewer.app.config.DatabaseConfig;
 import com.dbviewer.app.dto.*;
+import com.dbviewer.app.importing.ColumnTypeInference;
+import com.dbviewer.app.importing.CsvReader;
+import com.dbviewer.app.importing.ImportAnalyzer;
 import com.dbviewer.app.service.DatabaseService;
 import com.dbviewer.app.exception.TableInUseException;
 import com.dbviewer.app.sql.MySqlToSqliteTranslator;
+import com.dbviewer.app.sql.SqlDialect;
+import com.dbviewer.app.sql.SqlDialectDetector;
+import com.dbviewer.app.sql.SqlDialectTranslator;
+import com.dbviewer.app.sql.SqlExportWriter;
 import com.dbviewer.app.sql.SqlScriptSplitter;
+import com.dbviewer.app.sql.SqlTypeMapper;
 import com.dbviewer.app.workspace.WorkspaceContext;
 import com.dbviewer.app.service.WorkspaceOwnershipService;
 import com.dbviewer.app.workspace.WorkspaceManager;
@@ -16,11 +24,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -57,16 +62,47 @@ public class DatabaseServiceImpl implements DatabaseService {
      */
     @Override
     public Map<String, Object> handleFileUpload(MultipartFile file) throws Exception {
+        return handleFileUpload(file, Map.of());
+    }
+
+    /**
+     * Runs an import the user has already seen and approved.
+     *
+     * @param typeOverrides the types the user corrected in the pre-flight dialog, keyed by
+     *                      column name for a CSV and by {@code table.column} for a script. An
+     *                      empty map means "use what was inferred", which is what the plain
+     *                      upload path passes.
+     */
+    @Override
+    public Map<String, Object> handleFileUpload(MultipartFile file,
+                                                Map<String, String> typeOverrides) throws Exception {
         String filename = file.getOriginalFilename() != null
                 ? file.getOriginalFilename().toLowerCase() : "";
+        Map<String, String> overrides = typeOverrides == null ? Map.of() : typeOverrides;
 
         if (filename.endsWith(".sql")) {
-            return handleSqlUpload(file);
+            return handleSqlUpload(file, overrides);
         } else if (filename.endsWith(".csv")) {
-            return handleCsvUpload(file);
+            return handleCsvUpload(file, overrides);
         } else {
             throw new IllegalArgumentException("Only .csv and .sql files are supported");
         }
+    }
+
+    /**
+     * Reports what an upload would create, without creating any of it.
+     *
+     * <p>Deliberately free of side effects — it never touches the workspace database — so the
+     * dialog it feeds can be cancelled with nothing to undo.
+     */
+    @Override
+    public ImportPlan analyzeUpload(MultipartFile file) throws Exception {
+        String filename = file.getOriginalFilename() == null ? "" : file.getOriginalFilename();
+        String lower = filename.toLowerCase();
+        if (!lower.endsWith(".sql") && !lower.endsWith(".csv")) {
+            throw new IllegalArgumentException("Only .csv and .sql files are supported");
+        }
+        return ImportAnalyzer.analyze(filename, new String(file.getBytes(), StandardCharsets.UTF_8));
     }
 
     /**
@@ -77,14 +113,17 @@ public class DatabaseServiceImpl implements DatabaseService {
      * silently swallowing what could not be run is how an import ends up looking like it worked
      * while producing an empty canvas.
      */
-    private Map<String, Object> handleSqlUpload(MultipartFile file) throws Exception {
+    private Map<String, Object> handleSqlUpload(MultipartFile file,
+                                                Map<String, String> typeOverrides) throws Exception {
         String content = new String(file.getBytes(), StandardCharsets.UTF_8);
 
         List<String> statements = SqlScriptSplitter.split(content);
         List<String> warnings = new ArrayList<>();
+        SqlDialect dialect = SqlDialectDetector.detect(content);
 
         if (isSqlite()) {
-            MySqlToSqliteTranslator.Result translated = MySqlToSqliteTranslator.translate(statements);
+            SqlDialectTranslator.Result translated =
+                    SqlDialectTranslator.translate(statements, dialect, typeOverrides);
             statements = translated.statements();
             warnings.addAll(translated.notes());
         }
@@ -109,6 +148,11 @@ public class DatabaseServiceImpl implements DatabaseService {
                 ? "SQL executed successfully"
                 : "SQL imported with " + failures.size() + " statement(s) skipped");
         result.put("type", "sql");
+        // The engine the file was written for. Worth reporting even on a clean import: it is the
+        // difference between "nothing was skipped" and "nothing was skipped, and it read this as
+        // a PostgreSQL dump", which is what tells the user the translation was the right one.
+        result.put("dialect", dialect.id());
+        result.put("dialectLabel", dialect.label());
         result.put("statementsExecuted", executed);
         result.put("statementsSkipped", failures.size());
         // Capped so a pathological dump cannot return a megabyte of warnings.
@@ -131,73 +175,126 @@ public class DatabaseServiceImpl implements DatabaseService {
         return message == null || message.isBlank() ? cause.getClass().getSimpleName() : message.trim();
     }
 
-    private Map<String, Object> handleCsvUpload(MultipartFile file) throws Exception {
-        String originalName = file.getOriginalFilename() != null ? file.getOriginalFilename() : "upload.csv";
-        String tableName = originalName
-                .replaceAll("(?i)\\.csv$", "")
-                .replaceAll("[\\s\\-]", "_");
+    /**
+     * Creates a table from a CSV file and loads its rows.
+     *
+     * <p>Column types come from {@link ColumnTypeInference} unless the user corrected them in the
+     * pre-flight dialog, in which case their choice wins outright — the whole point of showing
+     * the plan is that the person looking at the data knows things the heuristic cannot.
+     */
+    private Map<String, Object> handleCsvUpload(MultipartFile file,
+                                                Map<String, String> typeOverrides) throws Exception {
+        String originalName = file.getOriginalFilename() != null
+                ? file.getOriginalFilename() : "upload.csv";
+        String tableName = safeIdentifier(CsvReader.tableNameFor(originalName), "table name");
 
-        List<String[]> records = parseCsv(file);
-        if (records.isEmpty()) {
+        CsvReader.CsvTable csv = CsvReader.read(
+                new String(file.getBytes(), StandardCharsets.UTF_8));
+        if (csv.isEmpty()) {
             throw new IllegalArgumentException("CSV is empty");
         }
 
-        String[] rawHeaders = records.get(0);
-        String[] headers = Arrays.stream(rawHeaders)
-                .map(h -> h.trim()
-                        .replaceAll("\\s+", "_")
-                        .replaceAll("/", "_")
-                        .replaceAll("\\.", ""))
-                .toArray(String[]::new);
+        List<String> headers = csv.headers();
+        List<ColumnTypeInference.Proposal> proposals = ColumnTypeInference.propose(csv);
 
-        List<String[]> dataRows = records.size() > 1 ? records.subList(1, records.size()) : List.of();
-
-        String[] columnTypes = guessColumnTypes(headers, dataRows);
-        String createSql = buildSmartCreateTableSql(tableName, headers, columnTypes);
-        jdbc().execute(createSql);
-
-        if (!dataRows.isEmpty()) {
-            insertData(tableName, headers, dataRows);
+        List<String> resolvedTypes = new ArrayList<>();
+        for (int i = 0; i < headers.size(); i++) {
+            String header = headers.get(i);
+            String chosen = firstNonBlank(
+                    typeOverrides.get(header),
+                    typeOverrides.get(tableName + "." + header),
+                    proposals.get(i).inferredType());
+            resolvedTypes.add(storageType(chosen));
         }
 
-        return Map.of(
-                "message", "CSV uploaded successfully",
-                "tableName", tableName,
-                "columns", headers,
-                "type", "csv"
-        );
+        jdbc().execute(buildCsvCreateTableSql(tableName, headers, resolvedTypes));
+
+        int inserted = csv.rows().isEmpty() ? 0 : insertCsvRows(tableName, csv);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("message", "CSV uploaded successfully");
+        result.put("tableName", tableName);
+        result.put("columns", headers);
+        result.put("type", "csv");
+        result.put("rowsInserted", inserted);
+        result.put("statementsExecuted", inserted + 1);
+        result.put("statementsSkipped", csv.rows().size() - inserted);
+        result.put("warnings", List.of());
+        result.put("warningCount", 0);
+        return result;
     }
 
-    private List<String[]> parseCsv(MultipartFile file) throws Exception {
-        List<String[]> rows = new ArrayList<>();
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                // Basic CSV split (handles quoted fields with commas)
-                rows.add(parseCsvLine(line));
+    private static String firstNonBlank(String... candidates) {
+        for (String candidate : candidates) {
+            if (candidate != null && !candidate.isBlank()) {
+                return candidate.trim();
             }
         }
-        return rows;
+        return "VARCHAR(255)";
     }
 
-    private String[] parseCsvLine(String line) {
-        List<String> fields = new ArrayList<>();
-        boolean inQuotes = false;
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < line.length(); i++) {
-            char c = line.charAt(i);
-            if (c == '"') {
-                inQuotes = !inQuotes;
-            } else if (c == ',' && !inQuotes) {
-                fields.add(sb.toString());
-                sb.setLength(0);
-            } else {
-                sb.append(c);
-            }
+    /**
+     * Validates a requested column type and renders it for the engine actually in use.
+     *
+     * <p>A type cannot be a bind parameter, so anything that is not a plain type name with an
+     * optional precision is rejected rather than escaped.
+     */
+    private String storageType(String requested) {
+        if (!requested.matches("(?i)[A-Za-z][A-Za-z0-9 ]*(\\(\\s*\\d+\\s*(,\\s*\\d+\\s*)?\\))?")) {
+            throw new IllegalArgumentException("Invalid column type: \"" + requested + "\"");
         }
-        fields.add(sb.toString());
-        return fields.toArray(new String[0]);
+        String sqliteForm = SqlTypeMapper.toSqlite(requested, SqlDialect.GENERIC);
+        return isMysql() ? SqlTypeMapper.fromSqlite(sqliteForm, SqlDialect.MYSQL) : sqliteForm;
+    }
+
+    private String buildCsvCreateTableSql(String tableName, List<String> headers, List<String> types) {
+        List<String> definitions = new ArrayList<>();
+        boolean hasId = headers.stream().anyMatch(h -> h.equalsIgnoreCase("id"));
+
+        // Row editing and deletion address a row by its id, so a CSV without one gets a key of
+        // its own rather than being read-only once it is imported.
+        if (!hasId) {
+            definitions.add(quote("id") + " " + (isMysql()
+                    ? Constants.Ddl.MYSQL_AUTO_INCREMENT_PK
+                    : Constants.Ddl.SQLITE_AUTO_INCREMENT_PK));
+        }
+
+        for (int i = 0; i < headers.size(); i++) {
+            String header = headers.get(i);
+            String type = header.equalsIgnoreCase("id")
+                    ? (isMysql() ? "INT AUTO_INCREMENT PRIMARY KEY" : "INTEGER PRIMARY KEY")
+                    : types.get(i);
+            definitions.add(quote(header) + " " + type);
+        }
+
+        return String.format(Constants.Tables.CREATE_TABLE_IF_NOT_EXISTS,
+                quote(tableName), String.join(", ", definitions));
+    }
+
+    /**
+     * Loads the rows in one batch.
+     *
+     * <p>An empty cell is written as NULL rather than as an empty string: on a column the user
+     * has just declared to be a number or a date, {@code ''} is neither missing nor valid.
+     */
+    private int insertCsvRows(String tableName, CsvReader.CsvTable csv) {
+        List<String> headers = csv.headers();
+        String columnList = headers.stream().map(this::quote).collect(Collectors.joining(", "));
+        String placeholders = headers.stream().map(h -> "?").collect(Collectors.joining(", "));
+        String sql = String.format(Constants.Rows.INSERT, quote(tableName), columnList, placeholders);
+
+        List<Object[]> batch = new ArrayList<>(csv.rows().size());
+        for (List<String> row : csv.rows()) {
+            Object[] args = new Object[headers.size()];
+            for (int i = 0; i < headers.size(); i++) {
+                String value = csv.valueAt(row, i);
+                args[i] = value == null || value.isEmpty() ? null : value;
+            }
+            batch.add(args);
+        }
+
+        int[] results = jdbc().batchUpdate(sql, batch);
+        return results.length;
     }
 
     // ─── Query Execution ──────────────────────────────────────────────────────────
@@ -949,42 +1046,67 @@ public class DatabaseServiceImpl implements DatabaseService {
     // ─── Export SQL ───────────────────────────────────────────────────────────────
 
     /**
-     * Generates a full SQL dump. Mirrors HandleExportDatabaseSQL.
+     * Generates a full SQL dump in the workspace's own dialect. Mirrors HandleExportDatabaseSQL.
      */
+    @Override
     public String exportDatabaseSql() {
-        StringBuilder sb = new StringBuilder();
-        sb.append(Constants.Export.DUMP_HEADER);
+        return exportDatabaseSql(isMysql() ? SqlDialect.MYSQL : SqlDialect.SQLITE);
+    }
 
-        List<String> tables = getTableNames();
+    /**
+     * Generates a full SQL dump written for a particular engine.
+     *
+     * <p>The schema is rebuilt in the target's vocabulary rather than copied out of SQLite - see
+     * {@link SqlExportWriter}, which is where the difference between {@code AUTOINCREMENT},
+     * {@code SERIAL} and {@code IDENTITY(1,1)} is decided.
+     */
+    @Override
+    public String exportDatabaseSql(SqlDialect target) {
+        List<SqlExportWriter.Table> tables = new ArrayList<>();
 
-        for (String table : tables) {
-            String createSql = getCreateTableSql(table);
-            if (createSql != null && !createSql.isEmpty()) {
-                sb.append(String.format(Constants.Export.DUMP_STRUCTURE_COMMENT, table));
-                sb.append(String.format(Constants.Export.DUMP_DROP_TABLE, table));
-                sb.append(createSql).append(";\n\n");
-            }
-
-            sb.append(String.format(Constants.Export.DUMP_DATA_COMMENT, table));
-            List<Map<String, Object>> rows = safeQueryRows(String.format(Constants.Rows.SELECT_ALL, table));
-            List<String> colNames = rows.isEmpty() ? List.of()
-                    : new ArrayList<>(rows.get(0).keySet());
-
-            for (Map<String, Object> row : rows) {
-                List<String> vals = colNames.stream()
-                        .map(c -> {
-                            Object v = row.get(c);
-                            if (v == null) return "NULL";
-                            return "'" + v.toString().replace("'", "''") + "'";
-                        }).collect(Collectors.toList());
-                sb.append(String.format(Constants.Export.DUMP_INSERT_ROW,
-                        quote(table),
-                        String.join(", ", colNames),
-                        String.join(", ", vals)));
-            }
-            sb.append("\n");
+        for (String name : getTableNames()) {
+            List<ColumnInfo> columns = getColumnsForTable(name);
+            tables.add(new SqlExportWriter.Table(
+                    name,
+                    columns,
+                    getForeignKeys(name),
+                    safeQueryRows(String.format(Constants.Rows.SELECT_ALL, name)),
+                    autoIncrementColumns(name, columns)));
         }
-        return sb.toString();
+
+        return SqlExportWriter.write(tables, target);
+    }
+
+    /**
+     * Columns that generate their own values.
+     *
+     * <p>On SQLite an {@code INTEGER PRIMARY KEY} is an alias for the rowid and fills itself in
+     * whether or not {@code AUTOINCREMENT} was written, so both spellings count: exporting such a
+     * column as a plain {@code INT NOT NULL} would produce a schema whose inserts all have to
+     * supply an id the original never did.
+     */
+    private Set<String> autoIncrementColumns(String tableName, List<ColumnInfo> columns) {
+        if (isMysql()) {
+            // MySQL says so directly in the DDL.
+            String ddl = getCreateTableSql(tableName);
+            String upper = ddl == null ? "" : ddl.toUpperCase();
+            return columns.stream()
+                    .filter(c -> upper.contains("`" + c.getName().toUpperCase() + "` INT")
+                            && upper.contains("AUTO_INCREMENT"))
+                    .map(ColumnInfo::getName)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+        }
+
+        Set<String> keys = new LinkedHashSet<>();
+        List<ColumnInfo> primaryKeys = columns.stream().filter(ColumnInfo::isPk).toList();
+        if (primaryKeys.size() == 1) {
+            ColumnInfo key = primaryKeys.get(0);
+            String type = key.getType() == null ? "" : key.getType().trim().toUpperCase();
+            if (type.equals("INTEGER") || type.equals("INT")) {
+                keys.add(key.getName());
+            }
+        }
+        return keys;
     }
 
     private String getCreateTableSql(String table) {
@@ -1003,82 +1125,6 @@ public class DatabaseServiceImpl implements DatabaseService {
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-    private void insertData(String tableName, String[] headers, List<String[]> rows) {
-        String quotedHeaders = Arrays.stream(headers)
-                .map(this::quote)
-                .collect(Collectors.joining(", "));
-        String placeholders = Arrays.stream(headers).map(h -> "?").collect(Collectors.joining(", "));
-        String sql = String.format(Constants.Rows.INSERT,
-                quote(tableName), quotedHeaders, placeholders);
-
-        for (String[] row : rows) {
-            Object[] args = new Object[row.length];
-            for (int i = 0; i < row.length; i++) args[i] = row[i];
-            jdbc().update(sql, args);
-        }
-    }
-
-    private String[] guessColumnTypes(String[] headers, List<String[]> rows) {
-        String[] types = new String[headers.length];
-        for (int i = 0; i < headers.length; i++) {
-            List<String> colValues = new ArrayList<>();
-            for (String[] row : rows) {
-                if (i < row.length) colValues.add(row[i]);
-            }
-            types[i] = inferColumnType(colValues);
-        }
-        return types;
-    }
-
-    private String inferColumnType(List<String> values) {
-        if (values.isEmpty()) return "VARCHAR";
-        Pattern intPat = Pattern.compile("^-?\\d+$");
-        Pattern floatPat = Pattern.compile("^-?\\d*\\.\\d+$");
-        boolean isInt = true, isFloat = true, isBool = true, hasData = false;
-
-        for (String v : values) {
-            if (v == null || v.isEmpty()) continue;
-            hasData = true;
-            if (!intPat.matcher(v).matches()) isInt = false;
-            if (!floatPat.matcher(v).matches() && !intPat.matcher(v).matches()) isFloat = false;
-            String lv = v.toLowerCase();
-            if (!List.of("true", "false", "0", "1", "yes", "no").contains(lv)) isBool = false;
-        }
-
-        if (!hasData) return "VARCHAR";
-        if (isBool) return "BOOL";
-        if (isInt) return "INT";
-        if (isFloat) return "DECIMAL";
-        return "VARCHAR";
-    }
-
-    private String buildSmartCreateTableSql(String tableName, String[] headers, String[] types) {
-        List<String> cols = new ArrayList<>();
-
-        boolean hasId = Arrays.stream(headers).anyMatch(h -> h.equalsIgnoreCase("id"));
-
-        if (!hasId) {
-            cols.add(quote("id") + " " + (isMysql()
-                    ? Constants.Ddl.MYSQL_AUTO_INCREMENT_PK
-                    : Constants.Ddl.SQLITE_AUTO_INCREMENT_PK));
-        }
-
-        for (int i = 0; i < headers.length; i++) {
-            String header = headers[i];
-            String colType = types[i];
-
-            if (header.equalsIgnoreCase("id")) {
-                colType = isSqlite() ? "INTEGER PRIMARY KEY" : "INT AUTO_INCREMENT PRIMARY KEY";
-            } else if (isMysql() && colType.equals("TEXT")) {
-                colType = "VARCHAR(255)";
-            }
-            cols.add(quote(header) + " " + colType);
-        }
-
-        return String.format(Constants.Tables.CREATE_TABLE_IF_NOT_EXISTS,
-                quote(tableName), String.join(", ", cols));
-    }
 
     private List<Map<String, Object>> safeQueryRows(String sql) {
         try {

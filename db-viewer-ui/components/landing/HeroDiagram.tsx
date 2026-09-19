@@ -54,7 +54,7 @@ const EDGES = [
 
 const TableCard = ({ table }: { table: TableSpec }) => (
     <div
-        className="hero-card absolute w-[168px] rounded-lg border border-brand-200 bg-white shadow-xl shadow-brand-900/5"
+        className="hero-card absolute w-[168px] rounded-lg border border-brand-200 bg-surface shadow-xl shadow-brand-900/5"
         style={{ ...table.style, animationDelay: `${table.delay}ms` }}
     >
         {/* The float lives on an inner element so it does not fight the pop-in transform. */}
@@ -91,17 +91,17 @@ export const HeroDiagram = () => (
     <div aria-hidden className="relative mx-auto h-[340px] w-full max-w-[480px] select-none">
         {/* Dotted canvas, matching the editor's own backdrop. */}
         <div
-            className="absolute inset-0 rounded-2xl border border-ink-200 bg-white/70 shadow-sm backdrop-blur-sm"
+            className="absolute inset-0 rounded-2xl border border-ink-200 bg-canvas/70 shadow-sm backdrop-blur-sm"
             style={{
-                backgroundImage: 'radial-gradient(#d4d4d8 1.1px, transparent 1.1px)',
+                backgroundImage: 'radial-gradient(var(--color-canvas-dot) 1.1px, transparent 1.1px)',
                 backgroundSize: '20px 20px',
             }}
         />
 
-        <svg className="absolute inset-0 h-full w-full overflow-visible" fill="none">
+        <svg className="themed-art absolute inset-0 h-full w-full overflow-visible" fill="none">
             <defs>
                 <marker id="hero-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
-                    <path d="M0,0 L7,3.5 L0,7 Z" fill="#2563eb" />
+                    <path d="M0,0 L7,3.5 L0,7 Z" fill="var(--color-edge)" />
                 </marker>
             </defs>
 
@@ -110,14 +110,14 @@ export const HeroDiagram = () => (
                     <path
                         className="hero-edge"
                         d={edge.d}
-                        stroke="#2563eb"
+                        stroke="var(--color-edge)"
                         strokeWidth="1.6"
                         markerEnd="url(#hero-arrow)"
                         style={{ ['--dash' as string]: edge.dash, animationDelay: `${edge.delay}ms` }}
                     />
                     {/* A pulse travels the edge after it has drawn — the relationship reading as
                         live rather than painted on. SMIL keeps it off the main thread. */}
-                    <circle r="2.6" fill="#2563eb" opacity="0.85">
+                    <circle r="2.6" fill="var(--color-edge)" opacity="0.85">
                         <animateMotion
                             dur="2.6s"
                             begin={`${(edge.delay + 900) / 1000}s; ${(edge.delay + 900) / 1000 + 5}s`}
@@ -144,7 +144,7 @@ export const HeroDiagram = () => (
 
         {/* Lands last, once the schema is complete. */}
         <div
-            className="hero-label absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-ink-200 bg-white/90 px-3 py-1 text-[11px] font-medium text-ink-500 shadow-sm backdrop-blur-sm"
+            className="hero-label absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-ink-200 bg-surface/90 px-3 py-1 text-[11px] font-medium text-ink-500 shadow-sm backdrop-blur-sm"
             style={{ animationDelay: '1500ms' }}
         >
             <span className="relative flex h-1.5 w-1.5">

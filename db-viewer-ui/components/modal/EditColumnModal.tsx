@@ -9,7 +9,7 @@ import { Callout, GhostButton, Modal, ModalActions, PrimaryButton } from '@/comp
 const COLUMN_TYPES = ["VARCHAR", "INT", "DECIMAL", "BOOLEAN", "TEXT", "DATE", "TIME", "DATETIME"];
 const VARCHAR_LENGTHS = [64, 128, 256];
 
-const FIELD = 'w-full bg-white border border-ink-300 rounded-md py-2.5 sm:py-2 px-3 text-sm text-ink-900 '
+const FIELD = 'w-full bg-surface border border-ink-300 rounded-md py-2.5 sm:py-2 px-3 text-sm text-ink-900 '
     + 'focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-all '
     + 'disabled:bg-ink-100 disabled:text-ink-400 disabled:cursor-not-allowed';
 
@@ -228,7 +228,7 @@ export const EditColumnModal = ({
                         disabled={original.isPk}
                         checked={original.isPk ? true : notNull}
                         onChange={(e) => setNotNull(e.target.checked)}
-                        className="mt-0.5 rounded border-ink-300 bg-white text-brand-600 w-4 h-4 focus:ring-0 focus:ring-offset-0"
+                        className="mt-0.5 rounded border-ink-300 bg-surface text-brand-600 w-4 h-4 focus:ring-0 focus:ring-offset-0"
                     />
                     <span className="text-sm min-w-0">
                         <span className="font-medium text-ink-800">Required</span>

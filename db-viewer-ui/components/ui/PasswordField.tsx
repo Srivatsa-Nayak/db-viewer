@@ -44,7 +44,7 @@ export const PasswordField = ({
                     type={isVisible ? 'text' : 'password'}
                     autoComplete={autoComplete}
                     autoFocus={autoFocus}
-                    className="w-full bg-white border border-ink-300 rounded-md py-2.5 sm:py-2 pl-10 pr-11 text-sm
+                    className="w-full bg-surface border border-ink-300 rounded-md py-2.5 sm:py-2 pl-10 pr-11 text-sm
                                text-ink-900 placeholder:text-ink-400 focus:outline-none focus:border-brand-500
                                focus:ring-1 focus:ring-brand-500"
                     value={value}

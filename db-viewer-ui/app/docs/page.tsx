@@ -5,7 +5,7 @@ import Link from "next/link";
 import {
     ArrowRight, StickyNote, Pencil, Plus, Download, Trash2, Edit3,
     Files, Share2, HelpCircle, LayoutPanelLeft, Search, ZoomIn, Database,
-    FileCode, Image as ImageIcon, KeyRound,
+    FileCode, Image as ImageIcon, KeyRound, GitBranch, Table2 as TableIcon, Map as MapIcon, Moon,
 } from "lucide-react";
 
 import { LandingNav } from "@/components/landing/LandingNav";
@@ -14,6 +14,8 @@ import { ProfileModal } from "@/components/modal/ProfileModal";
 import {
     DocsSidebar, DocsGroup, Section, Steps, Step, ActionTable, Callout, UI, Code, Key,
 } from "@/components/docs/DocsChrome";
+import { DialectMatrix, TypeMappingTable } from "@/components/docs/DialectMatrix";
+import { CanvasSandbox, DeleteSandbox, ExportSandbox } from "@/components/docs/DocsSandbox";
 import { authService, AuthUser } from "@/services/api";
 import { clearSession } from "@/services/sessionStorage";
 
@@ -50,6 +52,8 @@ const GROUPS: DocsGroup[] = [
         items: [
             { id: "files", label: "Files are databases" },
             { id: "importing", label: "Importing a file" },
+            { id: "dialects", label: "Dialect support matrix" },
+            { id: "types-in", label: "How types are mapped" },
             { id: "closing", label: "Deleting a file" },
         ],
     },
@@ -74,6 +78,7 @@ const GROUPS: DocsGroup[] = [
         items: [
             { id: "notes", label: "Notes and to-dos" },
             { id: "export", label: "Exporting" },
+            { id: "handoff", label: "Where to put the export" },
             { id: "sharing", label: "Sharing a link" },
             { id: "accounts", label: "Accounts" },
         ],
@@ -112,7 +117,7 @@ export default function DocsPage() {
     };
 
     return (
-        <div className="min-h-screen bg-white text-ink-800">
+        <div className="min-h-screen bg-surface text-ink-800">
             <LandingNav
                 user={user}
                 onLogin={() => openAuth("login")}
@@ -137,7 +142,7 @@ export default function DocsPage() {
                     className="pointer-events-none absolute -left-24 -top-20 h-[26rem] w-[26rem] rounded-full bg-brand-400/15 blur-3xl"
                 />
                 <div className="relative mx-auto max-w-6xl px-6">
-                    <span className="mb-4 inline-block rounded-full border border-brand-200/70 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-wide text-brand-700 shadow-sm">
+                    <span className="mb-4 inline-block rounded-full border border-brand-200/70 bg-surface px-3 py-1 text-xs font-semibold uppercase tracking-wide text-brand-700 shadow-sm">
                         Documentation
                     </span>
                     <h1 className="text-4xl font-bold tracking-tight text-ink-900 sm:text-5xl">
@@ -216,8 +221,9 @@ export default function DocsPage() {
                                 its rows, or the <UI>+</UI> to add a column.
                             </Step>
                             <Step n={5}>
-                                When you want it elsewhere, use <UI>File → Export SQL script</UI> for
-                                a runnable file, or <UI>Export diagram (PNG)</UI> for a picture.
+                                When you want it elsewhere, use <UI>File → Export…</UI> and pick a
+                                format: a SQL script for the engine you name, Mermaid or DBML for a
+                                README, or a PNG for a document.
                             </Step>
                         </Steps>
                         <p>
@@ -237,7 +243,7 @@ export default function DocsPage() {
                         lead="Three regions: the header along the top, the Explorer down the left, and the canvas filling the rest."
                     >
                         <ActionTable
-                            caption="Blue header"
+                            caption="App bar"
                             rows={[
                                 {
                                     icon: <Files size={15} />,
@@ -253,6 +259,11 @@ export default function DocsPage() {
                                     icon: <Database size={15} />,
                                     action: "File name chip",
                                     effect: <>Shows which file the canvas is currently displaying. Handy when several are open.</>,
+                                },
+                                {
+                                    icon: <Moon size={15} />,
+                                    action: "Theme",
+                                    effect: <>Light, dark, or follow your system setting. It is remembered between visits and applied before the page paints, so a dark-mode session never starts with a white flash.</>,
                                 },
                                 {
                                     action: "Account button",
@@ -319,6 +330,16 @@ export default function DocsPage() {
                                     effect: <>Opens the table builder. See <a href="#create-table" className="text-brand-700 underline underline-offset-2">Creating a table</a>.</>,
                                 },
                                 {
+                                    icon: <Search size={15} />,
+                                    action: "Find (Ctrl+F)",
+                                    effect: <>Type a table or column name. The canvas moves to it and dims everything else, so one table out of a hundred is still one thing to look at. Arrow keys walk the results, Escape puts the canvas back.</>,
+                                },
+                                {
+                                    icon: <MapIcon size={15} />,
+                                    action: "Minimap",
+                                    effect: <>A map of the whole schema in the corner, for the parts that are off screen. Drag inside it to move the view; the button toggles it away.</>,
+                                },
+                                {
                                     icon: <HelpCircle size={15} />,
                                     action: "Info (beside New Table)",
                                     effect: <>Explains what the New Table button does. This is deliberately not the same as the header&apos;s help button — one is about the control, the other about the app.</>,
@@ -338,6 +359,16 @@ export default function DocsPage() {
                                 },
                             ]}
                         />
+                        <CanvasSandbox />
+
+                        <p>
+                            Relationship lines turn right angles and route <em>around</em> the tables
+                            in their way rather than through them. Past a couple of dozen tables that
+                            is the difference between a diagram and a ball of wool: parallel runs
+                            read as parallel, a crossing is unambiguous, and a line that ends at a
+                            table can be told apart from one that merely passes it. Primary keys are
+                            gold and foreign keys blue, in both themes.
+                        </p>
                         <Callout tone="warn" title="Dragging between the blue dots does not create a relationship">
                             The dots on table edges are anchor points for drawing existing foreign
                             keys. Dragging a new line between two of them will not write anything to
@@ -374,28 +405,105 @@ export default function DocsPage() {
                     <Section
                         id="importing"
                         title="Importing a file"
-                        lead="File → Import, then pick a .csv or .sql. It opens as a new file, alongside anything already open."
+                        lead="File → Import, then pick a .csv or .sql. Nothing is created until you have seen what it would create."
                     >
                         <p>
-                            <strong>CSV.</strong> The first row is treated as column names, and the
-                            column types are inferred from the values underneath.
+                            Picking a file does not import it. The file is parsed, and you are shown
+                            what it <em>would</em> produce — the tables, the columns, the type chosen
+                            for each one and the reason for it — with a few real values from the file
+                            beside them. Change anything that is wrong, then confirm. Cancel and
+                            nothing has happened at all.
+                        </p>
+                        <Callout title="Why there is a step here at all">
+                            A CSV has no types in it: every value is text, and the type is a guess
+                            made from what the text looks like. Most guesses are harmless and one is
+                            not. A postcode column of <Code>01234</Code> is entirely digits, so the
+                            obvious guess is a number — and the leading zero is gone from every row
+                            the moment it is stored, with nothing left in the database to recover it
+                            from. That is the correction this screen exists for.
+                        </Callout>
+                        <p>
+                            <strong>CSV.</strong> The first row is treated as column names. The
+                            separator is detected (comma, semicolon, tab or pipe), quoted fields may
+                            span lines, and an <Code>id</Code> column is added if the file has none,
+                            because row editing addresses rows by id.
                         </p>
                         <p>
-                            <strong>SQL.</strong> The script is executed statement by statement, so
-                            primary keys, foreign keys and indexes survive the trip. phpMyAdmin and
-                            mysqldump exports work — comments, <Code>DELIMITER</Code> blocks and
-                            MySQL-specific syntax are handled.
+                            <strong>SQL.</strong> The dialect is detected from the script itself and
+                            the file is translated for you. <strong>MySQL, MariaDB, PostgreSQL and
+                            SQL Server</strong> dumps all work, including the parts that are not
+                            portable: keys declared in a later <Code>ALTER TABLE</Code> are folded
+                            back into the table, <Code>SERIAL</Code> / <Code>IDENTITY(1,1)</Code> /
+                            <Code>AUTO_INCREMENT</Code> all become a working key, vendor types are
+                            mapped, SQL Server <Code>GO</Code> batches are split, and a pg_dump{" "}
+                            <Code>COPY … FROM stdin</Code> block is turned back into rows. The
+                            preview names the dialect it read, so a wrong reading is visible before
+                            it costs you anything.
                         </p>
                         <p>
-                            When an import finishes you get a report: how many statements ran, how many
-                            were skipped, and why. It is worth a glance — a partial import is reported
-                            honestly rather than passed off as a success.
+                            Anything that cannot be represented — a trigger, a stored procedure, a
+                            storage engine option — is listed in the preview and again in the report
+                            afterwards, rather than failing the import or disappearing quietly.
                         </p>
                         <Callout tone="warn" title="If nothing appears">
                             A notice titled <em>Nothing could be imported</em> means every statement
                             failed, and it lists the reasons. The usual cause is a dialect feature with
                             no equivalent in the target database. Expand the details in the notice to
                             see exactly which statements were rejected.
+                        </Callout>
+                    </Section>
+
+                    <Section
+                        id="dialects"
+                        title="Dialect support matrix"
+                        lead="Exactly what survives the trip, per engine — including what does not."
+                    >
+                        <p>
+                            The honest answer to &ldquo;is PostgreSQL supported?&rdquo; is never yes or
+                            no. It is <em>these parts, in this way, and these others are dropped with a
+                            note</em>. If you are sizing up a migration, that list is worth having
+                            before you start rather than discovering halfway through, so the partial
+                            and skipped rows below get as much room as the supported ones.
+                        </p>
+
+                        <DialectMatrix />
+
+                        <Callout title="Why anything is dropped at all">
+                            A file you import becomes a real SQLite database, which is what makes the
+                            diagram live rather than drawn. SQLite has no triggers worth translating
+                            from another dialect, no stored procedures, no storage engines and no
+                            schemas — so those parts of a dump have nowhere to go. They are listed
+                            individually in the import report instead of disappearing: a table that is
+                            missing afterwards is always explained there.
+                        </Callout>
+
+                        <Callout tone="warn" title="An export is a schema, not a backup">
+                            Indexes, <Code>UNIQUE</Code> and <Code>CHECK</Code> constraints and column
+                            defaults are <strong>not</strong> written into an exported script, even
+                            where the source file had them. What comes out is tables, columns, types,
+                            primary keys, foreign keys and rows. Treat it as a schema you can build
+                            from and diff, not as a dump you can restore a production database from.
+                        </Callout>
+                    </Section>
+
+                    <Section
+                        id="types-in"
+                        title="How types are mapped"
+                        lead="What a declared type becomes, and therefore what an export can put back."
+                    >
+                        <p>
+                            Types are mapped once, on the way in. The mapping is lossy on purpose —
+                            an engine-specific type that SQLite cannot store is more useful as text
+                            than as a failed statement — and it is the stored type that an export
+                            reads, so this table also tells you what you will get back out.
+                        </p>
+
+                        <TypeMappingTable />
+
+                        <Callout tone="warn" title="The one to watch">
+                            A time zone offset is not retained: <Code>TIMESTAMPTZ</Code> and{" "}
+                            <Code>DATETIMEOFFSET</Code> arrive as plain timestamps. If the offset
+                            matters to you, keep it in a column of its own before importing.
                         </Callout>
                     </Section>
 
@@ -615,6 +723,8 @@ export default function DocsPage() {
                             references first. This is enforced by the database, not by the interface,
                             so it cannot be worked around by accident.
                         </p>
+
+                        <DeleteSandbox />
                     </Section>
 
                     {/* ═══ Data ═══ */}
@@ -677,31 +787,124 @@ export default function DocsPage() {
                     <Section
                         id="export"
                         title="Exporting"
-                        lead="File → Export. Two formats, for two different purposes."
+                        lead="File → Export. Four formats, for four different jobs — all of them behind sign-in."
                     >
                         <ActionTable
                             rows={[
                                 {
                                     icon: <FileCode size={15} />,
-                                    action: "Export SQL script",
-                                    effect: <>Schema and data as a runnable script — re-import it here, or run it against another database. Needs an account.</>,
+                                    action: "SQL script",
+                                    effect: <>Schema and data as a runnable script, <strong>written for the engine you pick</strong> — MySQL, MariaDB, PostgreSQL, SQL Server, SQLite or standard SQL.</>,
+                                },
+                                {
+                                    icon: <GitBranch size={15} />,
+                                    action: "Mermaid",
+                                    effect: <>The diagram as text. Paste it into a GitHub README, a Jira ticket or a Notion page and it renders there.</>,
+                                },
+                                {
+                                    icon: <TableIcon size={15} />,
+                                    action: "DBML",
+                                    effect: <>Database Markup Language, for dbdiagram.io and dbdocs — or committed beside the code as the schema of record.</>,
                                 },
                                 {
                                     icon: <ImageIcon size={15} />,
-                                    action: "Export diagram (PNG)",
-                                    effect: <>A picture of the whole diagram for a document or a pull request. It captures every table, not just what is on screen.</>,
+                                    action: "Diagram (PNG)",
+                                    effect: <>A picture of the whole diagram for a document or a pull request. It captures every table, not just what is on screen, and follows the theme you are using.</>,
                                 },
                                 {
                                     icon: <Download size={15} />,
                                     action: "Download CSV (per table)",
-                                    effect: <>On a table header. Exports that one table&apos;s rows. Needs an account.</>,
+                                    effect: <>On a table header. Exports that one table&apos;s rows.</>,
                                 },
                             ]}
                         />
+                        <Callout tone="warn" title="Every one of these needs an account">
+                            Not just the SQL script — Mermaid, DBML and the PNG too. Mermaid and DBML
+                            are built from data already on your screen, and the PNG is a snapshot of
+                            the DOM, so none of them ask the backend for anything; that used to mean
+                            they had no way to be refused, and could be downloaded or copied while
+                            signed out. Signing in is what draws the line now, not what the format
+                            happens to need from the server.
+                        </Callout>
+                        <Callout title="Why the SQL export asks which engine">
+                            Because the answer changes the script. An auto-incrementing key is
+                            written <Code>SERIAL</Code> on PostgreSQL, <Code>IDENTITY(1,1)</Code> on
+                            SQL Server, <Code>AUTO_INCREMENT</Code> on MySQL and{" "}
+                            <Code>AUTOINCREMENT</Code> on SQLite; identifiers are quoted three
+                            different ways. A script that is nearly right is worse than no script,
+                            because you find out at the far end. Tables are also written
+                            parents-first so the foreign keys load in order.
+                        </Callout>
                         <p>
-                            Both export options are greyed out until a file is open — there is nothing
-                            to export otherwise.
+                            Export is greyed out until a file is open — there is nothing to export
+                            otherwise.
                         </p>
+                    </Section>
+
+                    <Section
+                        id="handoff"
+                        title="Where to put the export"
+                        lead="The text formats exist to live somewhere. Here is where, and how."
+                    >
+                        <p>
+                            A PNG of a diagram is a dead end in a repository: it cannot be diffed, it
+                            goes stale without saying so, and nobody can search it. The Mermaid and
+                            DBML exports are plain text that renders as a diagram wherever it lands,
+                            so the schema can travel with the code that owns it.
+                        </p>
+
+                        <ExportSandbox />
+
+                        <Steps>
+                            <Step n={1}>
+                                <strong>A GitHub README, or any Markdown in a repository.</strong>{" "}
+                                Export Mermaid and paste it into a fenced block tagged{" "}
+                                <Code>mermaid</Code>. GitHub renders it as a diagram in the file view
+                                and in pull requests — no image, no build step, and a schema change
+                                shows up as a readable diff. <UI>Download</UI> gives you a{" "}
+                                <Code>.md</Code> file with the fence already around it.
+                            </Step>
+                            <Step n={2}>
+                                <strong>Notion.</strong> Type <Code>/code</Code>, create a code block,
+                                set its language to <em>Mermaid</em>, and paste. Notion offers a
+                                <em> Preview</em> toggle on that block which renders the diagram; leave
+                                it on and the page shows the ERD rather than the source.
+                            </Step>
+                            <Step n={3}>
+                                <strong>Jira and Confluence.</strong> Confluence renders Mermaid
+                                through the Mermaid macro; on a Jira ticket, paste it into a code block
+                                with <Code>mermaid</Code> as the language. Where a renderer is not
+                                installed it degrades to readable text, which is still better than a
+                                screenshot nobody can copy a table name out of.
+                            </Step>
+                            <Step n={4}>
+                                <strong>dbdiagram.io and dbdocs.</strong> Export DBML and paste it into
+                                the left-hand editor at dbdiagram.io — it becomes an editable diagram
+                                you can rearrange and share. <Code>dbdocs build</Code> takes the same
+                                file and publishes browsable schema documentation from it.
+                            </Step>
+                            <Step n={5}>
+                                <strong>A design document or an RFC.</strong> Keep the DBML beside the
+                                document as the schema of record and paste the Mermaid into the
+                                document itself. Reviewers read the diagram; the DBML is what the
+                                next person actually builds from.
+                            </Step>
+                        </Steps>
+
+                        <Callout title="Keeping it current">
+                            Because both formats are generated from the live schema, re-exporting after
+                            a change and pasting over the old block is a five-second job. That is the
+                            argument for text over an image: the picture is the thing nobody remembers
+                            to regenerate.
+                        </Callout>
+
+                        <Callout tone="warn" title="What the text formats leave out">
+                            Mermaid shows tables, columns, keys and relationships — not defaults,
+                            indexes or constraints. A precision containing a comma is trimmed to fit
+                            Mermaid&apos;s parser, so <Code>DECIMAL(10,2)</Code> appears as{" "}
+                            <Code>DECIMAL</Code>; DBML keeps the exact type if you need it. Neither
+                            carries your rows: use the SQL export for data.
+                        </Callout>
                     </Section>
 
                     <Section

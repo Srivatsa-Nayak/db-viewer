@@ -17,7 +17,7 @@ import {
 import { clearSession, loadSession, saveSession } from "@/services/sessionStorage";
 import { newWorkspaceId } from "@/services/workspaceId";
 import { downloadCanvasImage } from "@/services/exportImage";
-import { Relationship, TableInfo } from "@/types";
+import { ImportPlan, Relationship, SqlDialectId, TableInfo } from "@/types";
 
 /**
  * Dialogs are code-split.
@@ -32,6 +32,9 @@ const NewFileModal = dynamic(() => import('@/components/modal/NewFileModal').the
 const NoticeModal = dynamic(() => import('@/components/modal/NoticeModal').then(m => m.NoticeModal), { ssr: false });
 const AuthModal = dynamic(() => import('@/components/modal/AuthModal').then(m => m.AuthModal), { ssr: false });
 const ShareModal = dynamic(() => import('@/components/modal/ShareModal').then(m => m.ShareModal), { ssr: false });
+const ExportModal = dynamic(() => import('@/components/modal/ExportModal').then(m => m.ExportModal), { ssr: false });
+const ImportPreviewModal = dynamic(
+    () => import('@/components/modal/ImportPreviewModal').then(m => m.ImportPreviewModal), { ssr: false });
 const ProfileModal = dynamic(() => import('@/components/modal/ProfileModal').then(m => m.ProfileModal), { ssr: false });
 
 /**
@@ -44,11 +47,25 @@ interface Workspace {
     name: string;
     nodes: Node[];
     edges: Edge[];
+    /**
+     * The relationships as the backend reported them, kept beside the edges they produced.
+     *
+     * An `Edge` is a drawing instruction — two node ids and two handle ids — and the text
+     * exports need the schema, not the drawing. Deriving one back from the other would mean
+     * parsing handle ids, which is exactly the sort of thing that quietly stops working.
+     */
+    relationships: Relationship[];
     fileData: ExplorerFile;
     isImported: boolean;
 }
 
-const EDGE_COLOUR = '#2563eb';
+/**
+ * A CSS variable rather than a hex value, so the lines follow the theme.
+ *
+ * React Flow puts the marker colour in a `style` object and the edge colour in one too, and
+ * `var()` resolves in both. The dot grid is the one place it does not - see `Visualizer`.
+ */
+const EDGE_COLOUR = 'var(--color-edge)';
 
 const transformRelationshipsToEdges = (relationships: Relationship[]): Edge[] =>
     relationships.map((rel, index) => ({
@@ -57,11 +74,34 @@ const transformRelationshipsToEdges = (relationships: Relationship[]): Edge[] =>
         target: rel.sourceTable,
         sourceHandle: `${rel.targetColumn}-right`,
         targetHandle: `${rel.sourceColumn}-left`,
-        type: 'smoothstep',
-        animated: true,
-        style: { stroke: EDGE_COLOUR, strokeWidth: 1.5 },
-        markerEnd: { type: MarkerType.ArrowClosed, color: EDGE_COLOUR },
+        // Right angles that route around the tables in the way, rather than a diagonal through
+        // them - see `components/canvas/edgeRouting.ts`.
+        type: 'orthogonal',
+        // Not animated. A marching dash on one edge reads as flow; on eighty of them it reads as
+        // noise, and this is a diagram people keep open for hours.
+        animated: false,
+        style: { stroke: EDGE_COLOUR, strokeWidth: 1.6 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: EDGE_COLOUR, width: 16, height: 16 },
     }));
+
+/**
+ * Which columns of each table are foreign keys, and which are pointed at.
+ *
+ * A table node needs this to place its connection handles, and an edge with no handle at one end
+ * silently does not render. It used to be worked out from the `*_id` naming convention alone,
+ * which is a good guess and no more: a schema whose foreign key is called `customer` rather than
+ * `customer_id` drew no line at all, even though the backend had reported the relationship.
+ */
+const keyColumnsByTable = (relationships: Relationship[]) => {
+    const foreignKeys: Record<string, string[]> = {};
+    const referenced: Record<string, string[]> = {};
+
+    for (const rel of relationships) {
+        (foreignKeys[rel.sourceTable] ??= []).push(rel.sourceColumn);
+        (referenced[rel.targetTable] ??= []).push(rel.targetColumn);
+    }
+    return { foreignKeys, referenced };
+};
 
 const defaultPosition = (index: number) => ({
     x: 250 * (index % 3),
@@ -92,6 +132,15 @@ export default function Home() {
     const [authReason, setAuthReason] = useState<string | null>(null);
     const [isAuthOpen, setAuthOpen] = useState(false);
     const [isShareOpen, setShareOpen] = useState(false);
+    const [isExportOpen, setExportOpen] = useState(false);
+    /**
+     * The file the user has chosen but not yet imported, and what importing it would do.
+     *
+     * Both halves are needed: the plan is what the dialog shows, and the File itself is what gets
+     * sent when they confirm. Holding the File rather than re-reading it means the confirm step
+     * cannot import something different from what was previewed.
+     */
+    const [pendingImport, setPendingImport] = useState<{ file: File; plan: ImportPlan } | null>(null);
     const [isProfileOpen, setProfileOpen] = useState(false);
     const [notes, setNotes] = useState<TableNote[]>([]);
     const [tableToDelete, setTableToDelete] = useState<string | null>(null);
@@ -232,6 +281,7 @@ export default function Home() {
             const response = await dbService.getSchema();
             const tables = response.tables;
             const edges = transformRelationshipsToEdges(response.relationships);
+            const keys = keyColumnsByTable(response.relationships);
 
             setWorkspaces(prev => prev.map(w => {
                 if (w.id !== workspaceId) return w;
@@ -245,6 +295,8 @@ export default function Home() {
                         data: {
                             label: tbl.name,
                             columns: tbl.columns,
+                            foreignKeyColumns: keys.foreignKeys[tbl.name] ?? [],
+                            referencedColumns: keys.referenced[tbl.name] ?? [],
                             openNotes: existing?.data?.openNotes ?? 0,
                             onRefresh: refreshActiveSchema,
                             onEdit: setEditingTable,
@@ -259,6 +311,7 @@ export default function Home() {
                     ...w,
                     nodes,
                     edges,
+                    relationships: response.relationships,
                     fileData: { ...w.fileData, tables: tables.map(t => ({ name: t.name, columns: t.columns })) },
                 };
             }));
@@ -280,7 +333,9 @@ export default function Home() {
         id: string,
         isImported: boolean,
         savedPositions: Record<string, { x: number; y: number }> = {}
-    ): Workspace => ({
+    ): Workspace => {
+        const keys = keyColumnsByTable(relationships);
+        return {
         id,
         name: fileName,
         isImported,
@@ -293,6 +348,8 @@ export default function Home() {
             data: {
                 label: tbl.name,
                 columns: tbl.columns,
+                foreignKeyColumns: keys.foreignKeys[tbl.name] ?? [],
+                referencedColumns: keys.referenced[tbl.name] ?? [],
                 openNotes: 0,
                 onRefresh: refreshActiveSchema,
                 onEdit: setEditingTable,
@@ -302,12 +359,14 @@ export default function Home() {
             },
         })),
         edges: transformRelationshipsToEdges(relationships),
+        relationships,
         fileData: {
             id,
             name: fileName,
             tables: tables.map(t => ({ name: t.name, columns: t.columns })),
         },
-    }), [refreshActiveSchema, requestTableDelete, handleDownloadCsv, refreshNotes]);
+        };
+    }, [refreshActiveSchema, requestTableDelete, handleDownloadCsv, refreshNotes]);
 
     // Restore the files that were open before the refresh. Runs once, on mount.
     useEffect(() => {
@@ -398,14 +457,38 @@ export default function Home() {
 
     /* ── File lifecycle ──────────────────────────────────────────────────── */
 
-    const handleFileUpload = async (file: File) => {
+    /**
+     * Step one of an import: work out what the file would create, and show it.
+     *
+     * Nothing is created here and no workspace is opened, so cancelling the dialog leaves
+     * exactly as much behind as never having picked the file.
+     */
+    const handleFileChosen = async (file: File) => {
+        setIsUploading(true);
+        try {
+            const plan = await dbService.analyzeUpload(file);
+            setPendingImport({ file, plan });
+        } catch (err: unknown) {
+            setNotice({
+                isOpen: true,
+                severity: 'error',
+                title: 'That file could not be read',
+                message: errorMessage(err) || `"${file.name}" could not be parsed as CSV or SQL.`,
+            });
+        } finally {
+            setIsUploading(false);
+        }
+    };
+
+    /** Step two: the user has seen the plan and corrected whatever the inference got wrong. */
+    const handleFileUpload = async (file: File, typeOverrides: Record<string, string> = {}) => {
         setIsUploading(true);
         const newId = newWorkspaceId();
         // Bind the API client to the new workspace before uploading: the file must land
         // in its own database, not in whichever file happened to be open.
         setActiveWorkspace(newId);
         try {
-            const report = await dbService.uploadFile(file);
+            const report = await dbService.uploadFile(file, typeOverrides);
             const response = await dbService.getSchema();
             const tables = response.tables;
             const warnings = report.warnings ?? [];
@@ -432,6 +515,7 @@ export default function Home() {
                 tables, response.relationships, file.name, newId, true
             )]);
             setActiveWorkspaceId(newId);
+            setPendingImport(null);
 
             if (warnings.length > 0) {
                 const total = report.warningCount ?? warnings.length;
@@ -473,6 +557,7 @@ export default function Home() {
             name: fileName,
             nodes: [],
             edges: [],
+            relationships: [],
             fileData: { id: newId, name: fileName, tables: [] },
             isImported: false,
         }]);
@@ -559,14 +644,14 @@ export default function Home() {
     /* ── Exports and sharing ─────────────────────────────────────────────── */
 
     /** Exports need an account; the backend enforces it too, this just explains why. */
-    const handleExportSql = async () => {
+    const handleExportSql = async (dialect: SqlDialectId) => {
         if (!activeWorkspace) return;
         if (!user) return requireAccount('Exporting a file');
         let name = activeWorkspace.name || 'database_dump.sql';
         if (activeWorkspace.isImported) name = `modified_${name}`;
         if (!name.toLowerCase().endsWith('.sql')) name += '.sql';
         try {
-            await dbService.downloadDatabaseSql(name);
+            await dbService.downloadDatabaseSql(name, dialect);
         } catch (e) {
             if (isAuthRequired(e)) return requireAccount('Exporting a file');
             setNotice({ isOpen: true, severity: 'error', title: 'Export failed',
@@ -574,18 +659,30 @@ export default function Home() {
         }
     };
 
+    /**
+     * A PNG never touches the backend — it is rendered straight out of the DOM — so unlike the
+     * SQL export there is no 401 backstopping this. `ExportModal` already refuses to call it
+     * signed out, but that guard living in one caller is exactly the shape of bug that let PNG,
+     * Mermaid and DBML export without an account in the first place; checking again here means
+     * a second caller added later cannot reopen it.
+     */
     const handleExportImage = async () => {
         if (!activeWorkspace) return;
-        try {
-            await downloadCanvasImage(activeWorkspace.nodes, activeWorkspace.name);
-        } catch (e) {
+        if (!user) return requireAccount('Exporting a file');
+        await downloadCanvasImage(activeWorkspace.nodes, activeWorkspace.name);
+    };
+
+    const handleExportRequest = () => {
+        if (!activeWorkspace) {
             setNotice({
                 isOpen: true,
-                severity: 'error',
-                title: 'Could not export the image',
-                message: e instanceof Error ? e.message : 'The diagram could not be rendered to a PNG.',
+                severity: 'warning',
+                title: 'No file open',
+                message: 'Open or create a file before exporting one.',
             });
+            return;
         }
+        setExportOpen(true);
     };
 
     const handleClearRequest = () => {
@@ -640,17 +737,16 @@ export default function Home() {
     }, []);
 
     return (
-        <div className="h-[100dvh] w-full bg-white text-ink-800 flex flex-col overflow-hidden">
+        <div className="h-[100dvh] w-full bg-surface text-ink-800 flex flex-col overflow-hidden">
             <Header
-                onUpload={handleFileUpload}
+                onUpload={handleFileChosen}
                 onNewFile={() => setNewFileModalOpen(true)}
                 isUploading={isUploading}
                 fileName={activeWorkspace?.name || null}
                 onClear={handleClearRequest}
                 hasData={!!activeWorkspace}
                 onShowInfo={() => setInfoOpen(true)}
-                onExportSql={handleExportSql}
-                onExportImage={handleExportImage}
+                onExport={handleExportRequest}
                 onShare={handleShare}
                 onSignIn={() => { setAuthReason(null); setAuthOpen(true); }}
                 onSignOut={handleSignOut}
@@ -663,7 +759,7 @@ export default function Home() {
                     Always mounted and animated by opacity, so it fades out with the drawer's
                     slide rather than blinking away the instant the state flips. */}
                 <div
-                    className={`lg:hidden absolute inset-0 z-30 bg-ink-900/40 transition-opacity duration-300 motion-reduce:transition-none ${
+                    className={`lg:hidden absolute inset-0 z-30 bg-scrim/50 transition-opacity duration-300 motion-reduce:transition-none ${
                         isExplorerOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
                     }`}
                     onClick={() => setIsExplorerOpen(false)}
@@ -689,12 +785,12 @@ export default function Home() {
                             onRefreshRequest={refreshActiveSchema}
                         />
                     ) : isRestoring ? (
-                        <div className="flex-1 flex flex-col items-center justify-center bg-white text-ink-400 gap-3">
+                        <div className="flex-1 flex flex-col items-center justify-center bg-surface text-ink-400 gap-3">
                             <Loader2 size={28} className="animate-spin text-brand-500" />
                             <p className="text-sm text-ink-500">Restoring your files...</p>
                         </div>
                     ) : (
-                        <div className="flex-1 flex flex-col items-center justify-center bg-white text-ink-400 gap-4 px-6">
+                        <div className="flex-1 flex flex-col items-center justify-center bg-surface text-ink-400 gap-4 px-6">
                             <div className="w-16 h-16 bg-ink-100 rounded-full flex items-center justify-center shadow-inner">
                                 <FileCode size={32} className="opacity-40" />
                             </div>
@@ -717,7 +813,7 @@ export default function Home() {
                                     </button>
                                     <button
                                         onClick={() => setNewFileModalOpen(true)}
-                                        className="px-4 py-2.5 bg-white border border-ink-300 hover:bg-ink-50 text-ink-700 rounded-md text-sm font-semibold flex items-center justify-center gap-2 transition-colors"
+                                        className="px-4 py-2.5 bg-surface border border-ink-300 hover:bg-ink-50 text-ink-700 rounded-md text-sm font-semibold flex items-center justify-center gap-2 transition-colors"
                                     >
                                         <Plus size={16} /> New file
                                     </button>
@@ -740,6 +836,32 @@ export default function Home() {
                     reason={authReason}
                     onClose={() => setAuthOpen(false)}
                     onSignedIn={setUser}
+                />
+            )}
+
+            {/* Mounted only while open, so opening it *is* the reset - there is no stale plan
+                or half-edited type mapping to clear. */}
+            {pendingImport && (
+                <ImportPreviewModal
+                    isOpen
+                    plan={pendingImport.plan}
+                    isImporting={isUploading}
+                    onConfirm={(typeOverrides) => handleFileUpload(pendingImport.file, typeOverrides)}
+                    onClose={() => setPendingImport(null)}
+                />
+            )}
+
+            {isExportOpen && activeWorkspace && (
+                <ExportModal
+                    isOpen
+                    fileName={activeWorkspace.name}
+                    tables={activeWorkspace.fileData.tables}
+                    relationships={activeWorkspace.relationships}
+                    hasAccount={!!user}
+                    onExportSql={handleExportSql}
+                    onExportImage={handleExportImage}
+                    onNeedsAccount={() => requireAccount('Exporting a file')}
+                    onClose={() => setExportOpen(false)}
                 />
             )}
 

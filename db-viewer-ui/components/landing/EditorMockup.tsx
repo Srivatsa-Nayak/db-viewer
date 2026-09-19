@@ -136,7 +136,7 @@ const TableCard = ({ table, playing }: { table: TableSpec; playing: boolean }) =
 export const EditorMockup = ({ playing = true }: { playing?: boolean }) => (
     <svg
         viewBox={`0 0 ${W} ${H}`}
-        className="h-auto w-full"
+        className="themed-art h-auto w-full"
         role="img"
         aria-label="The editor showing an online-store schema of eight linked tables"
     >

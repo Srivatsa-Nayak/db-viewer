@@ -155,12 +155,12 @@ export const Callout = ({ tone = 'note', title, children }: {
     children: React.ReactNode;
 }) => {
     const style = tone === 'warn'
-        ? 'border-amber-200 bg-amber-50/70 text-amber-900'
-        : 'border-brand-200 bg-brand-50/70 text-brand-900';
+        ? 'tone-warning'
+        : 'tone-info';
     return (
         <div className={`rounded-xl border px-4 py-3 text-[13.5px] leading-relaxed ${style}`}>
             {title && <p className="mb-1 font-semibold">{title}</p>}
-            <div className={tone === 'warn' ? 'text-amber-800' : 'text-brand-800'}>{children}</div>
+            <div className={tone === 'warn' ? 'text-tone-warn-ink' : 'text-brand-800'}>{children}</div>
         </div>
     );
 };
@@ -181,7 +181,7 @@ export const Code = ({ children }: { children: React.ReactNode }) => (
 
 /** A keyboard key. */
 export const Key = ({ children }: { children: React.ReactNode }) => (
-    <kbd className="rounded-md border border-ink-300 border-b-2 bg-white px-1.5 py-0.5 font-mono text-[11.5px] font-semibold text-ink-700">
+    <kbd className="rounded-md border border-ink-300 border-b-2 bg-surface px-1.5 py-0.5 font-mono text-[11.5px] font-semibold text-ink-700">
         {children}
     </kbd>
 );

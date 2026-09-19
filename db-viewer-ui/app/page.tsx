@@ -5,12 +5,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
     ArrowRight, Database, Sparkles, Github, Mail, Upload, LayoutTemplate, Check,
+    KeyRound, Lock, Trash2,
 } from "lucide-react";
 
 import dynamic from "next/dynamic";
 
 import { LandingNav } from "@/components/landing/LandingNav";
-import { HeroDiagram } from "@/components/landing/HeroDiagram";
+import { HeroCanvas } from "@/components/landing/HeroCanvas";
 import { HowItWorks } from "@/components/landing/HowItWorks";
 import { FeaturesSection } from "@/components/landing/FeaturesSection";
 import { TemplatesSection } from "@/components/landing/TemplatesSection";
@@ -103,7 +104,7 @@ export default function LandingPage() {
     };
 
     return (
-        <div className="min-h-screen bg-white text-ink-800">
+        <div className="min-h-screen bg-surface text-ink-800">
             <LandingNav
                 user={user}
                 onLogin={() => openAuth("login")}
@@ -128,7 +129,7 @@ export default function LandingPage() {
                 <div className="relative mx-auto grid max-w-6xl items-center gap-12 px-6 lg:grid-cols-2">
                     <div>
                         <Reveal>
-                            <span className="inline-flex items-center gap-1.5 rounded-full border border-brand-200/70 bg-white/80 px-3.5 py-1.5 text-xs font-medium text-brand-700 shadow-sm backdrop-blur-sm">
+                            <span className="inline-flex items-center gap-1.5 rounded-full border border-brand-200/70 bg-surface/80 px-3.5 py-1.5 text-xs font-medium text-brand-700 shadow-sm backdrop-blur-sm">
                                 <Sparkles size={12} />
                                 No install, no connection string
                             </span>
@@ -154,6 +155,40 @@ export default function LandingPage() {
                         </p>
                         </Reveal>
 
+                        {/* The objection a database tool has to answer before anything else, and it
+                            is not "does it work" — it is "what are you asking for access to".
+                            Answered in the hero rather than buried in a security page, because an
+                            engineer who has not had it answered does not scroll. */}
+                        <Reveal delay={210}>
+                            <ul className="mt-6 grid max-w-xl gap-2.5 sm:grid-cols-3">
+                                {[
+                                    {
+                                        icon: KeyRound,
+                                        title: 'No credentials',
+                                        body: 'You hand it a file, never a connection string. It never reaches your database.',
+                                    },
+                                    {
+                                        icon: Lock,
+                                        title: 'Isolated per file',
+                                        body: 'Each file gets a private database of its own. Other sessions are refused it.',
+                                    },
+                                    {
+                                        icon: Trash2,
+                                        title: 'Gone when you say',
+                                        body: 'One click deletes a file and its database outright. Nothing is kept back.',
+                                    },
+                                ].map(({ icon: Icon, title, body }) => (
+                                    <li key={title} className="flex gap-2.5 sm:block">
+                                        <Icon size={15} className="mt-0.5 shrink-0 text-brand-600 sm:mb-1.5 sm:mt-0" />
+                                        <span className="min-w-0">
+                                            <span className="block text-sm font-semibold text-ink-800">{title}</span>
+                                            <span className="mt-0.5 block text-[13px] leading-snug text-ink-500">{body}</span>
+                                        </span>
+                                    </li>
+                                ))}
+                            </ul>
+                        </Reveal>
+
                         <Reveal delay={250} className="mt-8 flex flex-wrap items-center gap-3">
                             <Link
                                 href="/app"
@@ -163,7 +198,7 @@ export default function LandingPage() {
                             </Link>
                             <a
                                 href="#templates"
-                                className="inline-flex items-center gap-2 rounded-xl border border-[var(--surface-line)] bg-white/80 px-6 py-3.5 text-sm font-semibold text-ink-700 shadow-sm backdrop-blur-sm transition-all hover:-translate-y-0.5 hover:border-brand-300 hover:text-brand-700"
+                                className="inline-flex items-center gap-2 rounded-xl border border-[var(--surface-line)] bg-surface/80 px-6 py-3.5 text-sm font-semibold text-ink-700 shadow-sm backdrop-blur-sm transition-all hover:-translate-y-0.5 hover:border-brand-300 hover:text-brand-700"
                             >
                                 Browse templates
                             </a>
@@ -177,7 +212,7 @@ export default function LandingPage() {
                     </div>
 
                     <div className="lg:pl-4">
-                        <HeroDiagram />
+                        <HeroCanvas />
                     </div>
                 </div>
             </section>
@@ -238,7 +273,7 @@ export default function LandingPage() {
                         <div className="space-y-3">
                             <Link
                                 href="/app"
-                                className="group flex items-center gap-4 rounded-2xl bg-white p-5 shadow-lg transition-all hover:-translate-y-0.5 hover:shadow-xl"
+                                className="group flex items-center gap-4 rounded-2xl bg-surface p-5 shadow-lg transition-all hover:-translate-y-0.5 hover:shadow-xl"
                             >
                                 <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600 transition-colors group-hover:bg-brand-600 group-hover:text-white">
                                     <Upload size={19} />

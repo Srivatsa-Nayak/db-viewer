@@ -2,6 +2,7 @@ package com.dbviewer.app.service;
 
 import com.dbviewer.app.exception.TableInUseException;
 import com.dbviewer.app.dto.*;
+import com.dbviewer.app.sql.SqlDialect;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
@@ -18,6 +19,25 @@ public interface DatabaseService {
      * Mirrors HandleFileUpload in Go.
      */
     Map<String, Object> handleFileUpload(MultipartFile file) throws Exception;
+
+    /**
+     * Runs an import the user has already reviewed, applying the column types they corrected.
+     *
+     * @param typeOverrides keyed by column name for a CSV, by {@code table.column} for a script;
+     *                      empty to use whatever was inferred or declared
+     */
+    Map<String, Object> handleFileUpload(MultipartFile file, Map<String, String> typeOverrides)
+            throws Exception;
+
+    /**
+     * Describes what importing a file would produce, without importing it.
+     *
+     * <p>The half of an import that can be undone by pressing Cancel. Type inference on a CSV is
+     * guesswork, and a wrong guess is destructive — an {@code INT} postcode column has lost its
+     * leading zeros by the time anyone sees the canvas — so the plan is shown first and the DDL
+     * runs only once it has been confirmed.
+     */
+    ImportPlan analyzeUpload(MultipartFile file) throws Exception;
 
     /**
      * Executes a raw SQL query.
@@ -86,10 +106,19 @@ public interface DatabaseService {
     List<Map<String, Object>> getTableRows(String tableName);
 
     /**
-     * Generates a full SQL dump of the database.
+     * Generates a full SQL dump of the database, in the dialect the workspace itself runs on.
      * Mirrors HandleExportDatabaseSQL in Go.
      */
     String exportDatabaseSql();
+
+    /**
+     * Generates a full SQL dump written for a particular engine.
+     *
+     * <p>Not a formatting preference: {@code AUTOINCREMENT}, {@code SERIAL},
+     * {@code IDENTITY(1,1)} and {@code AUTO_INCREMENT} are four spellings of the same idea and
+     * no engine accepts another's, so an untargeted export is only ever nearly runnable.
+     */
+    String exportDatabaseSql(SqlDialect target);
 
     /**
      * Drops a table. Refuses with {@link TableInUseException} when another table's foreign key

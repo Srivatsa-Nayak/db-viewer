@@ -32,7 +32,7 @@ export const downloadCanvasImage = async (nodes: Node[], fileName: string): Prom
     const [x, y, zoom] = getTransformForBounds(bounds, width, height, 0.5, 2);
 
     const dataUrl = await toPng(viewport, {
-        backgroundColor: '#ffffff',
+        backgroundColor: canvasBackground(),
         width,
         height,
         // pixelRatio 2 keeps the small 9px column labels legible when the image is zoomed.
@@ -51,6 +51,21 @@ export const downloadCanvasImage = async (nodes: Node[], fileName: string): Prom
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+};
+
+/**
+ * The canvas colour as it is right now.
+ *
+ * Read from the live stylesheet rather than hard-coded, because the theme decides it: a dark
+ * diagram exported onto a white sheet is unreadable — light text on white — and it is exactly
+ * the export someone working in dark mode would produce without noticing until they opened
+ * the file.
+ */
+const canvasBackground = (): string => {
+    const value = getComputedStyle(document.documentElement)
+        .getPropertyValue('--color-canvas')
+        .trim();
+    return value || '#ffffff';
 };
 
 /** `orders.sql` -> `orders.png`; anything else just gains the extension. */

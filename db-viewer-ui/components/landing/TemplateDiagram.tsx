@@ -163,7 +163,7 @@ export const TemplateDiagram = ({ schema, width = 560, height = 380 }: Props) =>
                     transformOrigin: 'center',
                 }}
             >
-                <svg className="absolute inset-0 overflow-visible" width={totalW} height={totalH} fill="none">
+                <svg className="themed-art absolute inset-0 overflow-visible" width={totalW} height={totalH} fill="none">
                     <defs>
                         <marker id="tpl-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
                             <path d="M0,0 L7,3.5 L0,7 Z" fill="#2563eb" />
@@ -198,7 +198,7 @@ export const TemplateDiagram = ({ schema, width = 560, height = 380 }: Props) =>
                     return (
                         <div
                             key={table.name}
-                            className="absolute rounded-md border border-brand-200 bg-white shadow-lg"
+                            className="absolute rounded-md border border-brand-200 bg-surface shadow-lg"
                             style={{ left: pos.x, top: pos.y, width: CARD_W }}
                         >
                             <div className="flex items-center gap-1.5 rounded-t-md bg-brand-600 px-2 py-1.5">

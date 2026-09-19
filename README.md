@@ -36,14 +36,19 @@ Built with **Spring Boot 3.3 (Java 17)** on the backend and **Next.js 16** on th
 
 | Feature | Detail |
 |---|---|
-| **📂 CSV / SQL import** | Upload a `.csv` (types are inferred per column, a primary key is added if absent) or a `.sql` script. A MySQL/phpMyAdmin dump is translated for SQLite, including folding its `ALTER TABLE` primary keys and foreign keys back into the `CREATE TABLE`. Anything that cannot be run is reported in the UI rather than only the server log. |
+| **📂 CSV / SQL import** | Upload a `.csv` (types are inferred per column, a primary key is added if absent) or a `.sql` script. Nothing is created until you have seen what it would create — see **Pre-flight import** below. |
+| **🗣️ Multi-dialect SQL** | A dump written for **MySQL, MariaDB, PostgreSQL or SQL Server** is detected by its own fingerprints and translated: vendor types are mapped, `SERIAL` / `IDENTITY(1,1)` / `AUTO_INCREMENT` all become a working key, `ALTER TABLE` keys and foreign keys are folded back into the `CREATE TABLE`, `GO` batches and pg_dump `COPY ... FROM stdin` blocks are understood. Anything that cannot be represented is skipped with a note rather than failing the import. |
+| **🛫 Pre-flight import** | An import is staged, not executed on drop. `POST /import/analyze` parses the file and creates nothing; a dialog shows the tables, the inferred types, *why* each was chosen and real sample values, and lets you correct any of them before the DDL runs. The type this exists for is a postcode column of `01234` — all digits, so the obvious answer is `INT`, and the leading zeros would be gone for good. |
 | **🗂️ Independent files** | Every SQL file you open is backed by its own database. Two files can each define a `users` table with different columns, and neither can see the other's data. |
 | **🕸️ Schema visualization** | A React Flow entity-relationship canvas, drawn from live database metadata — drag nodes to arrange, zoom, and pan. |
-| **🔗 Relationships** | Declared foreign keys are drawn as animated edges. Columns named `id` or `*_id` get connection handles so relationships are easy to spot. |
+| **🔗 Relationships** | Declared foreign keys are drawn as **orthogonal edges that route around the tables in the way**, rather than diagonals through them. Handles come from the relationship list, with `id` / `*_id` naming as a fallback. Primary keys are gold and foreign keys blue, in both themes. |
+| **🧭 Canvas navigation** | A minimap for the parts of a large schema that are off screen, and **Ctrl+F** to find any table or column — the canvas pans and zooms to it and dims everything else. |
+| **🌙 Dark mode** | Light, dark, or follow the system, remembered between visits and applied before first paint. The whole product switches, not just the canvas. |
 | **✏️ Data editing** | View, insert and delete rows, edit a single cell in place, or edit a whole row at once — without leaving the canvas. |
 | **🧱 Schema editing** | Create tables with primary keys, `NOT NULL` constraints and foreign keys; add columns, and rename or retype existing ones, through dedicated modals. |
-| **⬇️ Export** | Download one table as CSV, the whole file as a round-trippable SQL dump, or the diagram as a PNG for reading the schema offline. |
-| **🏠 Landing page** | `/` introduces the app, with in-page Features and Templates sections; the editor lives at `/app`. |
+| **⬇️ Export** | One table as CSV; the whole schema as a SQL script **written for the engine you name** (MySQL, MariaDB, PostgreSQL, SQL Server, SQLite or ANSI); the diagram as a PNG; or, for docs-as-code, as **Mermaid** (renders in a GitHub README, a Jira ticket or a Notion page) or **DBML** (dbdiagram.io, dbdocs). The last two are generated in the browser and need no account. |
+| **🏠 Landing page** | `/` opens with a **live canvas**, not a screenshot: a `.sql` file types itself out, the tables bloom in, the foreign keys draw themselves, and then you can drag the tables — before signing up for anything. Each feature below it plays a looping demonstration of that action. The editor lives at `/app`. |
+| **📖 Docs you can press** | `/docs` carries a per-engine **support matrix** (what is read, what is partly read, what is skipped), the full type mapping, guides for putting a Mermaid or DBML export into a GitHub README, Notion, Jira or dbdiagram.io — and **live sandboxes**: press a button and watch a delete get refused by a real foreign key, or read the export this page generates as you look at it. |
 | **🧩 Starter templates** | Twelve ready-made schemas across seven categories. Preview shows the diagram — the SQL is not repeated there, since opening a template and exporting gives you your own edits with it. Authored on the backend — the frontend only renders them. |
 | **✨ Example schema** | The canvas's empty state loads the Online Store template, so it is never a blank page. |
 | **🗑️ Safe table deletion** | Delete a table from its node — refused with a clear message when another table's foreign key still references it. |
@@ -284,7 +289,8 @@ set headers.
 | `POST` | `/share` | Create a read-only share link **(account required)** |
 | `GET` | `/share/{token}` | View a shared schema (public — the token is the credential) |
 | `GET` `DELETE` | `/shares` · `/share/{token}` | List / revoke your links **(account required)** |
-| `POST` | `/upload` | Import a `.csv` or `.sql` file (multipart, field `file`) |
+| `POST` | `/import/analyze` | Report what a file *would* create — tables, columns, inferred types and what will be skipped. Creates nothing |
+| `POST` | `/upload` | Import a `.csv` or `.sql` file (multipart, field `file`; optional `columnTypes` JSON of corrected types) |
 | `POST` | `/query` | Execute raw SQL |
 | `GET` | `/db-info` | All tables, columns, row previews (max 100) and relationships |
 | `GET` | `/table-data/{table}` | Columns + rows (max 100) for one table |
@@ -298,7 +304,8 @@ set headers.
 | `GET` | `/workspaces` | Ids of workspaces that still have a database (used to restore a session) |
 | `DELETE` | `/workspace` | Delete the workspace's database entirely |
 | `GET` | `/export/{table}?workspaceId=` | Download the table as CSV |
-| `GET` | `/export-sql?filename=&workspaceId=` | Download the workspace as a SQL dump |
+| `GET` | `/export-sql?filename=&dialect=&workspaceId=` | Download the workspace as a SQL script, written for `dialect` (`mysql` \| `mariadb` \| `postgres` \| `sqlserver` \| `sqlite` \| `generic`) |
+| `GET` | `/dialects` | The engines an export can target |
 
 Errors return a non-2xx status with `{"error": "<message>"}`.
 
@@ -321,7 +328,7 @@ curl localhost:8080/db-info -H 'X-Workspace-Id: fileA'   # sees only fileA's use
 ## ✅ Testing and quality gates
 
 ```bash
-# Backend — 81 tests, in-memory SQLite, no setup required
+# Backend — 96 tests, in-memory SQLite, no setup required
 cd db-viewer-backend && ./mvnw test
 
 # Single class

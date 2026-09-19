@@ -112,7 +112,7 @@ export const TableNotesModal = ({ isOpen, tableName, onClose, onChanged }: Table
                         placeholder="e.g. add an index on customer_id"
                         aria-label="New note"
                         maxLength={2000}
-                        className="flex-1 min-w-0 bg-white border border-ink-300 rounded-md py-2.5 sm:py-2 px-3 text-sm text-ink-900 placeholder:text-ink-400 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
+                        className="flex-1 min-w-0 bg-surface border border-ink-300 rounded-md py-2.5 sm:py-2 px-3 text-sm text-ink-900 placeholder:text-ink-400 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
                     />
                     <button
                         type="submit"

@@ -23,7 +23,7 @@ const startingColumns = (): NewTableColumn[] => ([
     { name: "id", type: "INT", is_pk: true, not_null: true, length: 0, ref_table: "", ref_col: "" },
 ]);
 
-const FIELD = 'w-full bg-white border border-ink-300 rounded-md px-2 py-2 text-sm text-ink-900 '
+const FIELD = 'w-full bg-surface border border-ink-300 rounded-md px-2 py-2 text-sm text-ink-900 '
     + 'focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-all';
 
 const MICRO_LABEL = 'text-[10px] font-semibold text-ink-400 uppercase tracking-wide block mb-1';
@@ -208,7 +208,7 @@ export const CreateTableModal = ({ isOpen, onClose, onSuccess, existingTables }:
                                             type="checkbox"
                                             checked={Boolean(col[field])}
                                             onChange={e => updateColumn(idx, field, e.target.checked)}
-                                            className="rounded bg-white border-ink-300 text-brand-600 focus:ring-0 w-4 h-4"
+                                            className="rounded bg-surface border-ink-300 text-brand-600 focus:ring-0 w-4 h-4"
                                         />
                                         {label}
                                     </label>

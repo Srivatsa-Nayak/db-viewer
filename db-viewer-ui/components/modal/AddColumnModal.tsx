@@ -8,7 +8,7 @@ import { Callout, GhostButton, Modal, ModalActions, PrimaryButton } from '@/comp
 const COLUMN_TYPES = ["VARCHAR", "INT", "DECIMAL", "BOOLEAN", "DATE", "TIME", "DATETIME"] as const;
 const VARCHAR_LENGTHS = [64, 128, 256] as const;
 
-const FIELD = 'w-full bg-white border border-ink-300 rounded-md py-2.5 sm:py-2 px-3 text-sm '
+const FIELD = 'w-full bg-surface border border-ink-300 rounded-md py-2.5 sm:py-2 px-3 text-sm '
     + 'text-ink-900 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-all';
 
 interface AddColumnModalProps {
@@ -164,7 +164,7 @@ export const AddColumnModal = ({
                         type="checkbox"
                         checked={isNotNull}
                         onChange={(e) => setIsNotNull(e.target.checked)}
-                        className="mt-0.5 rounded border-ink-300 bg-white text-brand-600 w-4 h-4 focus:ring-0 focus:ring-offset-0"
+                        className="mt-0.5 rounded border-ink-300 bg-surface text-brand-600 w-4 h-4 focus:ring-0 focus:ring-offset-0"
                     />
                     <span className="text-sm min-w-0">
                         <span className="font-medium text-ink-800 flex items-center gap-1.5">

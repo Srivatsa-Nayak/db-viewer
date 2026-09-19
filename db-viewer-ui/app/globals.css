@@ -1,6 +1,22 @@
 @import "tailwindcss";
 
 /* ──────────────────────────────────────────────────────────────────────────
+   Theming.
+
+   The `dark:` variant is wired to an attribute the app writes on <html>, not to
+   `prefers-color-scheme`: the theme is a setting the user picks and we remember,
+   and "follow the system" is one of the three things they can pick (see
+   `services/theme.ts`, which resolves that case to the same attribute).
+
+   It exists for the handful of colours a token cannot express — a red that has
+   to lighten on a dark ground while the button using the same red does not.
+   Everything else flips through the tokens below, which is why almost no
+   component in this codebase carries a `dark:` class at all.
+   ────────────────────────────────────────────────────────────────────────── */
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* ──────────────────────────────────────────────────────────────────────────
    Design tokens.
 
    One palette for the whole product. The landing page and the editor used to
@@ -11,6 +27,13 @@
    Everything below is exposed to Tailwind through `@theme`, so `bg-brand-600`,
    `text-ink-500` and `border-line` are real utilities. Prefer those over raw
    palette classes in new code.
+
+   The values here are the *light* theme. Tailwind v4 emits every one of them as
+   a custom property and every utility as a `var()` reference, so the dark theme
+   further down is able to redefine the same names and flip the entire product
+   without a single utility class changing. That is the whole reason the last
+   attempt at a dark mode failed: it restyled the canvas by hand and left the
+   rest of the chrome behind.
    ────────────────────────────────────────────────────────────────────────── */
 
 @theme {
@@ -46,6 +69,40 @@
   --color-surface-tint: #f6f8fd; /* white with a blue cast */
   --color-line: #e2e8f5;         /* borders that belong to the blue family */
 
+  /* The wash behind a dialog. Its own token rather than `ink-900/50`, because the
+     ink scale inverts in dark mode and an inverted scrim is a white flash. */
+  --color-scrim: #0f172a;
+
+  /* Tinted blocks — callouts, badges, import warnings. Paired bg/border/text so
+     a tone is one decision rather than three that can drift apart. */
+  --color-tone-info-bg: #eff6ff;
+  --color-tone-info-line: #bfdbfe;
+  --color-tone-info-ink: #1d4ed8;
+  --color-tone-warn-bg: #fffbeb;
+  --color-tone-warn-line: #fde68a;
+  --color-tone-warn-ink: #92400e;
+  --color-tone-error-bg: #fef2f2;
+  --color-tone-error-line: #fecaca;
+  --color-tone-error-ink: #b91c1c;
+  --color-tone-ok-bg: #ecfdf5;
+  --color-tone-ok-line: #a7f3d0;
+  --color-tone-ok-ink: #047857;
+
+  /* Canvas. The diagram has its own small palette because it has to stay legible
+     at 25% zoom and in a PNG export, where the surrounding chrome is not there
+     to give anything context. */
+  --color-canvas: #f1f5f9;
+  --color-canvas-dot: #94a3b8;
+  --color-edge: #2563eb;
+  --color-edge-muted: #94a3b8;
+
+  /* Keys are colour-coded by *kind*, not by emphasis: a primary key and a foreign
+     key are different things, and a diagram that renders both in the brand blue
+     makes you read the name to tell them apart. Gold and blue keep their meaning
+     at 25% zoom, where the icons are four pixels wide and the text is unreadable. */
+  --color-key-pk: #b45309;
+  --color-key-fk: #2563eb;
+
   /* Tailwind's smallest default breakpoint is 640px, which leaves the whole 320-639px band
      with no way to make a distinction. `xs` splits it where a second control stops fitting
      on one line. */
@@ -78,6 +135,103 @@
      stack depth, starting here, so a dialog opened from inside a dialog is
      always above its parent without anyone hand-picking a number. */
   --z-overlay-base: 100;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Dark theme.
+
+   Not a filter over the light one: a schema tool is read for hours at a time
+   during a migration, and an inverted-but-still-glaring page is worse than no
+   dark mode at all. So the ground is a deep blue-black rather than pure black
+   (pure black against light text produces halation — the text appears to smear),
+   the brightest text stops short of #fff, and the brand blue is *raised* rather
+   than dimmed, because the same #2563eb that reads as confident on white reads
+   as muddy on near-black.
+
+   Every declaration below redefines a token that already exists above. Nothing
+   here targets a component, which is what keeps the two themes from drifting.
+   ────────────────────────────────────────────────────────────────────────── */
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --background: #0a0f18;
+  --foreground: #e8eef7;
+
+  /* The neutral ramp inverts. 50 is now the *darkest* step, because every
+     component already treats it as "one step away from the surface" — which is
+     the relationship that has to hold, not the absolute lightness. */
+  --color-ink-50: #0d131d;
+  --color-ink-100: #18202e;
+  --color-ink-200: #242e40;
+  --color-ink-300: #36435c;
+  --color-ink-400: #76849d;
+  --color-ink-500: #98a5bb;
+  --color-ink-600: #b5c0d2;
+  --color-ink-700: #d0d9e6;
+  --color-ink-800: #e3eaf4;
+  --color-ink-900: #f2f6fb;
+  --color-ink-950: #ffffff;
+
+  --color-surface: #121a27;
+  --color-surface-tint: #16202f;
+  --color-line: #263349;
+  --color-scrim: #020509;
+
+  /* The blues lift by roughly one step: 600 stays the primary, but it is now the
+     shade that was 500, so a button still reads as the brightest thing on the
+     panel. 50 and 100 stop being near-white tints and become the dark washes
+     that `bg-brand-50` is used for. */
+  --color-brand-50: #101e35;
+  --color-brand-100: #16294a;
+  --color-brand-200: #1f3a63;
+  --color-brand-300: #2f5da0;
+  --color-brand-400: #4a8ae8;
+  --color-brand-500: #5ea2fb;
+  --color-brand-600: #3b82f6;
+  --color-brand-700: #93c5fd;
+  --color-brand-800: #bfdbfe;
+  --color-brand-900: #dbeafe;
+  --color-brand-violet: #6366f1;
+
+  --color-tone-info-bg: #10203a;
+  --color-tone-info-line: #1e3a6b;
+  --color-tone-info-ink: #93c5fd;
+  --color-tone-warn-bg: #2a1f0a;
+  --color-tone-warn-line: #4d3a12;
+  --color-tone-warn-ink: #fcd34d;
+  --color-tone-error-bg: #2a1216;
+  --color-tone-error-line: #4f1f26;
+  --color-tone-error-ink: #fca5a5;
+  --color-tone-ok-bg: #0c2420;
+  --color-tone-ok-line: #14453c;
+  --color-tone-ok-ink: #6ee7b7;
+
+  --color-canvas: #0b111b;
+  --color-canvas-dot: #2c3a52;
+  --color-edge: #60a5fa;
+  --color-edge-muted: #46536b;
+
+  /* Both lift well clear of the node background. The gold in particular has to:
+     the light theme's #b45309 is invisible against a dark panel. */
+  --color-key-pk: #fbbf24;
+  --color-key-fk: #7dd3fc;
+
+  /* Aliases used by the plain-CSS utilities below. */
+  --brand-600: #3b82f6;
+  --brand-500: #5ea2fb;
+  --brand-400: #7cb5ff;
+  --brand-deep: #2563eb;
+  --brand-violet: #6366f1;
+  --surface-tint: #16202f;
+  --surface-line: #263349;
+
+  /* Light does not fall on a dark room the way it falls on a white page: a glow
+     that reads as depth on white reads as fog on near-black. These are mostly
+     black, with only a trace of the brand hue left in them. */
+  --glow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px -4px rgba(0, 0, 0, 0.45);
+  --glow-md: 0 4px 10px -2px rgba(0, 0, 0, 0.45), 0 18px 38px -14px rgba(0, 0, 0, 0.6);
+  --glow-lg: 0 10px 24px -6px rgba(0, 0, 0, 0.5), 0 40px 70px -22px rgba(0, 0, 0, 0.7);
 }
 
 body {
@@ -301,6 +455,260 @@ body[data-dialog-open="true"] {
   }
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+   Landing-page illustrations in the dark theme.
+
+   The hero mockup and the feature art are hand-drawn SVGs — forty-odd `fill`
+   and `stroke` *attributes*, where a CSS variable is not valid syntax. Rewriting
+   each one as an inline style would touch every line of three components to say
+   one thing.
+
+   CSS attribute selectors reach them instead: a stylesheet rule always beats a
+   presentation attribute, so matching on the literal light value and replacing
+   it with the token is enough. The mapping is by *role* — paper, canvas, hair-
+   line, body text, muted text — which is why several source colours collapse
+   onto the same token.
+   ────────────────────────────────────────────────────────────────────────── */
+
+[data-theme="dark"] .themed-art [fill="#ffffff"],
+[data-theme="dark"] .themed-art [fill="#fff"] {
+  fill: var(--color-surface);
+}
+[data-theme="dark"] .themed-art [fill="#fbfcfe"],
+[data-theme="dark"] .themed-art [fill="#f8fafc"],
+[data-theme="dark"] .themed-art [fill="#f1f5f9"],
+[data-theme="dark"] .themed-art [fill="#f4f4f5"] {
+  fill: var(--color-canvas);
+}
+[data-theme="dark"] .themed-art [fill="#e4e4e7"],
+[data-theme="dark"] .themed-art [fill="#d4d4d8"],
+[data-theme="dark"] .themed-art [fill="#cbd5e1"] {
+  fill: var(--color-ink-300);
+}
+[data-theme="dark"] .themed-art [fill="#334155"] {
+  fill: var(--color-ink-700);
+}
+[data-theme="dark"] .themed-art [fill="#94a3b8"],
+[data-theme="dark"] .themed-art [fill="#64748b"],
+[data-theme="dark"] .themed-art [fill="#93a8c8"],
+[data-theme="dark"] .themed-art [fill="#b6c2d4"] {
+  fill: var(--color-ink-500);
+}
+[data-theme="dark"] .themed-art [fill="#eff6ff"],
+[data-theme="dark"] .themed-art [fill="#eef2ff"],
+[data-theme="dark"] .themed-art [fill="#e0e7ff"] {
+  fill: var(--color-brand-50);
+}
+[data-theme="dark"] .themed-art [fill="#4338ca"] {
+  fill: var(--color-brand-700);
+}
+[data-theme="dark"] .themed-art [fill="#fffbeb"] {
+  fill: var(--color-tone-warn-bg);
+}
+[data-theme="dark"] .themed-art [fill="#fef2f2"] {
+  fill: var(--color-tone-error-bg);
+}
+[data-theme="dark"] .themed-art [stroke="#e2e8f5"],
+[data-theme="dark"] .themed-art [stroke="#d7e0f4"],
+[data-theme="dark"] .themed-art [stroke="#c7d7f7"],
+[data-theme="dark"] .themed-art [stroke="#f4f4f5"],
+[data-theme="dark"] .themed-art [stroke="#c7d2fe"] {
+  stroke: var(--color-line);
+}
+[data-theme="dark"] .themed-art [stroke="#fff"] {
+  stroke: var(--color-surface);
+}
+/* The brand blue is the one colour that does not merely darken: on near-black it
+   has to lift, exactly as it does on the canvas. */
+[data-theme="dark"] .themed-art [stroke="#2563eb"] {
+  stroke: var(--color-edge);
+}
+[data-theme="dark"] .themed-art [fill="#2563eb"] {
+  fill: var(--color-edge);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   The live demo canvases (hero, docs sandboxes).
+
+   The "bloom" — tables appearing one after another, then the relationships
+   drawing themselves — is the product's own first ten seconds replayed. It is
+   CSS rather than React state on purpose: adding nodes over time would make
+   React Flow re-fit the view on every step, and the diagram would lurch.
+
+   Note where the animations are applied. `.react-flow__node` carries the
+   transform React Flow positions the node with, so anything animating transform
+   has to sit on the element *inside* it, or every table detaches from its
+   coordinates the moment the animation starts.
+   ────────────────────────────────────────────────────────────────────────── */
+
+@keyframes demoNodeBloom {
+  0%   { opacity: 0; transform: scale(0.86) translateY(10px); }
+  60%  { opacity: 1; transform: scale(1.02) translateY(-1px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes demoEdgeDraw {
+  from { stroke-dashoffset: 900; }
+  to   { stroke-dashoffset: 0; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .demo-node {
+    animation: demoNodeBloom 620ms cubic-bezier(.16, .84, .44, 1) both;
+  }
+  .demo-edge-draw .react-flow__edge-path {
+    stroke-dasharray: 900;
+    animation: demoEdgeDraw 850ms cubic-bezier(.16, .84, .44, 1) both;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Feature demonstrations.
+
+   Each feature card is paired with a looping scene showing that action actually
+   happening. The obvious way to do that is a screen-recorded GIF; these are
+   built from the app's own tokens instead, which costs nothing to load, stays
+   sharp at any size, follows the theme, and cannot go stale the way a recording
+   of an older build does.
+
+   One vocabulary of loops, sequenced by delay. Every scene shares a single
+   duration so the whole panel breathes together rather than reading as several
+   videos playing over each other.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.fx {
+  animation-duration: var(--fx-dur, 5s);
+  animation-delay: var(--fx-delay, 0s);
+  animation-iteration-count: infinite;
+  animation-fill-mode: both;
+  animation-timing-function: cubic-bezier(.16, .84, .44, 1);
+}
+
+/* Appears, holds long enough to be read, leaves. */
+@keyframes fxIn {
+  0%, 6%     { opacity: 0; transform: translateY(6px) scale(0.96); }
+  16%, 76%   { opacity: 1; transform: none; }
+  88%, 100%  { opacity: 0; transform: translateY(-4px) scale(0.98); }
+}
+.fx-in { animation-name: fxIn; }
+
+/* The same, without the movement — for things that should not jump, like a value
+   changing inside a cell. */
+@keyframes fxFade {
+  0%, 8%    { opacity: 0; }
+  18%, 76%  { opacity: 1; }
+  88%, 100% { opacity: 0; }
+}
+.fx-fade { animation-name: fxFade; }
+
+/* One value being replaced by another in the same place.
+
+   The pair is exactly complementary — where one is at 30% the other is at 70% —
+   so there is never a moment with two readable things in one spot, and both take
+   the *same* delay so they cannot drift apart. This replaces a fade-out and a
+   fade-in with different delays, which looked right at the moment it was checked
+   and left both states fully opaque and printed on top of each other for the last
+   fifth of every loop: "Lisbon" and "Porto" as one illegible word. */
+@keyframes fxSwapOut {
+  0%, 30%  { opacity: 1; }
+  42%, 88% { opacity: 0; }
+  100%     { opacity: 1; }
+}
+.fx-swap-out { animation-name: fxSwapOut; }
+
+@keyframes fxSwapIn {
+  0%, 30%  { opacity: 0; }
+  42%, 88% { opacity: 1; }
+  100%     { opacity: 0; }
+}
+.fx-swap-in { animation-name: fxSwapIn; }
+
+/* The inverse: something already on screen that steps aside while the new thing
+   is shown. */
+@keyframes fxOut {
+  0%, 10%   { opacity: 1; }
+  20%, 74%  { opacity: 0.18; }
+  86%, 100% { opacity: 1; }
+}
+.fx-out { animation-name: fxOut; }
+
+/* A line drawing itself. `--len` is the path length to clear. */
+@keyframes fxDraw {
+  0%, 10%   { stroke-dashoffset: var(--len, 160); }
+  34%, 78%  { stroke-dashoffset: 0; }
+  92%, 100% { stroke-dashoffset: var(--len, 160); }
+}
+.fx-draw {
+  stroke-dasharray: var(--len, 160);
+  animation-name: fxDraw;
+}
+
+/* A progress sweep, for the moment a file is being read. */
+@keyframes fxSweep {
+  0%        { transform: translateX(-100%); }
+  40%, 100% { transform: translateX(320%); }
+}
+.fx-sweep { animation-name: fxSweep; }
+
+/* A cursor, and the pointer that lands on the control it is about to press. */
+@keyframes fxCaret {
+  0%, 14%   { opacity: 0; }
+  20%, 22%  { opacity: 1; }
+  26%, 28%  { opacity: 0; }
+  32%, 34%  { opacity: 1; }
+  40%, 100% { opacity: 0; }
+}
+.fx-caret { animation-name: fxCaret; }
+
+@keyframes fxPress {
+  0%, 12%   { opacity: 0; transform: translate(6px, 8px) scale(1); }
+  22%       { opacity: 1; transform: translate(0, 0) scale(1); }
+  28%       { opacity: 1; transform: translate(0, 0) scale(0.86); }
+  34%, 72%  { opacity: 1; transform: translate(0, 0) scale(1); }
+  84%, 100% { opacity: 0; transform: translate(4px, 6px) scale(1); }
+}
+.fx-press { animation-name: fxPress; }
+
+/* A refusal. Short, sharp, and only once per loop. */
+@keyframes fxShake {
+  0%, 24%, 40%, 100% { transform: translateX(0); }
+  28%  { transform: translateX(-4px); }
+  32%  { transform: translateX(4px); }
+  36%  { transform: translateX(-2px); }
+}
+.fx-shake { animation-name: fxShake; }
+
+/* Reduced motion: the scenes hold their finished state rather than looping. The
+   card copy carries the meaning on its own, so nothing is lost. */
+@media (prefers-reduced-motion: reduce) {
+  .fx {
+    animation: none !important;
+    opacity: 1;
+  }
+  .fx-draw { stroke-dasharray: none; }
+}
+
+/* A table whose delete was refused: dimmed and ringed, but still there — which is
+   the point being made. The class is set on React Flow's node wrapper, keeping it
+   out of the node's `data`, which has to stay referentially stable while dragging.
+
+   The fade goes on the wrapper and the ring on the card inside it, and that split
+   is load-bearing: the card carries the bloom animation, whose final keyframe sets
+   `opacity: 1`, and a running animation beats a plain declaration in the cascade.
+   Put the fade on the card and it silently does nothing. */
+.react-flow .react-flow__node.demo-node-blocked {
+  opacity: 0.55;
+}
+.react-flow .react-flow__node.demo-node-blocked .demo-node {
+  outline: 2px dashed var(--color-tone-error-line);
+  outline-offset: 2px;
+}
+
+/* The canvas is a real one, so it must not swallow the page scroll on a phone. */
+.demo-canvas .react-flow__pane {
+  touch-action: pan-y;
+}
+
 .lift-card {
   transition:
     transform 260ms cubic-bezier(.16, .84, .44, 1),
@@ -334,7 +742,7 @@ body[data-dialog-open="true"] {
 /* A soft, off-centre wash. Two overlapping radials read as light falling on the
    page, where a single linear gradient reads as a painted band. */
 .section-wash {
-  background-color: #ffffff;
+  background-color: var(--background);
   background-image:
     radial-gradient(60rem 32rem at 12% -10%, rgba(59, 130, 246, 0.10), transparent 60%),
     radial-gradient(48rem 28rem at 88% 8%, rgba(99, 102, 241, 0.09), transparent 62%);
@@ -348,9 +756,77 @@ body[data-dialog-open="true"] {
 
 /* Cards: a barely-there vertical gradient stops them reading as flat paper. */
 .surface-card {
-  background-image: linear-gradient(180deg, #ffffff 0%, var(--surface-tint) 100%);
+  background-image: linear-gradient(180deg, var(--color-surface) 0%, var(--surface-tint) 100%);
   border-color: var(--surface-line);
   box-shadow: var(--glow-sm);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   The app bar.
+
+   A full-width blue gradient is the right amount of colour on a white page and
+   the wrong amount on a dark one — it becomes the brightest object on screen and
+   stays in peripheral vision for the whole session, which is exactly the eye
+   strain a dark mode is meant to remove. In dark it becomes a panel, and the
+   brand colour retreats to the logo and the primary button.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.app-header {
+  background-image: linear-gradient(135deg, var(--brand-600) 0%, var(--brand-violet) 100%);
+  border-bottom: 1px solid rgba(30, 64, 175, 0.4);
+}
+[data-theme="dark"] .app-header {
+  background-image: linear-gradient(180deg, #131c2c 0%, #0f1725 100%);
+  border-bottom: 1px solid var(--color-line);
+}
+
+/* The one solid button on the app bar. White on the gradient, brand on the panel. */
+.header-cta {
+  background-color: #ffffff;
+  color: var(--brand-deep);
+}
+.header-cta:hover {
+  background-color: var(--color-brand-50);
+}
+[data-theme="dark"] .header-cta {
+  background-color: var(--brand-600);
+  color: #ffffff;
+}
+[data-theme="dark"] .header-cta:hover {
+  background-color: var(--color-brand-500);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Tones. One class per meaning, so a callout, a badge and an import warning
+   cannot end up three different shades of the same idea.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.tone-info,
+.tone-warning,
+.tone-error,
+.tone-success {
+  border-width: 1px;
+  border-style: solid;
+}
+.tone-info {
+  background-color: var(--color-tone-info-bg);
+  border-color: var(--color-tone-info-line);
+  color: var(--color-tone-info-ink);
+}
+.tone-warning {
+  background-color: var(--color-tone-warn-bg);
+  border-color: var(--color-tone-warn-line);
+  color: var(--color-tone-warn-ink);
+}
+.tone-error {
+  background-color: var(--color-tone-error-bg);
+  border-color: var(--color-tone-error-line);
+  color: var(--color-tone-error-ink);
+}
+.tone-success {
+  background-color: var(--color-tone-ok-bg);
+  border-color: var(--color-tone-ok-line);
+  color: var(--color-tone-ok-ink);
 }
 
 .shadow-glow-sm { box-shadow: var(--glow-sm); }
@@ -361,6 +837,105 @@ body[data-dialog-open="true"] {
 .rule-gradient {
   height: 1px;
   background-image: linear-gradient(90deg, transparent, var(--surface-line) 15%, var(--surface-line) 85%, transparent);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   React Flow's own chrome.
+
+   The library ships its controls, minimap and selection styling with hard-coded
+   whites and greys in its stylesheet, so they are the one part of the canvas
+   that a token cannot reach. These rules are the exception that proves the
+   approach: everything else in the app follows the palette on its own.
+
+   Every selector below is prefixed with `.react-flow` purely for specificity.
+   The library's stylesheet is imported from a component, which puts it *after*
+   this file in the bundle, so a rule of equal weight loses — which is how the
+   minimap kept its white background while its nodes took the theme colour.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.react-flow .react-flow__controls {
+  box-shadow: var(--glow-md);
+  border-radius: 0.375rem;
+  overflow: hidden;
+}
+.react-flow .react-flow__controls-button {
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-line);
+  color: var(--color-ink-700);
+  width: 26px;
+  height: 26px;
+}
+.react-flow .react-flow__controls-button:hover {
+  background: var(--color-ink-100);
+}
+.react-flow .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+/* The dot grid. React Flow writes its colour to the pattern's `fill` attribute, where a
+   CSS variable is not valid, so the theme has to reach it from here instead. */
+.react-flow .react-flow__background circle {
+  fill: var(--color-canvas-dot);
+}
+
+.react-flow .react-flow__minimap {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 0.375rem;
+  box-shadow: var(--glow-md);
+}
+.react-flow .react-flow__minimap-node {
+  fill: var(--color-brand-400);
+  stroke: none;
+}
+/* The area outside the viewport rectangle. Enough contrast to read as "elsewhere"
+   without hiding the tables underneath it. */
+.react-flow .react-flow__minimap-mask {
+  fill: var(--color-scrim);
+  fill-opacity: 0.45;
+}
+/* The table the search is pointing at, so the map answers "where am I" as well as
+   "what is there". */
+.react-flow .react-flow__minimap-node.minimap-node-hit {
+  fill: var(--color-brand-600);
+  stroke: var(--color-brand-700);
+  stroke-width: 3;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Search focus.
+
+   Turning everything else down rather than lighting one thing up: on a canvas
+   of a hundred tables a highlighted node is still one of a hundred, and the eye
+   has nothing to reject.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.react-flow .react-flow__node.node-dim {
+  opacity: 0.22;
+  filter: saturate(0.4);
+  transition: opacity 220ms ease, filter 220ms ease;
+}
+.react-flow .react-flow__node.node-hit {
+  transition: opacity 220ms ease;
+}
+.react-flow .react-flow__node.node-hit > * {
+  outline: 2px solid var(--color-brand-500);
+  outline-offset: 3px;
+  border-radius: 0.375rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  .react-flow .react-flow__node.node-dim {
+    transition: none;
+  }
+}
+.react-flow .react-flow__edge-path {
+  transition: stroke 160ms ease, opacity 160ms ease;
+}
+.react-flow .react-flow__handle {
+  border-color: var(--color-surface);
+}
+.react-flow .react-flow__attribution {
+  display: none;
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
