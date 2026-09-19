@@ -7,6 +7,9 @@ import com.dbviewer.app.exception.TableInUseException;
 import com.dbviewer.app.service.DatabaseService;
 import com.dbviewer.app.service.ShareService;
 import com.dbviewer.app.service.TemplateService;
+import com.dbviewer.app.sql.SqlDialect;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletResponse;
@@ -39,6 +42,8 @@ public class DatabaseController {
     /** The template behind the canvas's "Show me an example" button. */
     private static final String DEFAULT_TEMPLATE = "ecommerce";
 
+    private static final ObjectMapper JSON = new ObjectMapper();
+
     /** Maven's project version, filtered into application.properties at build time. */
     @Value("${app.version:unknown}")
     private String appVersion;
@@ -64,19 +69,57 @@ public class DatabaseController {
 
     // ─── File Upload ─────────────────────────────────────────────────────────────
 
+    @PostMapping(value = "/import/analyze", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(summary = "Preview An Import",
+            description = "Reports the tables, columns and inferred types a file would produce, "
+                    + "along with the SQL dialect it appears to be written for and everything "
+                    + "that would be skipped. Creates nothing - the workspace is untouched.",
+            tags = {"DataFileUpload"})
+    public ResponseEntity<?> analyzeImport(@RequestParam("file") MultipartFile file) {
+        try {
+            return ResponseEntity.ok(databaseService.analyzeUpload(file));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Import analysis error", e);
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "That file could not be read: " + e.getMessage()));
+        }
+    }
+
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Operation(summary = "Upload CSV or SQL File",
-            description = "Uploads a CSV or SQL file and creates/executes in SQLite",
+            description = "Creates the tables described by a CSV or SQL file. Send columnTypes as "
+                    + "a JSON object to override the types the preview inferred - keyed by column "
+                    + "name for a CSV, by table.column for a script.",
             tags = {"DataFileUpload"})
-    public ResponseEntity<?> uploadFile(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<?> uploadFile(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "columnTypes", required = false) String columnTypes) {
         try {
-            Map<String, Object> result = databaseService.handleFileUpload(file);
+            Map<String, Object> result =
+                    databaseService.handleFileUpload(file, parseColumnTypes(columnTypes));
             return ResponseEntity.ok(result);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
             log.error("File upload error", e);
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * The corrected types come as a JSON object in a multipart field, because the file has to
+     * travel in the same request - a second upload would mean sending a large dump twice.
+     */
+    private Map<String, String> parseColumnTypes(String json) {
+        if (json == null || json.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return JSON.readValue(json, new TypeReference<Map<String, String>>() { });
+        } catch (Exception e) {
+            throw new IllegalArgumentException("columnTypes must be a JSON object of column -> type");
         }
     }
 
@@ -426,16 +469,31 @@ public class DatabaseController {
 
     // ─── Export SQL ───────────────────────────────────────────────────────────────
 
+    @GetMapping("/dialects")
+    @Operation(summary = "Supported SQL Dialects",
+            description = "The engines an export can target. Ids are what /export-sql accepts.")
+    public ResponseEntity<?> dialects() {
+        return ResponseEntity.ok(Map.of("dialects", java.util.Arrays.stream(SqlDialect.values())
+                .map(d -> Map.of("id", d.id(), "label", d.label()))
+                .toList()));
+    }
+
     @GetMapping("/export-sql")
-    @Operation(summary = "Export Database as SQL", description = "Downloads a full SQL dump of the database")
+    @Operation(summary = "Export Database as SQL",
+            description = "Downloads a full SQL dump. Pass dialect=mysql|mariadb|postgres|"
+                    + "sqlserver|sqlite|generic to get the syntax that engine requires.")
     public ResponseEntity<String> exportSql(
-            @RequestParam(value = "filename", defaultValue = "database_export.sql") String filename) {
+            @RequestParam(value = "filename", defaultValue = "database_export.sql") String filename,
+            @RequestParam(value = "dialect", required = false) String dialect) {
         try {
             AuthContext.require();
             if (!filename.toLowerCase().endsWith(".sql")) {
                 filename += ".sql";
             }
-            String dump = databaseService.exportDatabaseSql();
+            // An unknown dialect falls back to portable SQL rather than being refused: a script
+            // that runs almost anywhere is a better answer to a typo than a 400.
+            String dump = databaseService.exportDatabaseSql(
+                    SqlDialect.fromId(dialect, SqlDialect.GENERIC));
             return ResponseEntity.ok()
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=" + filename)
                     .contentType(MediaType.parseMediaType("application/sql"))

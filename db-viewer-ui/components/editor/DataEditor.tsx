@@ -43,7 +43,7 @@ const getRowId = (row: RowData): string | number | null => {
 
 const isIdColumn = (name: string) => name.toLowerCase() === 'id';
 
-const CELL_INPUT = 'w-full bg-white text-ink-900 px-2 py-1.5 rounded border border-brand-300 '
+const CELL_INPUT = 'w-full bg-surface text-ink-900 px-2 py-1.5 rounded border border-brand-300 '
     + 'outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 text-sm';
 
 export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
@@ -291,7 +291,7 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
                                             <input
                                                 id={`new-${col.name}`}
                                                 type={inputType}
-                                                className="w-full bg-white border border-ink-300 rounded px-2 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 outline-none"
+                                                className="w-full bg-surface border border-ink-300 rounded px-2 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 outline-none"
                                                 placeholder={inputType === 'text' ? "NULL" : ""}
                                                 // Controlled, so Cancel genuinely discards.
                                                 value={String(newRowData[col.name] ?? '')}
@@ -343,13 +343,13 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
                                         <th
                                             key={col.name}
                                             scope="col"
-                                            className="px-3 py-2 border-b border-ink-200 text-ink-500 font-medium sticky top-0 bg-white z-10 font-mono whitespace-nowrap"
+                                            className="px-3 py-2 border-b border-ink-200 text-ink-500 font-medium sticky top-0 bg-surface z-10 font-mono whitespace-nowrap"
                                         >
                                             <span className="block">{col.name}</span>
                                             <span className="block text-[9px] text-ink-400 uppercase">{col.type}</span>
                                         </th>
                                     ))}
-                                    <th className="px-3 py-2 border-b border-ink-200 sticky top-0 bg-white z-10 w-24" />
+                                    <th className="px-3 py-2 border-b border-ink-200 sticky top-0 bg-surface z-10 w-24" />
                                 </tr>
                             </thead>
                             <tbody>

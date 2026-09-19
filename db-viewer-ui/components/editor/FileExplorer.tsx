@@ -76,7 +76,7 @@ export const FileExplorer = ({
             <div
                 inert={isOpen}
                 className={[
-                    'shrink-0 bg-white overflow-hidden border-r border-line',
+                    'shrink-0 bg-surface overflow-hidden border-r border-line',
                     'transition-[width] duration-300 ease-[cubic-bezier(.22,.9,.31,1)]',
                     'motion-reduce:transition-none',
                     isOpen ? 'w-12 lg:w-0 lg:border-r-0' : 'w-12',
@@ -147,7 +147,7 @@ export const FileExplorer = ({
                 inert={!isOpen}
                 className={[
                     'absolute lg:relative inset-y-0 left-0 z-40 lg:z-auto shrink-0',
-                    'border-r border-line bg-white flex flex-col h-full overflow-hidden',
+                    'border-r border-line bg-surface flex flex-col h-full overflow-hidden',
                     'transition-[width,transform,box-shadow] duration-300 ease-[cubic-bezier(.22,.9,.31,1)]',
                     'motion-reduce:transition-none',
                     // Each state sets every width/transform/shadow exactly once per breakpoint,
@@ -198,7 +198,7 @@ export const FileExplorer = ({
                         <div className="relative">
                             <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none" />
                             <input
-                                className="w-full bg-white border border-ink-300 rounded-md py-2 pl-8 pr-3 text-xs text-ink-800 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-colors placeholder:text-ink-400"
+                                className="w-full bg-surface border border-ink-300 rounded-md py-2 pl-8 pr-3 text-xs text-ink-800 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-colors placeholder:text-ink-400"
                                 placeholder="Search files and tables..."
                                 aria-label="Search files and tables"
                                 value={searchTerm}

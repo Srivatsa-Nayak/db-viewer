@@ -90,13 +90,29 @@ db-viewer-ui/
 │   ├── editor/
 │   │   ├── FileExplorer.tsx        Left tree: files → tables → columns; search; collapse
 │   │   └── DataEditor.tsx          Row view / cell + whole-row edit / insert / delete modal
-│   ├── canvas/Visualizer.tsx       React Flow canvas, toolbar, zoom control
+│   ├── landing/
+│   │   ├── DemoCanvas.tsx          The real canvas, with a literal schema (hero + docs)
+│   │   ├── HeroCanvas.tsx          The hero: a .sql file blooming into that canvas
+│   │   ├── FeaturesSection.tsx     Feature rail + one sticky demo panel
+│   │   ├── FeatureDemos.tsx        The looping scenes the panel plays
+│   │   ├── EngineBanner.tsx        "your engine is supported", with the marks
+│   │   └── DatabaseLogos.tsx       Engine marks (Simple Icons; SQL Server drawn)
+│   ├── docs/
+│   │   ├── DialectMatrix.tsx       What survives an import and an export, per engine
+│   │   └── DocsSandbox.tsx         Live try-it examples embedded in the manual
+│   ├── canvas/
+│   │   ├── Visualizer.tsx          React Flow canvas, toolbar, minimap, zoom control
+│   │   ├── CanvasSearch.tsx        Ctrl+F panel: find a table or column and jump to it
+│   │   ├── OrthogonalEdge.tsx      Custom edge: right angles, routed around the nodes
+│   │   └── edgeRouting.ts          The router itself — candidate routes, scored
 │   ├── tables/TableNode.tsx        One table as a graph node (custom React Flow node)
 │   └── modal/
 │       ├── NewFileModal.tsx        Name a new empty SQL file
 │       ├── CreateTableModal.tsx    Full table definition incl. PK / NOT NULL / FK
 │       ├── AddColumnModal.tsx      Single-column ALTER TABLE (portalled)
 │       ├── EditColumnModal.tsx     Rename / retype an existing column (portalled)
+│       ├── ImportPreviewModal.tsx  Pre-flight: what an import would create, before it does
+│       ├── ExportModal.tsx         SQL (per dialect) / Mermaid / DBML / PNG
 │       ├── NoticeModal.tsx         Error / warning / success with collapsible details
 │       ├── AuthModal.tsx           Sign up / sign in, with the reason it was asked for
 │       ├── ShareModal.tsx          Creates and copies a read-only link
@@ -227,7 +243,8 @@ only by `services/api.ts`.
 
 | `dbService` method | Endpoint |
 |---|---|
-| `uploadFile(file)` | `POST /upload` |
+| `analyzeUpload(file)` | `POST /import/analyze` |
+| `uploadFile(file, columnTypes?)` | `POST /upload` |
 | `getVersion()` | `GET /version` |
 | `listWorkspaces()` | `GET /workspaces` |
 | `getSchema()` | `GET /db-info` |
@@ -240,7 +257,7 @@ only by `services/api.ts`.
 | `deleteRow(table, id)` | `POST /delete-row` |
 | `deleteWorkspace()` | `DELETE /workspace` |
 | `downloadTableCsv(table)` | `GET /export/{table}` (blob) |
-| `downloadDatabaseSql(name)` | `GET /export-sql` (blob) |
+| `downloadDatabaseSql(name, dialect)` | `GET /export-sql?dialect=` (blob) |
 | `authService.updateProfile(changes)` | `PATCH /auth/profile` |
 
 ### Session persistence
@@ -290,12 +307,27 @@ sign-up forever, even once signed in. Same class of bug as the `refreshActiveSch
 
 ### Exporting
 
-The header's **Export** menu offers two things, which are for different jobs:
+Four formats, one dialog (`components/modal/ExportModal.tsx`). They live together because the
+choice between them is not a preference — each answers a different question, and two of them need
+an input the old menu items had nowhere to ask for:
 
 | Option | Built by | Good for |
 |---|---|---|
-| **SQL script** | `GET /export-sql` (browser download) | Re-importing, running elsewhere, diffing |
+| **SQL script** | `GET /export-sql?dialect=` (browser download) | Running it somewhere. The engine must be named: `AUTOINCREMENT`, `SERIAL`, `IDENTITY(1,1)` and `AUTO_INCREMENT` are four spellings of one idea and no engine accepts another's |
+| **Mermaid** | `services/exportDiagram.ts` | Docs-as-code — renders as a diagram in a GitHub README, a Jira ticket or a Notion page. Download wraps it in a fenced Markdown block |
+| **DBML** | `services/exportDiagram.ts` | dbdiagram.io and dbdocs; or committed beside the code as the schema of record |
 | **Diagram image (PNG)** | `services/exportImage.ts` | *Reading the schema offline* — no tools needed, drops into a doc or a chat |
+
+Mermaid and DBML are generated entirely in the browser from the same `tables` + `relationships`
+the canvas draws, so they cannot describe a different schema from the one on screen. That does not
+make them free, though: exporting any format — PNG and the text formats included — still needs an
+account, because the account boundary is about data leaving the app, not about which formats
+happen to touch the backend to produce. `ExportModal` gates all four the same way
+(`needsAccount = !hasAccount`); it used to check `format === 'sql'` only, and PNG, Mermaid and DBML
+went straight out the door signed out because there was no server-side 401 to catch them. Mermaid
+also drops a precision that contains a comma (`DECIMAL(10,2)` → `DECIMAL`): a comma inside
+parentheses fails Mermaid's parser and takes the whole diagram down with it, and DBML carries the
+exact type for anyone who needs it.
 
 The PNG is sized to the diagram's own bounding box (`getRectOfNodes` + `getTransformForBounds`)
 rather than the visible pane, so the whole schema is captured regardless of the current scroll or
@@ -320,10 +352,14 @@ The transform tolerates both `snake_case` and `camelCase` on relationship fields
 
 | Component | Responsibility | Notes |
 |---|---|---|
-| `Header` | **File** menu (new / import / export / close) and **Share**, both on the left; account and help on the right. There is no Refresh button — every mutation refreshes the canvas itself | The SQL option builds a URL and clicks a synthetic `<a>` (imported files get a `modified_` prefix); the PNG option calls back into `page.tsx`, which owns the nodes. The menu closes on outside-click and Escape |
+| `Header` | **File** menu (new / import / export / close) and **Share**, both on the left; theme, account and help on the right. There is no Refresh button — every mutation refreshes the canvas itself | Export is a single item that opens `ExportModal`, because the formats now ask questions a menu line cannot. The menu closes on outside-click and Escape |
 | `FileExplorer` | Files → tables → columns tree, search, collapse rail | Collapsed mode shows one icon per open file |
-| `Visualizer` | React Flow canvas, **New Table** button, zoom select | Renders `CreateTableModal` and `NewTableHelpModal` as *siblings* of the canvas wrapper — see [Gotchas](#gotchas) |
-| `TableNode` | One table: header actions, column list, FK handles, per-column edit button | Handles are inferred from naming convention (`id`, `*_id`), not real metadata |
+| `Visualizer` | React Flow canvas, **New Table** button, minimap, search, zoom select | Renders `CreateTableModal` and `NewTableHelpModal` as *siblings* of the canvas wrapper — see [Gotchas](#gotchas) |
+| `CanvasSearch` | Find a table or column; arrow keys move the canvas with the selection | Bound to Ctrl+F, and stands down while a dialog is open |
+| `OrthogonalEdge` | One relationship line, routed around whatever is in its way | Reads node positions from React Flow's store, not from props — they must be the *current* ones while a node is being dragged |
+| `TableNode` | One table: header actions, column list, PK/FK handles, per-column edit button | Handles come from the relationship list, with `id` / `*_id` naming as the fallback |
+| `ImportPreviewModal` | The staging step: tables, inferred types, why, and sample values | Correcting a type here is the only chance to — a postcode imported as `INT` has lost its leading zeros for good |
+| `ExportModal` | SQL for a named engine, Mermaid, DBML, PNG | All four require an account — generated client-side is not the same as free to take out |
 | `DataEditor` | Row grid with per-cell and whole-row editing, insert form, delete | Assumes every row has an `id`/`ID`; input types derived from the SQL type |
 | `CreateTableModal` | Full table definition: type, length, PK, NOT NULL, FK | Validates required names and duplicate column names before submitting |
 | `AddColumnModal` | Single `ALTER TABLE ... ADD COLUMN` | Portalled to `document.body`; validates identifier shape and duplicate names |
@@ -350,9 +386,23 @@ The transform tolerates both `snake_case` and `camelCase` on relationship fields
   `fade-in` / `slide-in-from-*` classes that appeared at 17 call sites did nothing at all. Use
   `anim-fade-in`, `anim-fade-up`, `anim-dialog-in`, `anim-menu-in`, all defined in `globals.css`
   and all inside a `prefers-reduced-motion` guard.
-- **Light theme only.** The dark/system toggle was removed because it only ever restyled the
-  canvas and table nodes, never the rest of the chrome; the leftover `.dark` token block and
-  `@custom-variant` have now been deleted too, so nothing suggests a dark mode that is not there.
+- **Light, dark, or the system setting.** The theme works by *redefining the tokens*, not by
+  adding classes: `[data-theme="dark"]` in `globals.css` gives the same custom properties new
+  values, and because Tailwind v4 emits every utility as a `var()` reference, the entire product
+  flips without a single utility class changing. That is what the previous attempt got wrong — it
+  restyled the canvas and table nodes by hand and left the rest of the chrome light. Rules that
+  follow from it: `bg-surface` rather than `bg-white`; `bg-scrim/60` rather than `bg-ink-900/50`
+  for an overlay (the ink scale inverts, so an inverted scrim is a white flash); and the
+  `tone-info` / `tone-warning` / `tone-error` / `tone-success` classes for a tinted block rather
+  than a `bg-red-50 border-red-200 text-red-700` triple that can drift apart. A `dark:` variant
+  exists for the handful of colours a token cannot express — it is a last resort, not the method.
+  The preference lives in `services/theme.ts` and is applied by a blocking script in
+  `app/layout.tsx` before first paint; without that, every load flashes white.
+- **React Flow's chrome is the exception.** Its stylesheet is imported from a component, so it
+  lands after `globals.css` and wins any tie — every `.react-flow__*` override is prefixed with
+  `.react-flow` purely for specificity. The background dot colour is set from CSS rather than the
+  `color` prop, because React Flow writes that to the pattern's `fill` *attribute*, where `var()`
+  is not valid.
 - **Focus rings are `:focus-visible`**, not `:focus` — the old rule painted a ring on every mouse
   click, including on table cells.
 - **Fonts**: Inter (`--font-sans`) and Geist Mono (`--font-mono`), loaded in `app/layout.tsx`.
@@ -385,11 +435,13 @@ handles stayed live, so dragging one started a connection gesture the app could 
 Foreign keys are created through `CreateTableModal`. If drag-to-create is ever built, re-enable
 connectability *and* wire up persistence in the same change.
 
-**4. Connection handles are placed by naming convention, not metadata.** `TableNode` treats a
-column literally named `id` or ending in `_id` as a key and gives it a connection handle. Real
-key metadata *is* available now — `ColumnInfo` carries `isPk` and `notNull`, which `EditColumnModal`
-uses to pre-fill and `FileExplorer` uses to highlight primary keys — but the handle heuristic was
-deliberately left as-is, so a column can show a handle without being a key.
+**4. Connection handles come from the relationships, and the naming heuristic is only a
+fallback.** `page.tsx` builds `foreignKeyColumns` / `referencedColumns` per table from the
+relationship list and puts them in the node's `data`; `TableNode` places its handles from those,
+treating a column named `id` or ending in `_id` as a key only when there is nothing better. The
+fallback used to be the *whole* rule, and the cost was invisible: a schema whose foreign key was
+called `customer` rather than `customer_id` got no handle, and an edge with no handle at one end
+does not render — so the relationship simply never appeared, with nothing logged.
 
 **5. Row operations need an `id` column.** `DataEditor`'s update and delete paths address rows by
 `id`/`ID`. A table without one can be viewed but not row-edited.

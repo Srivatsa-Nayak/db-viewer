@@ -42,7 +42,7 @@ interface ReadOnlyNodeData {
  * still gets drawn.
  */
 const ReadOnlyTableNode = ({ data }: { data: ReadOnlyNodeData }) => (
-    <div className="bg-white border border-brand-200 rounded-md min-w-[180px] max-w-[220px] shadow-xl">
+    <div className="bg-surface border border-brand-200 rounded-md min-w-[180px] max-w-[220px] shadow-xl">
         <div className="bg-brand-600 px-2 py-1.5 flex items-center gap-1.5 rounded-t-md">
             <Database size={10} className="text-white shrink-0" />
             <span className="font-bold text-white text-[10px] truncate" title={data.label}>
@@ -147,8 +147,10 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
                 targetHandle: `${childColumn}-left`,
                 type: "smoothstep",
                 animated: true,
-                style: { stroke: "#2563eb", strokeWidth: 1.5 },
-                markerEnd: { type: MarkerType.ArrowClosed, color: "#2563eb" },
+                // A variable, not a hex value, so a shared diagram follows the viewer's theme
+                // rather than the one it was created in.
+                style: { stroke: "var(--color-edge)", strokeWidth: 1.6 },
+                markerEnd: { type: MarkerType.ArrowClosed, color: "var(--color-edge)", width: 16, height: 16 },
             };
         });
 
@@ -168,8 +170,8 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
     }, [schema]);
 
     return (
-        <div className="h-[100dvh] w-full flex flex-col bg-white">
-            <header className="h-16 brand-gradient flex items-center justify-between px-3 sm:px-6 shadow-glow-md shrink-0 gap-3">
+        <div className="h-[100dvh] w-full flex flex-col bg-surface">
+            <header className="app-header h-16 flex items-center justify-between px-3 sm:px-6 shadow-glow-md shrink-0 gap-3">
                 <div className="flex items-center gap-3 min-w-0">
                     <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shrink-0">
                         <Database size={18} className="text-brand-600" />
@@ -179,25 +181,25 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
                             {schema?.fileName || "Shared schema"}
                         </h1>
                         {schema?.sharedBy && (
-                            <p className="text-[11px] text-brand-100 truncate">shared by {schema.sharedBy}</p>
+                            <p className="text-[11px] text-white/70 truncate">shared by {schema.sharedBy}</p>
                         )}
                     </div>
                 </div>
 
                 <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-                    <span className="hidden sm:flex items-center gap-1.5 bg-black/15 border border-white/25 text-brand-50 px-3 py-1 rounded-md text-xs font-medium">
+                    <span className="hidden sm:flex items-center gap-1.5 bg-black/20 border border-white/20 text-white/90 px-3 py-1 rounded-md text-xs font-medium">
                         <Eye size={13} /> Read-only
                     </span>
                     <Link
                         href="/app"
-                        className="flex items-center gap-2 bg-white hover:bg-brand-50 text-brand-700 px-3 py-2 rounded-md text-sm font-semibold transition-colors"
+                        className="header-cta flex items-center gap-2 px-3 py-2 rounded-md text-sm font-semibold transition-colors"
                     >
                         <ExternalLink size={15} /> <span className="hidden sm:inline">Open the app</span><span className="sm:hidden">Open</span>
                     </Link>
                 </div>
             </header>
 
-            <div className="flex-1 bg-ink-50 relative min-h-0">
+            <div className="flex-1 bg-canvas relative min-h-0">
                 {isLoading && (
                     <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-ink-400">
                         <Loader2 size={28} className="animate-spin text-brand-500" />
@@ -228,7 +230,7 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
                         proOptions={{ hideAttribution: true }}
                     >
                         <Background color="#94a3b8" gap={24} size={1.5} variant={BackgroundVariant.Dots} />
-                        <Controls showInteractive={false} className="bg-white border-line fill-ink-700" />
+                        <Controls showInteractive={false} />
                     </ReactFlow>
                 )}
             </div>

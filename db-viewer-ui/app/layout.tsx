@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, Geist_Mono } from "next/font/google";
+import { themeBootstrapScript } from "@/services/theme";
 import "./globals.css";
 
 /** The UI typeface, and its monospace counterpart. Geist Mono is used only for genuinely
@@ -40,8 +41,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} ${geistMono.variable}`}>
+    /* suppressHydrationWarning: the script below writes data-theme onto this element
+       before React hydrates, so the client markup legitimately differs from the server's. */
+    <html lang="en" className={`${inter.variable} ${geistMono.variable}`} suppressHydrationWarning>
       <head>
+        {/* Blocking, and first: the theme has to be on the element before anything paints,
+            or a dark-mode user gets a white flash on every page load. */}
+        <script dangerouslySetInnerHTML={{ __html: themeBootstrapScript }} />
         {/* The catalogue is fetched on first paint and the API is a separate origin in
             production, so warming the connection removes a round trip from that request. */}
         {apiOrigin && (

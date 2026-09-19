@@ -178,7 +178,8 @@ current workspace on every statement, so as long as new code uses `jdbc()` rathe
 |---|---|---|---|---|
 | `GET` | `/` | inline | Health check, plus the app version | — |
 | `GET` | `/version` | *(new)* | Version declared in `pom.xml`, bumped on every merge to `master` | — |
-| `POST` | `/upload` | `HandleFileUpload` | Import `.csv` or `.sql` (multipart, field `file`) | header |
+| `POST` | `/import/analyze` | — | Dry run: what importing the file would create. Creates nothing | header |
+| `POST` | `/upload` | `HandleFileUpload` | Import `.csv` or `.sql` (multipart, field `file`; optional `columnTypes` JSON) | header |
 | `POST` | `/query` | `HandleQuery` | Execute raw SQL | header |
 | `GET` | `/db-info` | `HandleGetDBInfo` | All schemas, row previews (≤100) and relationships | header |
 | `GET` | `/table-data/{table}` | `HandleGetTableData` | Columns + rows (≤100) for one table | header |
@@ -202,7 +203,8 @@ current workspace on every statement, so as long as new code uses `jdbc()` rathe
 | `GET` | `/workspaces` | *(new)* | Ids of workspaces that still have a database | — |
 | `DELETE` | `/workspace` | *(new)* | Delete the workspace's database outright | header |
 | `GET` | `/export/{table}` | `HandleExportCSV` | Download the table as CSV | **query param** |
-| `GET` | `/export-sql` | `HandleExportDatabaseSQL` | Download a full SQL dump | **query param** |
+| `GET` | `/export-sql` | `HandleExportDatabaseSQL` | Download a full SQL script, rebuilt for `?dialect=` | **query param** |
+| `GET` | `/dialects` | — | The engines an export can target | — |
 | `GET` | `/swagger-ui.html` | — | Interactive API docs | — |
 
 Errors are uniform: a non-2xx status with a `{"error": "<message>"}` body.

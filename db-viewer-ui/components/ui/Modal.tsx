@@ -186,7 +186,7 @@ export const Modal = ({
     return createPortal(
         <div
             ref={overlayRef}
-            className="fixed inset-0 bg-ink-900/50 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4 anim-fade-in"
+            className="fixed inset-0 bg-scrim/60 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4 anim-fade-in"
             style={{ zIndex: BASE_Z }}
             // mousedown rather than click: a click that *starts* inside the dialog and ends
             // on the backdrop (selecting text, dragging a slider) must not close it.
@@ -200,7 +200,7 @@ export const Modal = ({
                 tabIndex={-1}
                 onKeyDownCapture={onKeyDownCapture}
                 className={[
-                    'bg-white border border-line shadow-glow-lg flex flex-col outline-none',
+                    'bg-surface border border-line shadow-glow-lg flex flex-col outline-none',
                     'w-full max-h-[90vh] rounded-t-2xl sm:rounded-xl',
                     'sm:max-h-[85vh] anim-dialog-in',
                     SIZES[size],
@@ -238,7 +238,7 @@ export const Modal = ({
                         {children}
                     </div>
                     {footer && (
-                        <div className="px-4 py-3 sm:px-5 border-t border-ink-200 shrink-0 bg-white rounded-b-xl">
+                        <div className="px-4 py-3 sm:px-5 border-t border-ink-200 shrink-0 bg-surface rounded-b-xl">
                             {footer}
                         </div>
                     )}
@@ -287,13 +287,17 @@ export const Callout = ({ tone, icon, children }: {
     icon?: React.ReactNode;
     children: React.ReactNode;
 }) => {
+    // The three tones are CSS classes rather than utility triples so that each one is a
+    // single decision. A tinted block has to invert in dark mode - a pale red panel on a dark
+    // page is a hole punched in it - and three loose utilities drift apart the moment one of
+    // them is changed somewhere else.
     const tones = {
-        error: 'bg-red-50 border-red-200 text-red-700',
-        warning: 'bg-amber-50 border-amber-200 text-amber-800',
-        info: 'bg-brand-50 border-brand-200 text-brand-700',
+        error: 'tone-error',
+        warning: 'tone-warning',
+        info: 'tone-info',
     };
     return (
-        <div className={`flex items-start gap-2 p-3 rounded-md border text-xs leading-relaxed ${tones[tone]}`}>
+        <div className={`flex items-start gap-2 p-3 rounded-md text-xs leading-relaxed ${tones[tone]}`}>
             {icon && <span className="shrink-0 mt-px">{icon}</span>}
             <span className="min-w-0">{children}</span>
         </div>

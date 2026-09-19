@@ -422,7 +422,7 @@ Two deliberate constraints:
 | Endpoint | Output | Construction |
 |---|---|---|
 | `GET /export/{table}` | CSV | Header row from the first result's key set; values escaped when they contain `,`, `"` or a newline (RFC 4180 doubling) |
-| `GET /export-sql` | SQL dump | Per table: a comment banner, `DROP TABLE IF EXISTS`, the original `CREATE TABLE` DDL recovered from `sqlite_master` / `SHOW CREATE TABLE`, then one `INSERT` per row |
+| `GET /export-sql` | SQL script for `?dialect=` | The schema is **rebuilt** in the target engine's vocabulary rather than copied out of SQLite — types mapped, the key rendered as `SERIAL` / `IDENTITY(1,1)` / `AUTO_INCREMENT` / `AUTOINCREMENT`, identifiers quoted that engine's way, tables ordered parents-first so the foreign keys load, and the generated-key guard emitted that lets the original ids be inserted (`SET IDENTITY_INSERT` on SQL Server, `setval` on PostgreSQL). See `sql/SqlExportWriter` |
 
 An exported dump is round-trippable: importing it into a fresh file reproduces the workspace,
 because the `CREATE TABLE` text is the database's own, not a regeneration.

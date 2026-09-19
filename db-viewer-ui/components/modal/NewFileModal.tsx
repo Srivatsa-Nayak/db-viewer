@@ -54,7 +54,7 @@ export const NewFileModal = ({ isOpen, onClose, onConfirm, defaultName }: NewFil
                     id="new-file-name"
                     ref={inputRef}
                     type="text"
-                    className="w-full bg-white border border-ink-300 rounded-md py-2.5 pl-10 pr-4 text-ink-900 placeholder:text-ink-400 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-all font-mono text-sm"
+                    className="w-full bg-surface border border-ink-300 rounded-md py-2.5 pl-10 pr-4 text-ink-900 placeholder:text-ink-400 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-all font-mono text-sm"
                     value={fileName}
                     onChange={(e) => setFileName(e.target.value)}
                     onFocus={(e) => e.target.select()}

@@ -33,7 +33,7 @@ const PASSWORD_RULES: { label: string; test: (value: string) => boolean }[] = [
     { label: 'A special character', test: v => /[^A-Za-z0-9]/.test(v) },
 ];
 
-const FIELD = 'w-full bg-white border border-ink-300 rounded-md py-2.5 sm:py-2 pl-10 pr-3 text-sm '
+const FIELD = 'w-full bg-surface border border-ink-300 rounded-md py-2.5 sm:py-2 pl-10 pr-3 text-sm '
     + 'text-ink-900 placeholder:text-ink-400 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500';
 
 export const AuthModal = ({ isOpen, reason, initialMode, onClose, onSignedIn }: AuthModalProps) => {
@@ -136,7 +136,7 @@ export const AuthModal = ({ isOpen, reason, initialMode, onClose, onSignedIn }: 
                         onClick={() => { setMode(m); setError(null); setDuplicateEmail(null); }}
                         className={`flex-1 py-2 rounded-md text-sm font-medium transition-all ${
                             mode === m
-                                ? 'bg-white text-brand-700 shadow-glow-sm'
+                                ? 'bg-surface text-brand-700 shadow-glow-sm'
                                 : 'text-ink-500 hover:text-ink-800'
                         }`}
                     >
@@ -225,7 +225,7 @@ export const AuthModal = ({ isOpen, reason, initialMode, onClose, onSignedIn }: 
                                 setDuplicateEmail(null);
                                 setError(null);
                             }}
-                            className="mt-1.5 font-semibold text-amber-900 underline underline-offset-2 hover:text-amber-950"
+                            className="mt-1.5 font-semibold underline underline-offset-2 hover:opacity-80"
                         >
                             Sign in instead
                         </button>

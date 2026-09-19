@@ -85,7 +85,7 @@ export const TemplatesSection = ({ onUse }: TemplatesSectionProps) => {
             <div className="mx-auto max-w-6xl px-6">
 
                 <Reveal className="text-center max-w-2xl mx-auto mb-12">
-                    <span className="inline-block px-3 py-1 rounded-full border border-brand-200/70 bg-white text-brand-700 text-xs font-semibold tracking-wide uppercase mb-4 shadow-sm">
+                    <span className="inline-block px-3 py-1 rounded-full border border-brand-200/70 bg-surface text-brand-700 text-xs font-semibold tracking-wide uppercase mb-4 shadow-sm">
                         Templates
                     </span>
                     <h2 className="text-3xl sm:text-4xl font-bold text-ink-900 tracking-tight">
@@ -129,7 +129,7 @@ export const TemplatesSection = ({ onUse }: TemplatesSectionProps) => {
                                 className={`px-4 py-1.5 rounded-full text-sm font-medium border transition-all ${
                                     activeCategory === category
                                         ? 'brand-gradient border-transparent text-white shadow-sm'
-                                        : 'bg-white border-[var(--surface-line)] text-ink-600 hover:border-brand-300 hover:text-brand-700'
+                                        : 'bg-surface border-[var(--surface-line)] text-ink-600 hover:border-brand-300 hover:text-brand-700'
                                 }`}
                             >
                                 {category}
@@ -143,7 +143,7 @@ export const TemplatesSection = ({ onUse }: TemplatesSectionProps) => {
                     // section does not jump when the catalogue lands.
                     <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3" aria-hidden>
                         {Array.from({ length: 6 }).map((_, i) => (
-                            <div key={i} className="rounded-xl border border-ink-200 bg-white p-5">
+                            <div key={i} className="rounded-xl border border-ink-200 bg-surface p-5">
                                 <div className="mb-3 h-4 w-1/2 animate-pulse rounded bg-ink-200" />
                                 <div className="mb-2 h-3 w-full animate-pulse rounded bg-ink-100" />
                                 <div className="mb-2 h-3 w-5/6 animate-pulse rounded bg-ink-100" />
@@ -164,7 +164,7 @@ export const TemplatesSection = ({ onUse }: TemplatesSectionProps) => {
                 )}
 
                 {error && !isLoading && (
-                    <div className="mx-auto max-w-md flex items-start gap-2.5 p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                    <div className="mx-auto max-w-md flex items-start gap-2.5 p-4 tone-error rounded-lg text-sm">
                         <AlertCircle size={16} className="shrink-0 mt-0.5" />
                         <span>{error}</span>
                     </div>

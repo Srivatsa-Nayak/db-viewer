@@ -1,20 +1,22 @@
 "use client";
 
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import Link from 'next/link';
 import {
-    Upload, FileText, Trash2, Database, HelpCircle, FileCode,
-    Image as ImageIcon, ChevronDown, Files, Share2, LogIn, LogOut, User, Plus, Lock, Settings,
+    Upload, FileText, Trash2, Database, HelpCircle, Download,
+    ChevronDown, Files, Share2, LogIn, LogOut, User, Plus, Lock, Settings,
 } from 'lucide-react';
 import { AuthUser } from '@/services/api';
+import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { useDismissable } from '@/components/ui/useDismissable';
 
 interface HeaderProps {
     onUpload: (file: File) => void;
     onNewFile: () => void;
     onClear: () => void;
     onShowInfo: () => void;
-    onExportSql: () => void;
-    onExportImage: () => void;
+    /** Opens the export dialog, which owns every output format. */
+    onExport: () => void;
     onShare: () => void;
     onSignIn: () => void;
     onSignOut: () => void;
@@ -24,25 +26,6 @@ interface HeaderProps {
     hasData: boolean;
     user: AuthUser | null;
 }
-
-/** Closes a dropdown on an outside click or Escape. */
-const useDismissable = (isOpen: boolean, close: () => void) => {
-    const ref = useRef<HTMLDivElement>(null);
-    useEffect(() => {
-        if (!isOpen) return;
-        const onPointerDown = (e: MouseEvent) => {
-            if (ref.current && !ref.current.contains(e.target as Node)) close();
-        };
-        const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
-        document.addEventListener('mousedown', onPointerDown);
-        document.addEventListener('keydown', onKeyDown);
-        return () => {
-            document.removeEventListener('mousedown', onPointerDown);
-            document.removeEventListener('keydown', onKeyDown);
-        };
-    }, [isOpen, close]);
-    return ref;
-};
 
 const MenuItem = ({ icon, title, description, onClick, disabled, locked, danger }: {
     icon: React.ReactNode;
@@ -60,11 +43,11 @@ const MenuItem = ({ icon, title, description, onClick, disabled, locked, danger 
         disabled={disabled}
         className={`w-full flex items-start gap-3 px-4 py-3 text-left transition-colors
             disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent
-            ${danger ? 'hover:bg-red-50' : 'hover:bg-ink-50'}`}
+            ${danger ? 'hover:bg-tone-error-bg' : 'hover:bg-ink-50'}`}
     >
         <span className={`mt-0.5 shrink-0 ${danger ? 'text-red-500' : 'text-brand-600'}`}>{icon}</span>
         <span className="min-w-0">
-            <span className={`flex items-center gap-1.5 text-sm font-medium ${danger ? 'text-red-600' : 'text-ink-900'}`}>
+            <span className={`flex items-center gap-1.5 text-sm font-medium ${danger ? 'text-tone-error-ink' : 'text-ink-900'}`}>
                 {title}
                 {locked && <Lock size={11} className="text-ink-400" />}
             </span>
@@ -73,11 +56,22 @@ const MenuItem = ({ icon, title, description, onClick, disabled, locked, danger 
     </button>
 );
 
-/** Plain text until hovered, then a white button — the shared treatment for header controls. */
-const HEADER_BUTTON = 'flex items-center gap-2 px-2.5 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors';
+/**
+ * The shared treatment for controls on the app bar.
+ *
+ * Translucent white rather than solid: the bar is a blue gradient in the light theme and a dark
+ * panel in the dark one, and a wash of whatever is beneath works on both — where the old solid
+ * white hover state only ever worked on the gradient.
+ */
+const HEADER_BUTTON = 'flex items-center gap-2 px-2.5 sm:px-3 py-2 rounded-md text-sm font-medium '
+    + 'transition-colors text-white/80 hover:bg-white/15 hover:text-white';
+
+/** The open state keeps a lit treatment, so a control does not appear to switch off while its
+ *  own menu is showing. */
+const HEADER_BUTTON_ACTIVE = 'bg-white/20 text-white';
 
 export const Header = ({
-    onUpload, onNewFile, onClear, onShowInfo, onExportSql, onExportImage,
+    onUpload, onNewFile, onClear, onShowInfo, onExport,
     onShare, onSignIn, onSignOut, onEditProfile, isUploading, fileName, hasData, user,
 }: HeaderProps) => {
     const [isFileOpen, setFileOpen] = useState(false);
@@ -90,7 +84,7 @@ export const Header = ({
     const run = (action: () => void) => { setFileOpen(false); action(); };
 
     return (
-        <header className="h-16 shrink-0 brand-gradient border-b border-brand-800/40 flex items-center justify-between px-3 sm:px-6 shadow-glow-md z-50">
+        <header className="app-header h-16 shrink-0 flex items-center justify-between px-3 sm:px-6 shadow-glow-md z-50">
 
             {/* Left: brand, then the File and Share controls */}
             <div className="flex items-center gap-2 sm:gap-4 min-w-0">
@@ -99,7 +93,7 @@ export const Header = ({
                         <Database size={18} className="text-brand-600" />
                     </span>
                     <span className="text-white font-semibold text-lg sm:text-xl tracking-tight hidden md:block">
-                        SQL <span className="text-brand-100">Visualizer</span>
+                        SQL <span className="text-brand-200">Visualizer</span>
                     </span>
                 </Link>
 
@@ -110,11 +104,7 @@ export const Header = ({
                     <button
                         type="button"
                         onClick={() => setFileOpen(v => !v)}
-                        // The open state keeps the white treatment, so the control does not
-                        // appear to switch off while its own menu is showing.
-                        className={`${HEADER_BUTTON} ${
-                            isFileOpen ? 'bg-white text-brand-700' : 'text-brand-50 hover:bg-white hover:text-brand-700'
-                        }`}
+                        className={`${HEADER_BUTTON} ${isFileOpen ? HEADER_BUTTON_ACTIVE : ''}`}
                         aria-haspopup="menu"
                         aria-expanded={isFileOpen}
                     >
@@ -126,7 +116,7 @@ export const Header = ({
                     {isFileOpen && (
                         <div
                             role="menu"
-                            className="absolute left-0 mt-2 w-[min(20rem,calc(100vw-1.5rem))] bg-white border border-line rounded-lg shadow-glow-lg overflow-hidden z-50 anim-menu-in"
+                            className="absolute left-0 mt-2 w-[min(20rem,calc(100vw-1.5rem))] bg-surface border border-line rounded-lg shadow-glow-lg overflow-hidden z-50 anim-menu-in"
                         >
                             <MenuItem
                                 icon={<Plus size={16} />}
@@ -143,26 +133,22 @@ export const Header = ({
                                 does not depend on the element still being in the document. */}
                             <MenuItem
                                 icon={<Upload size={16} />}
-                                title={isUploading ? 'Importing...' : 'Import'}
-                                description="Open a .csv or .sql file in a new tab."
+                                title={isUploading ? 'Reading the file...' : 'Import'}
+                                description="Pick a .csv or .sql file. You will see what it creates before it does."
                                 onClick={() => { fileInputRef.current?.click(); setFileOpen(false); }}
                             />
 
                             <div className="h-px bg-ink-100" />
 
+                            {/* One entry point rather than one item per format. The formats now
+                                differ in ways a menu line cannot express — a SQL export has to be
+                                told which engine it is for — so the choice belongs in a dialog
+                                with room to explain it. */}
                             <MenuItem
-                                icon={<FileCode size={16} />}
-                                title="Export SQL script"
-                                description="Schema and data, ready to re-import or run elsewhere."
-                                onClick={() => run(onExportSql)}
-                                disabled={!hasData}
-                                locked={!user}
-                            />
-                            <MenuItem
-                                icon={<ImageIcon size={16} />}
-                                title="Export diagram (PNG)"
-                                description="A picture of the canvas — best for reading offline."
-                                onClick={() => run(onExportImage)}
+                                icon={<Download size={16} />}
+                                title="Export..."
+                                description="SQL for a specific engine, a PNG, Mermaid or DBML."
+                                onClick={() => run(onExport)}
                                 disabled={!hasData}
                             />
 
@@ -200,8 +186,8 @@ export const Header = ({
                     type="button"
                     onClick={onShare}
                     disabled={!hasData}
-                    className={`${HEADER_BUTTON} hidden sm:flex text-brand-50 hover:bg-white hover:text-brand-700
-                        disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-brand-50`}
+                    className={`${HEADER_BUTTON} hidden sm:flex
+                        disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent`}
                     title={hasData ? 'Create a shareable link' : 'Open a file first'}
                 >
                     <Share2 size={16} />
@@ -229,23 +215,27 @@ export const Header = ({
                 />
             </div>
 
-            {/* Right: current file, account, help */}
+            {/* Right: current file, theme, account, help */}
             <div className="flex items-center gap-2 sm:gap-3 min-w-0">
                 {fileName && (
-                    <div className="hidden md:flex items-center gap-2 bg-black/15 border border-white/25 rounded-md px-3 py-1 min-w-0">
-                        <FileText size={14} className="text-brand-100 shrink-0" />
-                        <span className="text-xs font-medium max-w-[160px] truncate text-brand-50" title={fileName}>
+                    <div className="hidden md:flex items-center gap-2 bg-black/20 border border-white/20 rounded-md px-3 py-1 min-w-0">
+                        <FileText size={14} className="text-white/70 shrink-0" />
+                        <span className="text-xs font-medium max-w-[160px] truncate text-white/90" title={fileName}>
                             {fileName}
                         </span>
                     </div>
                 )}
+
+                {/* Beside the account rather than buried in a settings dialog: eye strain is felt
+                    continuously, so the control for it has to be one click away. */}
+                <ThemeToggle />
 
                 {user ? (
                     <div className="relative" ref={accountRef}>
                         <button
                             type="button"
                             onClick={() => setAccountOpen(v => !v)}
-                            className="flex items-center gap-2 bg-white/95 hover:bg-white text-brand-700 px-2.5 sm:px-3 py-2 rounded-md text-sm font-semibold transition-colors"
+                            className="header-cta flex items-center gap-2 px-2.5 sm:px-3 py-2 rounded-md text-sm font-semibold transition-colors"
                             title={user.email}
                             aria-haspopup="menu"
                             aria-expanded={isAccountOpen}
@@ -258,7 +248,7 @@ export const Header = ({
                         </button>
 
                         {isAccountOpen && (
-                            <div role="menu" className="absolute right-0 mt-2 w-64 bg-white border border-line rounded-lg shadow-glow-lg overflow-hidden z-50 anim-menu-in">
+                            <div role="menu" className="absolute right-0 mt-2 w-64 bg-surface border border-line rounded-lg shadow-glow-lg overflow-hidden z-50 anim-menu-in">
                                 <div className="px-4 py-3 border-b border-ink-100">
                                     <p className="text-sm font-medium text-ink-900 flex items-center gap-2">
                                         <User size={14} className="text-ink-400 shrink-0" />
@@ -290,7 +280,7 @@ export const Header = ({
                     <button
                         type="button"
                         onClick={onSignIn}
-                        className="flex items-center gap-2 bg-white hover:bg-brand-50 px-3 sm:px-4 py-2 rounded-md text-sm font-semibold text-brand-700 shadow-sm transition-colors"
+                        className="header-cta flex items-center gap-2 px-3 sm:px-4 py-2 rounded-md text-sm font-semibold shadow-sm transition-colors"
                     >
                         <LogIn size={16} />
                         <span className="hidden sm:inline">Sign in</span>
@@ -300,7 +290,7 @@ export const Header = ({
                 <button
                     type="button"
                     onClick={onShowInfo}
-                    className="p-2 text-brand-100 hover:text-white transition-colors shrink-0"
+                    className="p-2 text-white/70 hover:text-white transition-colors shrink-0"
                     aria-label="About this app"
                     title="About this app"
                 >

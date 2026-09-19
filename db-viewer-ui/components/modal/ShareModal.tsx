@@ -94,7 +94,7 @@ export const ShareModal = ({ isOpen, fileName, onClose, onNeedsAccount }: ShareM
                     <GhostButton
                         onClick={handleRevoke}
                         disabled={!token || isBusy}
-                        className="!text-red-600 hover:!text-red-700 hover:!bg-red-50"
+                        className="!text-tone-error-ink hover:!bg-tone-error-bg"
                     >
                         Revoke link
                     </GhostButton>

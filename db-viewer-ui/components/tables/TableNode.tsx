@@ -3,7 +3,7 @@
 import React, { memo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Handle, Position } from 'reactflow';
-import { Database, KeyRound, Plus, Download, Edit3, Pencil, Trash2, StickyNote } from 'lucide-react';
+import { Database, KeyRound, Link2, Plus, Download, Edit3, Pencil, Trash2, StickyNote } from 'lucide-react';
 import { ColumnInfo } from '@/types';
 
 /**
@@ -22,6 +22,17 @@ const TableNotesModal = dynamic(
 interface TableNodeData {
   label: string;
   columns: ColumnInfo[];
+  /**
+   * Columns that really do hold a foreign key, from the relationship list.
+   *
+   * The naming heuristic below is the fallback, not the source of truth. It has to stay, because
+   * a schema that names its keys `customer` rather than `customer_id` still needs *something* —
+   * but a relationship the backend reported is not a guess, and an edge whose column had no
+   * handle simply did not render.
+   */
+  foreignKeyColumns?: string[];
+  /** Columns other tables point at, which therefore need a handle on the right. */
+  referencedColumns?: string[];
   onRefresh: () => void;
   onEdit: (tableName: string) => void;
   /** Asks the page to confirm and run the delete, so the dialog is not trapped in the canvas. */
@@ -31,13 +42,24 @@ interface TableNodeData {
   /** Count of open to-do notes, used for the badge. */
   openNotes?: number;
   onNotesChanged?: () => void;
+  /** Set by the canvas search, to pick one row out of the table it landed on. */
+  highlightColumn?: string;
 }
 
 const ACTION_BUTTON = 'p-1 rounded text-white/80 hover:text-white transition-colors';
 
-/** A column gets connection handles if it is a key by naming convention or by real metadata. */
-const isKeyColumn = (col: ColumnInfo) =>
-  col.isPk || col.name === 'id' || col.name.endsWith('_id');
+/** A foreign key, by declaration if we have one and by convention if we do not. */
+const isForeignKey = (column: ColumnInfo, declared?: string[]): boolean =>
+  declared?.includes(column.name) ?? false
+    ? true
+    : column.name !== 'id' && column.name.endsWith('_id');
+
+/** A column needs a handle on the right if an edge can start there. */
+const isSourceEnd = (column: ColumnInfo, referenced?: string[]): boolean =>
+  (referenced?.includes(column.name) ?? false)
+    || column.isPk
+    || column.name === 'id'
+    || column.name.endsWith('_id');
 
 const TableNode = ({ data }: { data: TableNodeData }) => {
   // The add-column form lives in its own modal (AddColumnModal) rather than inside the
@@ -50,7 +72,7 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
   const columnNames = data.columns.map(c => c.name);
 
   return (
-    <div className="bg-white border border-brand-200 rounded-md min-w-[190px] max-w-[230px] shadow-glow-md transition-shadow hover:shadow-glow-lg group/node">
+    <div className="bg-surface border border-brand-200 rounded-md min-w-[190px] max-w-[230px] shadow-glow-md transition-shadow hover:shadow-glow-lg group/node">
 
       <div className="brand-gradient px-2 py-1.5 flex items-center justify-between rounded-t-md gap-1">
         <div className="flex items-center gap-1.5 overflow-hidden">
@@ -111,32 +133,43 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
 
       <div className="flex flex-col bg-ink-50 py-0.5 rounded-b-md">
         {data.columns.map((col) => {
-          const isKey = isKeyColumn(col);
           // A foreign key points *out* of this table, so it is the target end of an edge.
-          const isForeignKey = col.name !== 'id' && col.name.endsWith('_id');
+          const foreign = isForeignKey(col, data.foreignKeyColumns);
+          const sourceEnd = isSourceEnd(col, data.referencedColumns);
+          const isMatch = data.highlightColumn === col.name;
 
           return (
             <div
               key={col.name}
-              className="group relative flex justify-between items-center px-2 py-0.5 hover:bg-ink-100 transition-colors h-[22px]"
+              className={`group relative flex justify-between items-center px-2 py-0.5 transition-colors h-[22px] ${
+                isMatch ? 'bg-brand-100 ring-1 ring-inset ring-brand-400' : 'hover:bg-ink-100'
+              }`}
             >
-              {isForeignKey && (
+              {foreign && (
                 <div className="absolute -left-1.5 top-1/2 -translate-y-1/2 z-50">
                   <Handle
                     type="target"
                     position={Position.Left}
                     id={`${col.name}-left`}
                     isConnectable={false}
-                    className="!w-2.5 !h-2.5 !bg-brand-500 !border-2 !border-white"
+                    className="!w-2.5 !h-2.5 !bg-key-fk !border-2"
                   />
                 </div>
               )}
 
               <div className="flex items-center gap-1.5 overflow-hidden">
-                {isKey && <KeyRound size={8} className="text-brand-500 shrink-0" />}
+                {/* Two shapes as well as two colours — a key and a link — because the icons are
+                    four pixels wide at the zoom level where a 100-table schema fits on screen. */}
+                {col.isPk
+                  ? <KeyRound size={8} className="text-key-pk shrink-0" />
+                  : foreign
+                    ? <Link2 size={8} className="text-key-fk shrink-0" />
+                    : null}
                 <span
                   className={`truncate font-mono text-[9px] leading-none ${
-                    col.isPk ? 'text-brand-700 font-bold' : 'text-ink-700 font-medium'
+                    col.isPk
+                      ? 'text-key-pk font-bold'
+                      : foreign ? 'text-key-fk font-semibold' : 'text-ink-700 font-medium'
                   }`}
                   title={col.notNull ? `${col.name} (NOT NULL)` : col.name}
                 >
@@ -159,14 +192,14 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
                 </button>
               </span>
 
-              {isKey && (
+              {sourceEnd && (
                 <div className="absolute -right-1.5 top-1/2 -translate-y-1/2 z-50">
                   <Handle
                     type="source"
                     position={Position.Right}
                     id={`${col.name}-right`}
                     isConnectable={false}
-                    className="!w-2.5 !h-2.5 !bg-brand-500 !border-2 !border-white"
+                    className={`!w-2.5 !h-2.5 !border-2 ${col.isPk ? '!bg-key-pk' : '!bg-key-fk'}`}
                   />
                 </div>
               )}

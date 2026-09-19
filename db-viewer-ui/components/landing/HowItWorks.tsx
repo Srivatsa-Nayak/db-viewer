@@ -40,7 +40,7 @@ export const HowItWorks = () => {
             <div className="mx-auto max-w-6xl px-6">
 
                 <Reveal className="mx-auto mb-12 max-w-2xl text-center">
-                    <span className="mb-4 inline-block rounded-full border border-brand-200/70 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-wide text-brand-700 shadow-sm">
+                    <span className="mb-4 inline-block rounded-full border border-brand-200/70 bg-surface px-3 py-1 text-xs font-semibold uppercase tracking-wide text-brand-700 shadow-sm">
                         How it works
                     </span>
                     <h2 className="text-3xl font-bold tracking-tight text-ink-900 sm:text-4xl">

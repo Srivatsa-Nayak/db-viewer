@@ -79,9 +79,24 @@ public final class SqlScriptSplitter {
                 continue;
             }
 
+            // GO is SQL Server's batch separator - a client directive like DELIMITER, not SQL,
+            // and only meaningful as the entire content of a line (optionally with a repeat
+            // count). Without this, every batch after the first is glued onto the one before it.
+            if (atLineStart && regionMatchesIgnoreCase(script, i, "GO")) {
+                int eol = endOfLine(script, i);
+                if (script.substring(i + 2, eol).trim().matches("\\d*")) {
+                    flush(statements, current);
+                    i = eol;
+                    continue;
+                }
+            }
+
             if (script.startsWith(delimiter, i)) {
                 flush(statements, current);
-                i += delimiter.length();
+                // A pg_dump COPY block's rows follow the statement rather than being part of it,
+                // so the statement alone is meaningless. Carry the payload along with it and let
+                // the translator turn it back into INSERTs.
+                i = attachCopyPayload(script, statements, i + delimiter.length());
                 atLineStart = false;
                 continue;
             }
@@ -121,6 +136,54 @@ public final class SqlScriptSplitter {
             i++;
         }
         return i;
+    }
+
+    /**
+     * Appends a {@code COPY ... FROM stdin} block's data rows to the statement that introduced
+     * them, and returns the position to carry on reading from.
+     *
+     * <p>The rows are not SQL: they are tab-separated text, terminated by a line holding only
+     * {@code \.}, and left to the ordinary path they would be split on any semicolon they happen
+     * to contain and then fail one meaningless fragment at a time. Since the block is the whole
+     * contents of a PostgreSQL dump, losing it means importing an empty schema.
+     *
+     * @return {@code from} unchanged when the last statement was not a COPY
+     */
+    private static int attachCopyPayload(String script, List<String> statements, int from) {
+        if (statements.isEmpty()) {
+            return from;
+        }
+        String statement = statements.get(statements.size() - 1);
+        if (!statement.regionMatches(true, 0, "COPY", 0, 4)
+                || !statement.toLowerCase().contains("from stdin")) {
+            return from;
+        }
+
+        int start = from;
+        // The payload begins on the line after the statement.
+        while (start < script.length() && script.charAt(start) != '\n') {
+            start++;
+        }
+        if (start >= script.length()) {
+            return from;
+        }
+        start++;
+
+        int end = start;
+        while (end < script.length()) {
+            int eol = endOfLine(script, end);
+            String line = script.substring(end, eol).trim();
+            if (line.equals("\\.")) {
+                statements.set(statements.size() - 1,
+                        statement + "\n" + script.substring(start, end));
+                return Math.min(eol + 1, script.length());
+            }
+            end = eol + 1;
+        }
+
+        // No terminator: take what there is rather than dropping the whole block.
+        statements.set(statements.size() - 1, statement + "\n" + script.substring(start));
+        return script.length();
     }
 
     private static void flush(List<String> statements, StringBuilder current) {

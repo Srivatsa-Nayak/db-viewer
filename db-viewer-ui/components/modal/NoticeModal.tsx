@@ -23,17 +23,17 @@ const STYLES: Record<NoticeSeverity, {
     error: {
         icon: <AlertCircle size={20} className="text-red-500 shrink-0" />,
         accent: 'border-t-red-500',
-        detailBox: 'bg-red-50 border-red-200 text-red-700',
+        detailBox: 'tone-error',
     },
     warning: {
         icon: <AlertTriangle size={20} className="text-amber-500 shrink-0" />,
         accent: 'border-t-amber-500',
-        detailBox: 'bg-amber-50 border-amber-200 text-amber-800',
+        detailBox: 'tone-warning',
     },
     success: {
         icon: <CheckCircle2 size={20} className="text-emerald-500 shrink-0" />,
         accent: 'border-t-emerald-500',
-        detailBox: 'bg-emerald-50 border-emerald-200 text-emerald-700',
+        detailBox: 'tone-success',
     },
 };
 

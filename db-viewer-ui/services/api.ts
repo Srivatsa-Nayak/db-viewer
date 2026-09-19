@@ -1,8 +1,8 @@
 import axios from 'axios';
 import { getClientId } from './clientId';
 import {
-    ColumnInfo, RawColumnInfo, RawRelationship, RawSchemaResponse, Relationship,
-    RowData, SchemaResponse, TableDataResponse, TableInfo,
+    ColumnInfo, ImportPlan, RawColumnInfo, RawRelationship, RawSchemaResponse, Relationship,
+    RowData, SchemaResponse, SqlDialectId, TableDataResponse, TableInfo,
 } from '@/types';
 
 /* ── Wire -> UI normalisation ─────────────────────────────────────────────
@@ -206,10 +206,33 @@ const toBackendColumn = (column: NewTableColumn) => ({
 });
 
 export const dbService = {
-    // Upload a .csv or .sql file. Returns a report describing what actually ran.
-    uploadFile: async (file: File): Promise<UploadReport> => {
+    /**
+     * Reports what importing a file would produce, without importing it.
+     *
+     * <p>The first half of a two-step import. Nothing on the backend is written, so the dialog
+     * this feeds can be cancelled with nothing to undo — which is the only way a type the
+     * inference got wrong can be corrected, because an `INT` postcode column has already dropped
+     * its leading zeros by the time the canvas renders.
+     */
+    analyzeUpload: async (file: File): Promise<ImportPlan> => {
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await api.post<ImportPlan>('/import/analyze', formData);
+        return res.data;
+    },
+
+    /**
+     * Runs the import. Returns a report describing what actually ran.
+     *
+     * @param columnTypes the types the user corrected in the preview — keyed by column name for a
+     *                    CSV, by `table.column` for a script. Omit to accept what was inferred.
+     */
+    uploadFile: async (file: File, columnTypes?: Record<string, string>): Promise<UploadReport> => {
         const formData = new FormData();
         formData.append("file", file);
+        if (columnTypes && Object.keys(columnTypes).length > 0) {
+            formData.append('columnTypes', JSON.stringify(columnTypes));
+        }
         const res = await api.post<UploadReport>('/upload', formData);
         return res.data ?? {};
     },
@@ -373,10 +396,18 @@ export const dbService = {
         return response.data;
     },
 
-    /** Downloads the whole file as a SQL dump. Requires an account. */
-    downloadDatabaseSql: async (fileName: string) => {
+    /**
+     * Downloads the whole file as a SQL dump. Requires an account.
+     *
+     * @param dialect the engine the script has to run on. Not a formatting preference:
+     *                `AUTOINCREMENT`, `SERIAL`, `IDENTITY(1,1)` and `AUTO_INCREMENT` are four
+     *                spellings of one idea and no engine accepts another's, so an untargeted
+     *                export is only ever nearly runnable.
+     */
+    downloadDatabaseSql: async (fileName: string, dialect: SqlDialectId = 'generic') => {
         const res = await api.get(
-            `/export-sql?filename=${encodeURIComponent(fileName)}&t=${new Date().getTime()}`,
+            `/export-sql?filename=${encodeURIComponent(fileName)}`
+            + `&dialect=${encodeURIComponent(dialect)}&t=${new Date().getTime()}`,
             { responseType: 'blob' });
         saveBlob(res.data, fileName, 'application/sql');
     },
@@ -388,6 +419,29 @@ export const dbService = {
         });
     },
 };
+
+/**
+ * The engines an export can target.
+ *
+ * Held here rather than fetched from `GET /dialects` because the ids are a wire contract this
+ * file already owns, and the export dialog should not have a loading state for six fixed rows.
+ * The backend endpoint exists for anyone driving the API directly.
+ */
+export interface DialectOption {
+    id: SqlDialectId;
+    label: string;
+    /** The one line that says what actually changes in the generated script. */
+    hint: string;
+}
+
+export const SQL_DIALECTS: DialectOption[] = [
+    { id: 'postgres', label: 'PostgreSQL', hint: 'SERIAL keys, "double-quoted" names' },
+    { id: 'mysql', label: 'MySQL', hint: 'AUTO_INCREMENT keys, `backticked` names' },
+    { id: 'mariadb', label: 'MariaDB', hint: 'As MySQL — same syntax for schema DDL' },
+    { id: 'sqlserver', label: 'SQL Server', hint: 'IDENTITY(1,1) keys, [bracketed] names, GO batches' },
+    { id: 'sqlite', label: 'SQLite', hint: 'AUTOINCREMENT keys — what this workspace runs on' },
+    { id: 'generic', label: 'Standard SQL', hint: 'ANSI types only; runs almost anywhere' },
+];
 
 /** A to-do note attached to a table. */
 export interface TableNote {

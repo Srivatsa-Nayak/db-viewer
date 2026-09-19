@@ -268,7 +268,8 @@ client that knows an id can reach that workspace. This matches the app's current
 |---|---|---|---|
 | `GET` | `/` | Health check, plus the app version | — |
 | `GET` | `/version` | Version declared in `pom.xml`; shown in the UI's info modal | — |
-| `POST` | `/upload` | Import `.csv` or `.sql`; returns a report of what ran and what was skipped | ✅ header |
+| `POST` | `/import/analyze` | Dry run: the tables, columns and inferred types an import would produce, plus the dialect detected and everything that would be skipped. Writes nothing | ✅ header |
+| `POST` | `/upload` | Import `.csv` or `.sql`, applying any `columnTypes` corrections; returns a report of what ran and what was skipped | ✅ header |
 | `POST` | `/query` | Execute raw SQL | ✅ header |
 | `GET` | `/db-info` | All tables, columns, row previews, relationships | ✅ header |
 | `GET` | `/table-data/{table}` | Columns + up to 100 rows | ✅ header |
@@ -291,7 +292,8 @@ client that knows an id can reach that workspace. This matches the app's current
 | `GET` | `/share/{token}` | View a shared schema (public) | — |
 | `DELETE` | `/workspace` | Delete the workspace's database outright | ✅ header |
 | `GET` | `/export/{table}` | Download table as CSV | ✅ **query param** |
-| `GET` | `/export-sql` | Download workspace as a SQL dump | ✅ **query param** |
+| `GET` | `/export-sql` | Download workspace as a SQL script rebuilt for `?dialect=` | ✅ **query param** |
+| `GET` | `/dialects` | The engines an export can target | — |
 | `GET` | `/swagger-ui.html` | Interactive API docs | — |
 
 Errors are uniform: a non-2xx response carries `{"error": "<message>"}`, which the frontend surfaces
