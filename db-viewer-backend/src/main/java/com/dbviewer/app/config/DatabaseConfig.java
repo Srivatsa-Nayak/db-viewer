@@ -50,6 +50,15 @@ public class DatabaseConfig {
 
         jdbcTemplate.execute(Constants.Ddl.CREATE_WORKSPACE_OWNERS_TABLE);
         try {
+            jdbcTemplate.execute(Constants.Ddl.ADD_WORKSPACE_OWNERS_FILE_NAME);
+            log.info("Added file_name to workspace_owners");
+        } catch (Exception e) {
+            // Already there, which is the normal case on every boot after the first. Neither
+            // SQLite nor MySQL offers a portable ADD COLUMN IF NOT EXISTS, so the attempt is
+            // the check.
+            log.debug("workspace_owners.file_name already present: {}", e.getMessage());
+        }
+        try {
             jdbcTemplate.execute(Constants.Ddl.CREATE_WORKSPACE_OWNERS_INDEX);
         } catch (Exception e) {
             // An index is an optimisation, not a correctness requirement, and older MySQL

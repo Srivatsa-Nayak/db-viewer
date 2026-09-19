@@ -3,6 +3,7 @@ package com.dbviewer.app.service;
 import com.dbviewer.app.exception.TableInUseException;
 import com.dbviewer.app.dto.*;
 import com.dbviewer.app.sql.SqlDialect;
+import com.dbviewer.app.service.WorkspaceOwnershipService;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
@@ -145,10 +146,15 @@ public interface DatabaseService {
     Map<String, Object> runScript(String script);
 
     /**
-     * Ids of every workspace that still has a database, so the UI can restore a previous
-     * session and drop entries whose database no longer exists.
+     * Every workspace the caller owns that still has a database, with the name the user gave it.
+     *
+     * <p>This is how the UI rebuilds the file list — on a browser refresh, and on sign-in, where
+     * it is the only source: signing out clears the browser's copy.
      */
-    List<String> listWorkspaces();
+    List<WorkspaceOwnershipService.OwnedWorkspace> listWorkspaces();
+
+    /** Records what the user called the current workspace, so the file list can show it. */
+    void setWorkspaceName(String fileName);
 
     /**
      * Discards the workspace bound to the current request: its database file (SQLite)

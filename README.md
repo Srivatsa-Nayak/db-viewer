@@ -301,7 +301,8 @@ set headers.
 | `POST` | `/update-cell` | Update one cell, addressed by row `id` |
 | `POST` | `/delete-row` | Delete a row by `id` |
 | `DELETE` | `/clear` | Drop every table in the workspace (workspace survives) |
-| `GET` | `/workspaces` | Ids of workspaces that still have a database (used to restore a session) |
+| `GET` | `/workspaces` | The caller's files — `{id, name}` each — that still have a database. The UI rebuilds its file list from this, on refresh and on sign-in |
+| `POST` | `/workspace/name` | Records the file name for the current workspace, so it survives a sign-out and reaches any other machine |
 | `DELETE` | `/workspace` | Delete the workspace's database entirely |
 | `GET` | `/export/{table}?workspaceId=` | Download the table as CSV |
 | `GET` | `/export-sql?filename=&dialect=&workspaceId=` | Download the workspace as a SQL script, written for `dialect` (`mysql` \| `mariadb` \| `postgres` \| `sqlserver` \| `sqlite` \| `generic`) |

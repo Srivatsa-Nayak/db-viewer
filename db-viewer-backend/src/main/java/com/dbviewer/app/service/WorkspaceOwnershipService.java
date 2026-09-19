@@ -25,8 +25,26 @@ public interface WorkspaceOwnershipService {
      */
     void claimOrVerify(String workspaceId);
 
-    /** Ids the current caller owns, narrowed to those whose database still exists. */
-    List<String> listOwned(List<String> existingWorkspaceIds);
+    /**
+     * A workspace as the file list needs it: the id that addresses it and the name the user
+     * gave it.
+     *
+     * @param name what the user called the file; null for a workspace claimed before names
+     *             were recorded, or by a caller that never set one
+     */
+    record OwnedWorkspace(String id, String name) { }
+
+    /** Workspaces the current caller owns, narrowed to those whose database still exists. */
+    List<OwnedWorkspace> listOwned(List<String> existingWorkspaceIds);
+
+    /**
+     * Records the file name for a workspace the caller already owns.
+     *
+     * <p>The name used to exist only in the browser. That made it impossible to answer "what
+     * files does this account have?" on any other machine, and signing out — which clears
+     * localStorage — destroyed the only copy.
+     */
+    void rename(String workspaceId, String fileName);
 
     /** Forgets a workspace's owner. Called when the workspace itself is deleted. */
     void release(String workspaceId);

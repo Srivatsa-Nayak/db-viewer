@@ -113,11 +113,35 @@ Two kinds, in two different places, for a reason:
 
 | Table | Lives in | Why |
 |---|---|---|
-| `app_users`, `shared_links` | The **default** database | A user and the links they created span every file they open, so they cannot belong to one workspace |
+| `app_users`, `shared_links`, `workspace_owners` | The **default** database | A user, the links they created and which files are theirs all span every file they open, so they cannot belong to one workspace |
 | `__table_notes` | **Inside each workspace** | Notes are about that file's tables, so they should travel with the file — export it, delete it, and the notes go too |
 
 `__table_notes` is prefixed with `__` and filtered out of `getTableNames()`, so it never reaches
 the canvas, a table listing, or a SQL export. Dropping a table deletes its notes with it.
+
+### 3.2b Why the file name lives on the server
+
+`workspace_owners` carries `file_name` beside `owner_key`:
+
+```sql
+CREATE TABLE IF NOT EXISTS workspace_owners (
+    workspace_id VARCHAR(64) NOT NULL PRIMARY KEY,
+    owner_key    VARCHAR(400) NOT NULL,
+    file_name    VARCHAR(255),
+    created_at   VARCHAR(40) NOT NULL
+)
+```
+
+It is the one piece of canvas-adjacent metadata that is *not* client-side, and the reason is a bug
+it caused: the name used to exist only in the browser's `localStorage`, which signing out clears.
+A user could create files, sign out, sign back in, and find an empty explorer — the databases were
+untouched on disk and still correctly owned, but nothing could name them or, since the file list
+was rebuilt from storage rather than from the server, even find them. Node **positions** are still
+client-only, because a layout is a per-screen preference; a file's *existence and name* are not.
+
+The column is added by `DatabaseConfig` with a bare `ALTER TABLE ... ADD COLUMN` whose failure is
+logged and ignored — neither SQLite nor MySQL has a portable `ADD COLUMN IF NOT EXISTS`, so the
+attempt is the check.
 
 ### 3.3 The `users` bootstrap table
 

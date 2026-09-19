@@ -12,8 +12,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
 
 /** @see WorkspaceOwnershipService */
 @Slf4j
@@ -50,8 +51,10 @@ public class WorkspaceOwnershipServiceImpl implements WorkspaceOwnershipService 
 
     private void claim(String workspaceId, String owner) {
         try {
+            // The name is not known here — claiming happens in a filter, before any handler has
+            // seen a request body. The UI sets it separately, right after it creates the file.
             jdbcTemplate.update(Constants.Ownership.INSERT_OWNER,
-                    workspaceId, owner, Instant.now().toString());
+                    workspaceId, owner, null, Instant.now().toString());
             log.info("Workspace {} claimed by {}", workspaceId, owner);
         } catch (DataAccessException e) {
             // Two requests for a brand new workspace can race here — the UI fires the upload and
@@ -65,7 +68,7 @@ public class WorkspaceOwnershipServiceImpl implements WorkspaceOwnershipService 
     }
 
     @Override
-    public List<String> listOwned(List<String> existingWorkspaceIds) {
+    public List<OwnedWorkspace> listOwned(List<String> existingWorkspaceIds) {
         String owner = OwnerKey.current();
         if (owner == null) {
             // No identity, so nothing is "yours". Returning everything here would hand a caller
@@ -73,12 +76,31 @@ public class WorkspaceOwnershipServiceImpl implements WorkspaceOwnershipService 
             return List.of();
         }
 
-        Set<String> owned = Set.copyOf(
-                jdbcTemplate.queryForList(Constants.Ownership.SELECT_WORKSPACES_BY_OWNER, String.class, owner));
+        Map<String, String> namesById = new LinkedHashMap<>();
+        jdbcTemplate.query(Constants.Ownership.SELECT_WORKSPACES_BY_OWNER,
+                rs -> { namesById.put(rs.getString("workspace_id"), rs.getString("file_name")); },
+                owner);
 
         // Intersected with what is actually on disk: an owner row can outlive its database if
         // the data directory was wiped, and the UI uses this list to decide what still exists.
-        return existingWorkspaceIds.stream().filter(owned::contains).toList();
+        return existingWorkspaceIds.stream()
+                .filter(namesById::containsKey)
+                .map(id -> new OwnedWorkspace(id, namesById.get(id)))
+                .toList();
+    }
+
+    @Override
+    public void rename(String workspaceId, String fileName) {
+        if (workspaceId == null || workspaceId.isBlank()) {
+            return;
+        }
+        try {
+            jdbcTemplate.update(Constants.Ownership.UPDATE_FILE_NAME, fileName, workspaceId);
+        } catch (DataAccessException e) {
+            // A name is a convenience, not correctness. The file still opens by id, so this must
+            // not fail the request that created it.
+            log.warn("Could not record the name of workspace {}: {}", workspaceId, e.getMessage());
+        }
     }
 
     @Override

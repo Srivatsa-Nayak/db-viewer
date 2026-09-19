@@ -81,9 +81,21 @@ public final class Constants {
                 CREATE TABLE IF NOT EXISTS workspace_owners (
                     workspace_id VARCHAR(64) NOT NULL PRIMARY KEY,
                     owner_key VARCHAR(400) NOT NULL,
+                    file_name VARCHAR(255),
                     created_at VARCHAR(40) NOT NULL
                 )
                 """;
+
+        /**
+         * Adds {@code file_name} to a table created before it existed.
+         *
+         * <p>Needed because the name used to live only in the browser's localStorage, which
+         * signing out clears — so a user's own files became unreachable the moment they logged
+         * out, even though the databases were still on disk and still theirs. Run unconditionally
+         * and ignore the failure: there is no portable "add column if missing".
+         */
+        public static final String ADD_WORKSPACE_OWNERS_FILE_NAME =
+                "ALTER TABLE workspace_owners ADD COLUMN file_name VARCHAR(255)";
 
         /** Owner lookups are the hot path — every request that names a workspace does one. */
         public static final String CREATE_WORKSPACE_OWNERS_INDEX =
@@ -142,10 +154,18 @@ public final class Constants {
                 "SELECT owner_key FROM workspace_owners WHERE workspace_id = ?";
 
         public static final String INSERT_OWNER =
-                "INSERT INTO workspace_owners (workspace_id, owner_key, created_at) VALUES (?, ?, ?)";
+                "INSERT INTO workspace_owners (workspace_id, owner_key, file_name, created_at) "
+                        + "VALUES (?, ?, ?, ?)";
 
         public static final String SELECT_WORKSPACES_BY_OWNER =
-                "SELECT workspace_id FROM workspace_owners WHERE owner_key = ?";
+                "SELECT workspace_id, file_name FROM workspace_owners WHERE owner_key = ?";
+
+        /**
+         * Records what the user called the file. Stored here rather than in the workspace
+         * database because the file list has to be readable before any workspace is opened.
+         */
+        public static final String UPDATE_FILE_NAME =
+                "UPDATE workspace_owners SET file_name = ? WHERE workspace_id = ?";
 
         public static final String DELETE_OWNER =
                 "DELETE FROM workspace_owners WHERE workspace_id = ?";

@@ -12,7 +12,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Edge, MarkerType, Node, applyNodeChanges, NodeChange } from "reactflow";
 import {
     dbService, setActiveWorkspace, authService, isAuthRequired, isForeignWorkspace,
-    AuthUser, TableNote,
+    AuthUser, TableNote, WorkspaceSummary,
 } from "@/services/api";
 import { clearSession, loadSession, saveSession } from "@/services/sessionStorage";
 import { newWorkspaceId } from "@/services/workspaceId";
@@ -128,6 +128,8 @@ export default function Home() {
     // and the save effect does not overwrite storage with an empty list on first render.
     const [isRestoring, setIsRestoring] = useState(true);
     const [user, setUser] = useState<AuthUser | null>(null);
+    /** False until the stored token has been resolved (or found absent). */
+    const [isAuthResolved, setAuthResolved] = useState(false);
     // What the user was trying to do when we asked them to sign up, so the prompt can say why.
     const [authReason, setAuthReason] = useState<string | null>(null);
     const [isAuthOpen, setAuthOpen] = useState(false);
@@ -220,9 +222,13 @@ export default function Home() {
     }, [user]);
 
     // Resolve the stored token back to a user, so a refresh does not sign anyone out.
+    // `isAuthResolved` gates the first file-list restore: starting it before we know who is
+    // asking would run it once as nobody and again as the user, for the same answer.
     useEffect(() => {
         let cancelled = false;
-        authService.me().then(u => { if (!cancelled) setUser(u); });
+        authService.me()
+            .then(u => { if (!cancelled) setUser(u); })
+            .finally(() => { if (!cancelled) setAuthResolved(true); });
         return () => { cancelled = true; };
     }, []);
 
@@ -368,66 +374,92 @@ export default function Home() {
         };
     }, [refreshActiveSchema, requestTableDelete, handleDownloadCsv, refreshNotes]);
 
-    // Restore the files that were open before the refresh. Runs once, on mount.
-    useEffect(() => {
-        let cancelled = false;
+    /**
+     * Rebuilds the open-file list for whoever is signed in now.
+     *
+     * **The backend is the authority on which files exist.** `GET /workspaces` is scoped to the
+     * caller's identity, and closing a file deletes its workspace, so what it returns is exactly
+     * the set that should be open. localStorage contributes only the canvas layout and a
+     * fallback name.
+     *
+     * It used to be the other way round — the stored session was the list, and the backend was
+     * consulted only to filter it — which meant signing out (which clears storage) destroyed the
+     * only record of a user's files. They were still on disk and still owned, and nothing ever
+     * asked for them again.
+     */
+    const restoreOpenFiles = useCallback(async (): Promise<void> => {
+        const saved = loadSession();
+        const savedById = new Map((saved?.workspaces ?? []).map(w => [w.id, w]));
 
-        const restore = async () => {
-            const saved = loadSession();
-            if (!saved || saved.workspaces.length === 0) {
-                setIsRestoring(false);
-                return;
-            }
+        let owned: WorkspaceSummary[];
+        try {
+            owned = await dbService.listWorkspaces();
+        } catch (e) {
+            // Backend unreachable. Keep whatever is on screen and the stored session with it,
+            // rather than emptying someone's explorer because the server was restarting.
+            console.error("Could not list workspaces", e);
+            return;
+        }
 
+        const restored: Workspace[] = [];
+        for (const entry of owned) {
+            setActiveWorkspace(entry.id);
+            const stored = savedById.get(entry.id);
+            // Server-side name first; the browser's copy only covers files created before names
+            // were recorded there.
+            const name = entry.name ?? stored?.name ?? 'Untitled.sql';
             try {
-                // Only restore files whose database still exists. A wiped data directory or a
-                // different backend would otherwise resurrect empty ghosts of old files.
-                const existing = new Set(await dbService.listWorkspaces());
-                const alive = saved.workspaces.filter(w => existing.has(w.id));
-
-                const restored: Workspace[] = [];
-                for (const entry of alive) {
-                    setActiveWorkspace(entry.id);
-                    try {
-                        const schema = await dbService.getSchema();
-                        restored.push(transformSchemaToWorkspace(
-                            schema.tables, schema.relationships,
-                            entry.name, entry.id, entry.isImported, entry.positions
-                        ));
-                    } catch (e) {
-                        // A file that is no longer ours is simply dropped from the restored
-                        // list. It is not an error worth interrupting the user for: it is what
-                        // signing out, or signing in as somebody else, is supposed to look like.
-                        if (!isForeignWorkspace(e)) {
-                            console.error(`Could not restore "${entry.name}"`, e);
-                        }
-                    }
-                }
-
-                if (cancelled) return;
-
-                if (restored.length === 0) {
-                    clearSession();
-                } else {
-                    const nextActive = restored.some(w => w.id === saved.activeWorkspaceId)
-                        ? saved.activeWorkspaceId
-                        : restored[restored.length - 1].id;
-                    setWorkspaces(restored);
-                    setActiveWorkspaceId(nextActive);
-                }
+                const schema = await dbService.getSchema();
+                restored.push(transformSchemaToWorkspace(
+                    schema.tables, schema.relationships,
+                    name, entry.id, stored?.isImported ?? false, stored?.positions ?? {}
+                ));
             } catch (e) {
-                // Backend unreachable: keep the stored session for the next attempt rather than
-                // deleting the user's file list because the server happened to be down.
-                console.error("Could not restore the previous session", e);
+                // A file that is no longer ours is simply dropped. Not worth interrupting the
+                // user for: it is what signing in as somebody else is supposed to look like.
+                if (!isForeignWorkspace(e)) {
+                    console.error(`Could not open "${name}"`, e);
+                }
+            }
+        }
+
+        if (restored.length === 0) {
+            clearSession();
+            setWorkspaces([]);
+            setActiveWorkspaceId(null);
+            setActiveWorkspace(null);
+            return;
+        }
+
+        const nextActive = restored.some(w => w.id === saved?.activeWorkspaceId)
+            ? saved!.activeWorkspaceId
+            : restored[restored.length - 1].id;
+        setWorkspaces(restored);
+        setActiveWorkspaceId(nextActive);
+        setActiveWorkspace(nextActive);
+    }, [transformSchemaToWorkspace]);
+
+    /**
+     * Rebuild the file list on mount, and again whenever the identity changes.
+     *
+     * Signing in and signing out both change which files are "yours", and neither is a page
+     * load — so without the second trigger the explorer keeps showing the previous identity's
+     * files, or nothing at all. `identity` is the *value* that matters; re-running on every
+     * `user` object would refetch on an unrelated profile edit.
+     */
+    const identity = user?.email ?? null;
+    useEffect(() => {
+        if (!isAuthResolved) return;
+        let cancelled = false;
+        (async () => {
+            try {
+                await restoreOpenFiles();
             } finally {
                 if (!cancelled) setIsRestoring(false);
             }
-        };
-
-        restore();
+        })();
         return () => { cancelled = true; };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [identity, isAuthResolved, restoreOpenFiles]);
 
     // Persist the open files whenever they change. Debounced because dragging a node fires
     // onNodesChange continuously.
@@ -511,6 +543,10 @@ export default function Home() {
                 return;
             }
 
+            // Record the name server-side so this file is still findable after a sign-out,
+            // and from any other machine the same account signs in from.
+            await dbService.setWorkspaceName(file.name);
+
             setWorkspaces(prev => [...prev, transformSchemaToWorkspace(
                 tables, response.relationships, file.name, newId, true
             )]);
@@ -552,6 +588,10 @@ export default function Home() {
         // we have to do here is point the API client at the new id.
         setActiveWorkspace(newId);
 
+        // Also the first request this workspace ever sees, which is what claims it for the
+        // current user — and what makes an empty file survive a sign-out.
+        dbService.setWorkspaceName(fileName);
+
         setWorkspaces(prev => [...prev, {
             id: newId,
             name: fileName,
@@ -579,6 +619,7 @@ export default function Home() {
 
             if (isNewFile) {
                 const schema = await dbService.getSchema();
+                await dbService.setWorkspaceName('example-store.sql');
                 setWorkspaces(prev => [...prev, transformSchemaToWorkspace(
                     schema.tables, schema.relationships, 'example-store.sql', workspaceId!, false
                 )]);
@@ -704,6 +745,12 @@ export default function Home() {
      * The workspaces on screen belong to the account that just left, so every request about
      * them would now come back 403. Clearing them is not data loss — the databases are
      * untouched and signing back in restores the list from the backend.
+     *
+     * That last sentence was untrue for a while, and it is the reason `file_name` is stored
+     * server-side: the list was rebuilt from localStorage, which this function clears, so
+     * signing out destroyed the only record of a user's files. Nothing re-listed them either.
+     * Both halves are fixed — the name lives in `workspace_owners`, and `restoreOpenFiles`
+     * re-runs whenever the identity changes.
      */
     const handleSignOut = () => {
         authService.logout();

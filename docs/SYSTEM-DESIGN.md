@@ -134,7 +134,11 @@ not scatter a layout the user has arranged.
 
 They are also the only thing worth persisting. `services/sessionStorage.ts` writes
 `{id, name, isImported, positions}` per open file to `localStorage`; on mount the page reconciles
-that list against `GET /workspaces` and re-reads each schema from `GET /db-info`. Storing ids and
+that list against `GET /workspaces` and re-reads each schema from `GET /db-info`. **`GET /workspaces` is
+the authority on which files exist** — it is scoped to the caller and closing a file deletes its
+workspace, so what it returns is exactly the set that should be open; `localStorage` contributes
+layout and nothing else. It used to be the other way round, and because signing out clears
+`localStorage`, that destroyed the only record of a signed-in user's files. Storing ids and
 layout but never the schema keeps the databases as the single source of truth — a cached schema
 would be stale the moment any other call changed it.
 
@@ -280,7 +284,8 @@ client that knows an id can reach that workspace. This matches the app's current
 | `POST` | `/update-cell` | Update one cell by row id | ✅ header |
 | `POST` | `/delete-row` | Delete one row by id | ✅ header |
 | `DELETE` | `/clear` | Drop every table, keep the workspace | ✅ header |
-| `GET` | `/workspaces` | Ids of workspaces that still have a database | — |
+| `GET` | `/workspaces` | The caller's files, `{id, name}` each, that still have a database | — |
+| `POST` | `/workspace/name` | Record the file name against the workspace | ✅ header |
 | `GET` | `/templates` | The starter-schema catalogue | — |
 | `GET` | `/templates/{id}` | One template, including its SQL | — |
 | `POST` | `/templates/{id}/apply` | Create a template's tables in the workspace | ✅ header |
