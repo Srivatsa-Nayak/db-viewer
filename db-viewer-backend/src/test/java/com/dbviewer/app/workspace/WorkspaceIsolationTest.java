@@ -1,5 +1,6 @@
 package com.dbviewer.app.workspace;
 
+import com.dbviewer.app.auth.AuthContext;
 import com.dbviewer.app.dto.ColumnDefinition;
 import com.dbviewer.app.dto.CreateTableRequest;
 import com.dbviewer.app.dto.TableInfo;
@@ -140,15 +141,75 @@ class WorkspaceIsolationTest {
         ownershipService.claimOrVerify(workspaceId);
         service.createTable(new CreateTableRequest("listed", List.of(
                 new ColumnDefinition("id", "INT", 0, true, false, null, null))));
+        service.setWorkspaceName("orders.sql");
 
         // The UI restores a refreshed session from this listing, so a live workspace must appear...
-        assertThat(service.listWorkspaces()).contains(workspaceId);
+        assertThat(listedIds()).contains(workspaceId);
+
+        // ...and it must carry the name, because after signing out the browser has no copy of it.
+        assertThat(service.listWorkspaces())
+                .filteredOn(w -> w.id().equals(workspaceId))
+                .singleElement()
+                .extracting(WorkspaceOwnershipService.OwnedWorkspace::name)
+                .isEqualTo("orders.sql");
 
         WorkspaceContext.set(workspaceId);
         service.deleteWorkspace();
 
         // ...and a closed one must not, or the browser would resurrect an empty ghost of it.
-        assertThat(service.listWorkspaces()).doesNotContain(workspaceId);
+        assertThat(listedIds()).doesNotContain(workspaceId);
+    }
+
+    /**
+     * The bug this guards: sign in, make files, sign out, sign back in — and they are gone.
+     *
+     * <p>Two things caused it and both are asserted here. The file name lived only in the
+     * browser's localStorage, which signing out clears, so nothing could name a file again; and
+     * the listing is keyed by owner, so it has to keep answering for the account across the
+     * sign-out. The databases were never the problem — they were on disk the whole time.
+     */
+    @Test
+    void namedFiles_shouldStillBeListedAfterSigningOutAndBackIn() {
+        String workspaceId = "isotestsignout";
+        String email = "owner@example.com";
+
+        // Signed in, creating a file.
+        ClientContext.set("isotestbrowser");
+        AuthContext.set(email);
+        WorkspaceContext.set(workspaceId);
+        ownershipService.claimOrVerify(workspaceId);
+        service.createTable(new CreateTableRequest("kept", List.of(
+                new ColumnDefinition("id", "INT", 0, true, false, null, null))));
+        service.setWorkspaceName("payroll.sql");
+
+        // Signed out: the browser is anonymous again, and the account's files are not its own.
+        AuthContext.clear();
+        assertThat(listedIds()).doesNotContain(workspaceId);
+
+        // Signed back in — same account, and in a real sign-in the browser has just cleared its
+        // localStorage, so the backend is the only thing that can still name this file.
+        AuthContext.set(email);
+        assertThat(service.listWorkspaces())
+                .filteredOn(w -> w.id().equals(workspaceId))
+                .singleElement()
+                .extracting(WorkspaceOwnershipService.OwnedWorkspace::name)
+                .isEqualTo("payroll.sql");
+
+        // And the tables are genuinely still there, not just an entry in a list.
+        WorkspaceContext.set(workspaceId);
+        assertThat(service.getDbInfo().get("tables")).isInstanceOf(List.class);
+        assertThat(((List<?>) service.getDbInfo().get("tables"))).hasSize(1);
+
+        WorkspaceContext.set(workspaceId);
+        service.deleteWorkspace();
+        AuthContext.clear();
+    }
+
+    /** The listing carries names now; most assertions here only care about which files exist. */
+    private List<String> listedIds() {
+        return service.listWorkspaces().stream()
+                .map(WorkspaceOwnershipService.OwnedWorkspace::id)
+                .toList();
     }
 
     @Test

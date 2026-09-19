@@ -824,10 +824,31 @@ public class DatabaseServiceImpl implements DatabaseService {
      * listing used by the UI to restore the set of open files after a browser refresh.
      */
     @Override
-    public List<String> listWorkspaces() {
+    public List<WorkspaceOwnershipService.OwnedWorkspace> listWorkspaces() {
         // Narrowed to the caller. This is what the UI restores a session from, so returning
         // every workspace on the machine would put other people's files in your explorer.
         return ownershipService.listOwned(workspaceManager.existingWorkspaceIds());
+    }
+
+    /**
+     * Records the file name against the workspace on the current request.
+     *
+     * <p>The ownership filter has already established that this workspace is the caller's, so
+     * there is nothing further to check here.
+     */
+    @Override
+    public void setWorkspaceName(String fileName) {
+        String workspaceId = WorkspaceContext.get();
+        if (workspaceId == null || workspaceId.isBlank()) {
+            return;
+        }
+        if (fileName == null || fileName.isBlank()) {
+            throw new IllegalArgumentException("A file name cannot be empty.");
+        }
+        if (fileName.length() > 255) {
+            throw new IllegalArgumentException("A file name can be at most 255 characters.");
+        }
+        ownershipService.rename(workspaceId, fileName.trim());
     }
 
     // ─── Delete Workspace ─────────────────────────────────────────────────────────

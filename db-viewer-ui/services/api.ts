@@ -174,6 +174,13 @@ interface UpdateCellParams {
     newValue: string;
 }
 
+/** A file the signed-in user owns, as the backend reports it. */
+export interface WorkspaceSummary {
+    id: string;
+    /** Null for a workspace claimed before names were stored server-side. */
+    name: string | null;
+}
+
 /** What the backend reports after running an uploaded .sql / .csv file. */
 export interface UploadReport {
     message?: string;
@@ -316,10 +323,37 @@ export const dbService = {
         return api.delete(`/table-notes/${noteId}`);
     },
 
-    /** Ids of workspaces that still have a database, used to restore a session after a refresh. */
-    listWorkspaces: async (): Promise<string[]> => {
-        const res = await api.get<{ workspaces?: string[] }>(`/workspaces?_t=${new Date().getTime()}`);
-        return res.data?.workspaces ?? [];
+    /**
+     * The caller's files, with the name each was saved under.
+     *
+     * This is the authority on what a signed-in user owns. The browser's own copy in
+     * localStorage is a cache of layout, not a record of existence — signing out clears it — so
+     * a file list rebuilt only from storage loses every file the moment somebody logs out.
+     *
+     * Tolerates the old `string[]` shape so a new UI against an old backend degrades to
+     * unnamed files rather than an empty explorer.
+     */
+    listWorkspaces: async (): Promise<WorkspaceSummary[]> => {
+        const res = await api.get<{ workspaces?: (string | { id?: string; name?: string | null })[] }>(
+            `/workspaces?_t=${new Date().getTime()}`);
+        return (res.data?.workspaces ?? []).flatMap(entry => {
+            if (typeof entry === 'string') return [{ id: entry, name: null }];
+            return entry?.id ? [{ id: entry.id, name: entry.name ?? null }] : [];
+        });
+    },
+
+    /**
+     * Records what the user called this file, against the active workspace.
+     *
+     * Fire-and-forget on purpose: a file without a stored name still opens, and failing the
+     * creation of a file because its label did not save would be the worse outcome.
+     */
+    setWorkspaceName: async (name: string): Promise<void> => {
+        try {
+            await api.post('/workspace/name', { name });
+        } catch (e) {
+            console.error('Could not record the file name', e);
+        }
     },
 
     /** Version declared in the backend's pom.xml; shown in the info modal. */

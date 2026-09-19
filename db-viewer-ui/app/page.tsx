@@ -64,6 +64,9 @@ export default function LandingPage() {
 
         try {
             await dbService.applyTemplate(template.id);
+            // Server-side name, so the file is still listed after a sign-out — localStorage
+            // below only carries it as far as the next page load.
+            await dbService.setWorkspaceName(`${template.id}.sql`);
 
             const existing = loadSession();
             saveSession({

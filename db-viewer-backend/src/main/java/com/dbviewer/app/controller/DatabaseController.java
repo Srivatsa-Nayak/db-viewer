@@ -388,13 +388,33 @@ public class DatabaseController {
 
     @GetMapping("/workspaces")
     @Operation(summary = "List Workspaces",
-            description = "Ids of every workspace that still has a database. The UI uses this to "
-                    + "restore the files that were open before a browser refresh.")
+            description = "Every workspace the caller owns that still has a database, with the "
+                    + "name the user gave it. The UI rebuilds its file list from this — after a "
+                    + "browser refresh, and on sign-in, where it is the only source.")
     public ResponseEntity<?> listWorkspaces() {
         try {
             return ResponseEntity.ok(Map.of("workspaces", databaseService.listWorkspaces()));
         } catch (Exception e) {
             log.error("List workspaces error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /** Body for {@link #setWorkspaceName}. */
+    public record WorkspaceNameRequest(String name) { }
+
+    @PostMapping("/workspace/name")
+    @Operation(summary = "Name Workspace",
+            description = "Records what the user called this file, so it can be listed by name "
+                    + "on any machine they sign in from.")
+    public ResponseEntity<?> setWorkspaceName(@RequestBody WorkspaceNameRequest request) {
+        try {
+            databaseService.setWorkspaceName(request.name());
+            return ResponseEntity.ok(Map.of("message", "Workspace named"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Set workspace name error", e);
             return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
         }
     }
