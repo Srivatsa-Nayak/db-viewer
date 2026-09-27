@@ -22,6 +22,10 @@ import { Rect, routeEdge, toRoundedPath } from './edgeRouting';
 const selectNodeRects = (state: ReactFlowState): (Rect & { id: string })[] => {
     const rects: (Rect & { id: string })[] = [];
     state.nodeInternals.forEach(node => {
+        // A domain group is a box drawn *around* tables, not a thing to route around: an edge
+        // crossing a boundary is precisely the one worth seeing, and treating the box as an
+        // obstacle would send every such line on a detour round the outside.
+        if (node.id.startsWith('group:')) return;
         // width/height are null until React Flow has measured the node; a zero-size obstacle is
         // worse than none, because it silently stops blocking anything.
         if (!node.width || !node.height) return;

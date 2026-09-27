@@ -1,24 +1,28 @@
 "use client";
 
-import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import dynamic from "next/dynamic";
 import { FileCode, Plus, Loader2, Sparkles } from 'lucide-react';
 
 import { Header } from "@/components/header/Header";
-import { Visualizer } from "@/components/canvas/Visualizer";
+import { Visualizer, RelationshipDraft } from "@/components/canvas/Visualizer";
 import type { EdgeCardinality } from "@/components/canvas/OrthogonalEdge";
 import { FileExplorer, ExplorerFile } from "@/components/editor/FileExplorer";
+import { SqlScratchpad } from "@/components/editor/SqlScratchpad";
 import { Notice } from '@/components/modal/NoticeModal';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { ActionToast, ToastState } from '@/components/ui/ActionToast';
 import { Edge, MarkerType, Node, applyNodeChanges, NodeChange } from "reactflow";
 import {
     dbService, setActiveWorkspace, authService, isAuthRequired, isForeignWorkspace,
     AuthUser, TableNote, WorkspaceSummary,
 } from "@/services/api";
 import { clearSession, loadSession, saveSession } from "@/services/sessionStorage";
+import { history, HistorySnapshot } from "@/services/history";
 import { newWorkspaceId } from "@/services/workspaceId";
 import { downloadCanvasImage } from "@/services/exportImage";
-import { ImportPlan, Relationship, SqlDialectId, TableInfo, TagColour } from "@/types";
+import { CanvasGroup, ImportPlan, Relationship, SqlDialectId, TableInfo, TagColour } from "@/types";
+import type { GroupBoxData } from "@/components/canvas/GroupBox";
 
 /**
  * Dialogs are code-split.
@@ -67,6 +71,8 @@ interface Workspace {
      * Decorations live here, keyed by table name, and are folded onto the nodes at render time.
      */
     decorations: Record<string, NodeDecoration>;
+    /** Named boundaries drawn around sets of tables. Members, not geometry — see `CanvasGroup`. */
+    groups: CanvasGroup[];
 }
 
 /**
@@ -101,6 +107,77 @@ const EDGE_COLOUR = 'var(--color-edge)';
  */
 const edgeIdFor = (rel: Relationship): string =>
     `${rel.targetTable}.${rel.targetColumn}->${rel.sourceTable}.${rel.sourceColumn}`;
+
+/**
+ * How long a dropped table lingers as a ghost before the delete is really sent.
+ *
+ * Long enough to notice the mistake and reach the button, short enough that the canvas is not
+ * lying about what the database contains for any length of time. The same number drives the
+ * drain bar on the node, passed down rather than duplicated in CSS.
+ */
+const GHOST_MS = 7000;
+
+/** Clearance around the tables inside a group, and room for its label on the top edge. */
+/** Distinguishes a group's React Flow node from a table's, whose id is the table name. */
+const GROUP_NODE_PREFIX = 'group:';
+
+const GROUP_PADDING = 28;
+const GROUP_HEADER = 22;
+
+/**
+ * Turns each group into a React Flow node sized to whatever it currently contains.
+ *
+ * A group whose tables have all been dropped produces nothing — it is not an error and not worth
+ * a message, it is just a box with nothing to draw around. The same skip handles a member that
+ * was renamed or removed, which is why membership never has to be tidied up after a drop.
+ */
+const groupNodes = (
+    groups: CanvasGroup[],
+    tableNodes: Node[],
+    handlers: Omit<GroupBoxData, 'group' | 'memberCount'>,
+): Node[] =>
+    groups.flatMap(group => {
+        const members = tableNodes.filter(n => group.tables.includes(n.id));
+        if (members.length === 0) return [];
+
+        const left = Math.min(...members.map(n => n.position.x));
+        const top = Math.min(...members.map(n => n.position.y));
+        // `width`/`height` are written onto the node by React Flow once it has measured it;
+        // the fallbacks cover the frames before that, when a box would otherwise be the wrong size.
+        const right = Math.max(...members.map(n => n.position.x + (n.width ?? 240)));
+        const bottom = Math.max(...members.map(n => n.position.y + (n.height ?? 140)));
+
+        const width = right - left + GROUP_PADDING * 2;
+        const height = bottom - top + GROUP_PADDING * 2 + GROUP_HEADER;
+
+        return [{
+            id: `${GROUP_NODE_PREFIX}${group.id}`,
+            // See the note on `nodeTypes` in Visualizer: `group` is taken by React Flow.
+            type: 'domainGroup',
+            position: { x: left - GROUP_PADDING, y: top - GROUP_PADDING - GROUP_HEADER },
+            style: { width, height },
+            /**
+             * Given, not measured — and without them the box never appears at all.
+             *
+             * React Flow keeps a node hidden (`visibility: hidden`) until it knows its size, and
+             * in controlled mode it learns that from a `dimensions` change round-tripping back
+             * through the `nodes` prop. `onNodesChange` applies changes to `workspace.nodes`,
+             * which holds tables only, so a group's measurement was discarded every time and the
+             * box stayed invisible for ever. Since the size is derived here anyway, saying it
+             * outright is both the fix and the honest description.
+             */
+            width,
+            height,
+            // Deliberately *not* `zIndex: -1`. That does put the box behind the tables — and
+            // behind React Flow's own interaction pane as well, which makes every control on the
+            // box unclickable: `elementFromPoint` over its menu button returned the pane.
+            // Painting order comes from array order instead (groups are emitted first), and the
+            // box body sets `pointer-events: none` so it cannot swallow a click meant for the
+            // canvas underneath it.
+            selectable: false,
+            data: { group, memberCount: members.length, ...handlers },
+        }];
+    });
 
 /**
  * Tables that exist only to join two others.
@@ -276,9 +353,55 @@ export default function Home() {
      */
     const [pendingImport, setPendingImport] = useState<{ file: File; plan: ImportPlan } | null>(null);
     const [isProfileOpen, setProfileOpen] = useState(false);
+    const [isScratchpadOpen, setScratchpadOpen] = useState(false);
     const [notes, setNotes] = useState<TableNote[]>([]);
     const [tableToDelete, setTableToDelete] = useState<string | null>(null);
-    const [isDeletingTable, setDeletingTable] = useState(false);
+    /**
+     * Tables whose delete has been agreed to but not yet sent.
+     *
+     * The node stays on the canvas, greyed, with an Undo button, and `DELETE /table/{name}`
+     * only goes out when the timer expires. Nothing is snapshotted and nothing is restored,
+     * because until then nothing has happened — which also means closing the tab, navigating
+     * away or losing the network all fail in the direction of *not* dropping the table.
+     *
+     * Keyed by table name and carrying the workspace it belongs to, because the delete is
+     * workspace-scoped through a request header: a timer that fired after the user switched
+     * files would otherwise drop a same-named table in the wrong database.
+     */
+    const [ghosts, setGhosts] = useState<{ table: string; workspaceId: string }[]>([]);
+    /**
+     * The pending `setTimeout` per ghosted table.
+     *
+     * A ref rather than state: nothing renders from it, and storing timer ids in state would
+     * re-render the canvas twice for every delete.
+     */
+    const ghostTimers = useRef<Map<string, number>>(new Map());
+
+    /*
+     * Leaving the page cancels every pending drop.
+     *
+     * This is the fail-safe direction and it is deliberate. A user who closes the tab three
+     * seconds after pressing Delete has not confirmed anything a second time, and a table that
+     * is still there can be deleted again — a table that is gone cannot be brought back.
+     */
+    useEffect(() => {
+        const timers = ghostTimers.current;
+        return () => {
+            timers.forEach(id => window.clearTimeout(id));
+            timers.clear();
+        };
+    }, []);
+
+    /** Cancels the countdown. Nothing to restore — the drop was never sent. */
+    const handleUndoDelete = useCallback((tableName: string) => {
+        const timer = ghostTimers.current.get(tableName);
+        if (timer !== undefined) {
+            window.clearTimeout(timer);
+            ghostTimers.current.delete(tableName);
+        }
+        setGhosts(prev => prev.filter(g => g.table !== tableName));
+    }, []);
+
     const [isLoadingExample, setLoadingExample] = useState(false);
 
     /**
@@ -301,6 +424,14 @@ export default function Home() {
      * change had gone through.
      */
     const activeWorkspaceIdRef = useRef<string | null>(null);
+
+    /**
+     * The active workspace, reachable from a stable callback.
+     *
+     * The group handlers need to read the current groups but must not be rebuilt whenever one
+     * changes — they are passed into node `data`, and a new identity there re-renders the canvas.
+     */
+    const activeWorkspaceRef = useRef<Workspace | null>(null);
 
     const activeWorkspace = useMemo(
         () => workspaces.find(w => w.id === activeWorkspaceId) ?? null,
@@ -326,27 +457,51 @@ export default function Home() {
     const nodesWithNotes = useMemo(() => {
         if (!activeWorkspace) return [];
         const decorations = activeWorkspace.decorations;
+        /*
+         * Ghosting is *not* a decoration.
+         *
+         * Decorations are what the user has said about a table and they are written back to
+         * `__canvas_meta`; "this is being deleted" is neither — it lasts seven seconds and must
+         * never reach the server. Keeping it in its own state is what stops a colour change on
+         * a ghosted table persisting the flag by accident.
+         */
+        const ghosted = new Set(ghosts
+            .filter(g => g.workspaceId === activeWorkspace.id)
+            .map(g => g.table));
+
         return activeWorkspace.nodes.map(n => {
             const openNotes = openNoteCounts[n.id] ?? 0;
             const decoration = decorations[n.id];
             // The colour rides on `className`, so `data` identity survives a drag; the tag is
             // text the node renders, so it has to be in `data`.
-            const className = decoration?.colour ? `tag-${decoration.colour}` : undefined;
+            const tagClass = decoration?.colour ? `tag-${decoration.colour}` : undefined;
+            const isGhost = ghosted.has(n.id);
+            // Appended, exactly as the search focus is: a table can be coloured *and* on its
+            // way out, and assigning here would drop whichever was written second.
+            const className = [tagClass, isGhost ? 'node-ghost' : undefined]
+                .filter(Boolean).join(' ') || undefined;
             const tag = decoration?.tag;
 
             const colour = decoration?.colour;
 
             const dataUnchanged = openNotes === n.data.openNotes
                 && tag === n.data.tag
-                && colour === n.data.colour;
+                && colour === n.data.colour
+                && isGhost === !!n.data.ghost;
             if (dataUnchanged && className === n.className) return n;
             return {
                 ...n,
                 className,
-                data: dataUnchanged ? n.data : { ...n.data, openNotes, tag, colour },
+                data: dataUnchanged ? n.data : {
+                    ...n.data,
+                    openNotes, tag, colour,
+                    ghost: isGhost || undefined,
+                    ghostMs: isGhost ? GHOST_MS : undefined,
+                    onUndoDelete: handleUndoDelete,
+                },
             };
         });
-    }, [activeWorkspace, openNoteCounts]);
+    }, [activeWorkspace, openNoteCounts, ghosts, handleUndoDelete]);
 
     const requireAccount = useCallback((reason: string) => {
         setAuthReason(reason);
@@ -358,6 +513,9 @@ export default function Home() {
         activeWorkspaceIdRef.current = activeWorkspaceId;
         setActiveWorkspace(activeWorkspaceId);
     }, [activeWorkspaceId]);
+
+    // Written in an effect rather than during render, which `react-hooks/refs` forbids.
+    useEffect(() => { activeWorkspaceRef.current = activeWorkspace ?? null; }, [activeWorkspace]);
 
     // The explorer is a persistent column on a wide screen and an overlay drawer on a narrow
     // one. Opening it by default only makes sense in the first case, and the decision has to
@@ -414,7 +572,9 @@ export default function Home() {
      * failure the previous decoration goes back, so the canvas never disagrees with the server
      * for longer than the round trip.
      */
-    const handleColourChange = useCallback(async (tableName: string, colour: TagColour | undefined) => {
+    const handleColourChange = useCallback(async (
+        tableName: string, colour: TagColour | undefined, record = true,
+    ) => {
         const workspaceId = activeWorkspaceIdRef.current;
         if (!workspaceId) return;
 
@@ -436,6 +596,16 @@ export default function Home() {
             } else {
                 await dbService.setCanvasMeta('table', tableName, decoration);
             }
+            // `record` is false when the call *is* an undo, so reversing a colour does not push
+            // a fresh entry and leave Ctrl+Z toggling between two colours for ever.
+            if (record) {
+                const before = previous?.colour;
+                history.push({
+                    label: colour ? `Colour ${tableName}` : `Clear colour on ${tableName}`,
+                    undo: async () => { await handleColourChangeRef.current(tableName, before, false); },
+                    redo: async () => { await handleColourChangeRef.current(tableName, colour, false); },
+                });
+            }
         } catch (e) {
             console.error('Could not save the table colour', e);
             setWorkspaces(prev => prev.map(w => {
@@ -447,6 +617,16 @@ export default function Home() {
             }));
         }
     }, []);
+
+    /**
+     * The handler reaching itself, for the undo it registers.
+     *
+     * A `useCallback` cannot close over itself, and giving it a dependency on itself is circular.
+     * The ref is written in an effect, which is the sanctioned place — writing one during render
+     * is what `react-hooks/refs` forbids.
+     */
+    const handleColourChangeRef = useRef(handleColourChange);
+    useEffect(() => { handleColourChangeRef.current = handleColourChange; }, [handleColourChange]);
 
     /** Drops a file that is no longer ours, rather than leaving a tab that 403s on every action. */
     const closeForeignWorkspace = useCallback((workspaceId: string) => {
@@ -497,6 +677,7 @@ export default function Home() {
                             referencedColumns: keys.referenced[tbl.name] ?? [],
                             references: keys.references[tbl.name],
                             isJunction: junctions.has(tbl.name),
+                            isView: tbl.isView,
                             openNotes: existing?.data?.openNotes ?? 0,
                             onRefresh: refreshActiveSchema,
                             onEdit: setEditingTable,
@@ -534,7 +715,8 @@ export default function Home() {
         id: string,
         isImported: boolean,
         savedPositions: Record<string, { x: number; y: number }> = {},
-        decorations: Record<string, NodeDecoration> = {}
+        decorations: Record<string, NodeDecoration> = {},
+        groups: CanvasGroup[] = []
     ): Workspace => {
         const keys = keyColumnsByTable(relationships);
         const junctions = junctionTables(tables, relationships);
@@ -555,6 +737,7 @@ export default function Home() {
                 referencedColumns: keys.referenced[tbl.name] ?? [],
                 references: keys.references[tbl.name],
                 isJunction: junctions.has(tbl.name),
+                isView: tbl.isView,
                 openNotes: 0,
                 onRefresh: refreshActiveSchema,
                 onEdit: setEditingTable,
@@ -572,6 +755,7 @@ export default function Home() {
             tables: tables.map(t => ({ name: t.name, columns: t.columns })),
         },
         decorations,
+        groups,
         };
     }, [refreshActiveSchema, requestTableDelete, handleDownloadCsv, refreshNotes, handleColourChange]);
 
@@ -594,18 +778,30 @@ export default function Home() {
      * Failure is deliberately soft: a file that opens without its colours is a worse-looking
      * canvas, while a file that refuses to open because a colour could not be read is lost work.
      */
-    const loadDecorations = useCallback(async (): Promise<Record<string, NodeDecoration>> => {
+    const loadCanvasMeta = useCallback(async (): Promise<{
+        decorations: Record<string, NodeDecoration>;
+        groups: CanvasGroup[];
+    }> => {
         try {
             const meta = await dbService.getCanvasMeta();
-            return Object.fromEntries(meta
+            const decorations = Object.fromEntries(meta
                 .filter(m => m.kind === 'table')
                 .map(m => [m.ref, {
                     colour: m.payload.colour as TagColour | undefined,
                     tag: typeof m.payload.tag === 'string' ? m.payload.tag : undefined,
                 }]));
+            const groups = meta
+                .filter(m => m.kind === 'group')
+                .map(m => ({
+                    id: m.ref,
+                    name: typeof m.payload.name === 'string' ? m.payload.name : 'Group',
+                    colour: m.payload.colour as TagColour | undefined,
+                    tables: Array.isArray(m.payload.tables) ? m.payload.tables as string[] : [],
+                }));
+            return { decorations, groups };
         } catch (e) {
             console.error('Could not read canvas annotations', e);
-            return {};
+            return { decorations: {}, groups: [] };
         }
     }, []);
 
@@ -632,10 +828,11 @@ export default function Home() {
             const name = entry.name ?? stored?.name ?? 'Untitled.sql';
             try {
                 const schema = await dbService.getSchema();
-                const decorations = await loadDecorations();
+                const meta = await loadCanvasMeta();
                 restored.push(transformSchemaToWorkspace(
                     schema.tables, schema.relationships,
-                    name, entry.id, stored?.isImported ?? false, stored?.positions ?? {}, decorations
+                    name, entry.id, stored?.isImported ?? false, stored?.positions ?? {},
+                    meta.decorations, meta.groups
                 ));
             } catch (e) {
                 // A file that is no longer ours is simply dropped. Not worth interrupting the
@@ -660,7 +857,7 @@ export default function Home() {
         setWorkspaces(restored);
         setActiveWorkspaceId(nextActive);
         setActiveWorkspace(nextActive);
-    }, [transformSchemaToWorkspace, loadDecorations]);
+    }, [transformSchemaToWorkspace, loadCanvasMeta]);
 
     /**
      * Rebuild the file list on mount, and again whenever the identity changes.
@@ -824,6 +1021,7 @@ export default function Home() {
             fileData: { id: newId, name: fileName, tables: [] },
             isImported: false,
             decorations: {},
+            groups: [],
         }]);
         setActiveWorkspaceId(newId);
     };
@@ -862,31 +1060,91 @@ export default function Home() {
         }
     };
 
-    const confirmTableDelete = async () => {
-        if (!tableToDelete) return;
-        setDeletingTable(true);
+    /**
+     * The delete, finally sent.
+     *
+     * Re-checks which file is open first. The workspace id travels as a request header, so a
+     * timer that outlived a file switch would drop a table of that name in whichever database
+     * is open *now*. Abandoning is the right answer: the user has moved on, and not deleting
+     * is the recoverable half of the two mistakes.
+     */
+    const commitTableDelete = useCallback(async (tableName: string, workspaceId: string) => {
+        if (activeWorkspaceIdRef.current !== workspaceId) {
+            setGhosts(prev => prev.filter(g => g.table !== tableName));
+            return;
+        }
         try {
-            await dbService.dropTable(tableToDelete);
-            setTableToDelete(null);
+            await dbService.dropTable(tableName);
+            setGhosts(prev => prev.filter(g => g.table !== tableName));
             await refreshActiveSchema();
             refreshNotes();
         } catch (err: unknown) {
             const response = err && typeof err === 'object' && 'response' in err
                 ? (err as { response?: { status?: number; data?: { error?: string; referencedBy?: string[] } } }).response
                 : undefined;
-            setTableToDelete(null);
+            // The node comes back to life rather than staying a ghost over a table that is
+            // still there — the canvas must not go on claiming something the database denies.
+            setGhosts(prev => prev.filter(g => g.table !== tableName));
             setNotice({
                 isOpen: true,
                 // 409 is the expected, meaningful case: another table depends on this one.
                 severity: response?.status === 409 ? 'warning' : 'error',
                 title: response?.status === 409 ? 'Table is still referenced' : 'Could not delete the table',
-                message: response?.data?.error || 'The table could not be deleted.',
+                message: response?.data?.error || `${tableName} could not be deleted.`,
                 details: response?.data?.referencedBy?.map(t => `${t} has a foreign key pointing at this table`),
             });
-        } finally {
-            setDeletingTable(false);
         }
+    }, [refreshActiveSchema, refreshNotes]);
+
+    /**
+     * Confirming a delete starts a countdown; it does not call the backend.
+     *
+     * The alternative — drop it now and offer to put it back — means snapshotting every row,
+     * every index and every constraint, then replaying them in an order that satisfies the
+     * foreign keys. Deferring needs none of that, and it is the version that fails safely: a
+     * closed tab, a dead network or a reloaded page all leave the table exactly where it was.
+     */
+    const confirmTableDelete = () => {
+        const tableName = tableToDelete;
+        const workspaceId = activeWorkspaceIdRef.current;
+        if (!tableName || !workspaceId) return;
+        setTableToDelete(null);
+
+        /*
+         * Refused here rather than seven seconds from here.
+         *
+         * The backend is still the authority and answers 409 for this, but it would answer it
+         * *after* the countdown — so the user would watch a table fade out and then be told it
+         * was never going anywhere. Everything needed to know the answer is already on screen.
+         */
+        const referencedBy = Array.from(new Set(
+            (activeWorkspaceRef.current?.relationships ?? [])
+                .filter(rel => rel.targetTable === tableName && rel.sourceTable !== tableName)
+                .map(rel => rel.sourceTable)
+        ));
+        if (referencedBy.length > 0) {
+            setNotice({
+                isOpen: true,
+                severity: 'warning',
+                title: 'Table is still referenced',
+                message: `${tableName} cannot be deleted while other tables point at it. `
+                    + 'Remove those foreign keys first, or delete those tables.',
+                details: referencedBy.map(t => `${t} has a foreign key pointing at this table`),
+            });
+            return;
+        }
+
+        setGhosts(prev => prev.some(g => g.table === tableName && g.workspaceId === workspaceId)
+            ? prev
+            : [...prev, { table: tableName, workspaceId }]);
+
+        const timer = window.setTimeout(() => {
+            ghostTimers.current.delete(tableName);
+            void commitTableDelete(tableName, workspaceId);
+        }, GHOST_MS);
+        ghostTimers.current.set(tableName, timer);
     };
+
 
     const confirmClear = async () => {
         const closingId = activeWorkspaceId;
@@ -934,7 +1192,9 @@ export default function Home() {
     const handleExportImage = async () => {
         if (!activeWorkspace) return;
         if (!user) return requireAccount('Exporting a file');
-        await downloadCanvasImage(activeWorkspace.nodes, activeWorkspace.name);
+        // The whole viewport is captured, so a group box is in the picture either way — but
+        // the image is *sized* from these, and tables alone would crop the boxes around them.
+        await downloadCanvasImage(canvasNodes, activeWorkspace.name);
     };
 
     const handleExportRequest = () => {
@@ -1000,6 +1260,354 @@ export default function Home() {
         ));
     }, []);
 
+    /* ── Undo / redo ─────────────────────────────────────────────────────── */
+
+    const [toast, setToast] = useState<ToastState | null>(null);
+    /** Set when Ctrl+Z lands on a lossy entry: the confirmation shows before anything runs. */
+    const [pendingLossyUndo, setPendingLossyUndo] = useState<string | null>(null);
+
+    const historyState: HistorySnapshot = useSyncExternalStore(
+        history.subscribe, history.getSnapshot, history.getServerSnapshot);
+
+    /**
+     * Toasts dismiss themselves from a timer started here, not from an effect inside the toast:
+     * `react-hooks/set-state-in-effect` is an error, and a self-dismissing component needs
+     * exactly that.
+     */
+    const dismissTimer = useRef<number | null>(null);
+    const showToast = useCallback((next: ToastState) => {
+        if (dismissTimer.current !== null) window.clearTimeout(dismissTimer.current);
+        setToast(next);
+        dismissTimer.current = window.setTimeout(() => setToast(null), 4000);
+    }, []);
+
+    const runUndo = useCallback(async () => {
+        const result = await history.undo();
+        if (result.ok) {
+            showToast({
+                message: `Undid: ${result.label}`,
+                tone: 'ok',
+                action: { label: 'Redo', onClick: () => { void history.redo(); } },
+            });
+        } else {
+            showToast({ message: result.reason, tone: 'error' });
+        }
+    }, [showToast]);
+
+    const requestUndo = useCallback(() => {
+        const next = history.peekUndo();
+        if (!next) {
+            const { blockedBy } = history.getSnapshot();
+            if (blockedBy) showToast({ message: blockedBy, tone: 'error' });
+            return;
+        }
+        // A lossy inverse cannot put back what the forward change destroyed, so it asks first
+        // rather than quietly doing something irreversible in the name of reversing something.
+        if (next.lossy) { setPendingLossyUndo(next.label); return; }
+        void runUndo();
+    }, [runUndo, showToast]);
+
+    const requestRedo = useCallback(async () => {
+        const result = await history.redo();
+        showToast(result.ok
+            ? { message: `Redid: ${result.label}`, tone: 'ok' }
+            : { message: result.reason, tone: 'error' });
+    }, [showToast]);
+
+    /**
+     * Ctrl+Z / Ctrl+Shift+Z, following the Ctrl+F precedent in `Visualizer` — with two guards it
+     * does not need.
+     *
+     * A dialog on top means the canvas is not what is being read. And an editable element means
+     * the keystroke belongs to whoever is typing: stealing it there would undo a *schema change*
+     * while somebody is halfway through a cell, which is both surprising and unrecoverable.
+     */
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (!(event.ctrlKey || event.metaKey)) return;
+            const key = event.key.toLowerCase();
+            if (key !== 'z' && key !== 'y') return;
+            if (document.body.dataset.dialogOpen === 'true') return;
+
+            const target = event.target as HTMLElement | null;
+            if (target?.isContentEditable) return;
+            const tag = target?.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+            event.preventDefault();
+            if (key === 'y' || event.shiftKey) void requestRedo();
+            else requestUndo();
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    }, [requestUndo, requestRedo]);
+
+    /** History is per-file: an entry naming a table in one workspace means nothing in another. */
+    useEffect(() => { history.reset(activeWorkspaceId); }, [activeWorkspaceId]);
+
+    /**
+     * Creates the relationship someone just drew on the canvas.
+     *
+     * Not optimistic, unlike the colour change: this writes DDL and can legitimately be refused —
+     * a unique-less target, mismatched types, rows that already break the key — and an edge that
+     * appeared and then vanished would be a worse account of what happened than one that only
+     * appears once it is real. The refusal carries the reason, which is the useful part.
+     */
+    const handleCreateRelationship = useCallback(async (link: RelationshipDraft) => {
+        const params = {
+            tableName: link.childTable,
+            columnName: link.childColumn,
+            refTable: link.parentTable,
+            refColumn: link.parentColumn,
+        };
+        try {
+            await dbService.addForeignKey(params);
+            await refreshActiveSchema();
+            showToast({
+                message: `Linked ${link.childTable}.${link.childColumn} to ${link.parentTable}.${link.parentColumn}`,
+                tone: 'ok',
+            });
+            history.push({
+                label: `Link ${link.childTable}.${link.childColumn} to ${link.parentTable}`,
+                undo: async () => { await dbService.dropForeignKey(params); await refreshActiveSchema(); },
+                redo: async () => { await dbService.addForeignKey(params); await refreshActiveSchema(); },
+            });
+        } catch (e) {
+            setNotice({
+                isOpen: true,
+                severity: 'error',
+                title: 'That relationship was refused',
+                message: errorMessage(e)
+                    || `${link.childTable}.${link.childColumn} could not be linked to ${link.parentTable}.${link.parentColumn}.`,
+            });
+        }
+    }, [refreshActiveSchema, showToast]);
+
+    /**
+     * Called after the scratchpad runs something that may have changed the schema.
+     *
+     * Refreshes the canvas, and then closes the history behind a barrier. Every entry beneath it
+     * is a guess from here on: an entry that wants to drop a column cannot know whether the
+     * column is still there, still that type, or now holds data somebody cares about. Refusing to
+     * cross the barrier is the honest answer; silently applying a stale inverse is not.
+     */
+    const handleScratchpadRanDdl = useCallback(async () => {
+        await refreshActiveSchema();
+        history.pushBarrier(
+            'Undo stops here: SQL you ran by hand may have changed what the earlier steps assumed.');
+    }, [refreshActiveSchema]);
+
+    /* ── Domain groups ───────────────────────────────────────────────────── */
+
+    /**
+     * Writes a group, or removes it when `group` is null, and keeps the canvas in step.
+     *
+     * One function for all four operations — create, rename, recolour, ungroup — because they are
+     * the same write with a different payload, and because that makes each one's inverse another
+     * call to this with the previous value. `record: false` is how an undo avoids pushing an
+     * entry of its own and leaving Ctrl+Z toggling for ever.
+     */
+    const writeGroup = useCallback(async (
+        id: string, group: CanvasGroup | null, label: string, record = true,
+    ) => {
+        const workspaceId = activeWorkspaceIdRef.current;
+        if (!workspaceId) return;
+
+        let previous: CanvasGroup | undefined;
+        setWorkspaces(prev => prev.map(w => {
+            if (w.id !== workspaceId) return w;
+            previous = w.groups.find(g => g.id === id);
+            const others = w.groups.filter(g => g.id !== id);
+            return { ...w, groups: group ? [...others, group] : others };
+        }));
+
+        try {
+            if (group) await dbService.setCanvasMeta('group', id, group);
+            else await dbService.deleteCanvasMeta('group', id);
+
+            if (record) {
+                const before = previous;
+                history.push({
+                    label,
+                    undo: async () => { await writeGroupRef.current(id, before ?? null, label, false); },
+                    redo: async () => { await writeGroupRef.current(id, group, label, false); },
+                });
+            }
+        } catch (e) {
+            console.error('Could not save the group', e);
+            setWorkspaces(prev => prev.map(w => {
+                if (w.id !== workspaceId) return w;
+                const others = w.groups.filter(g => g.id !== id);
+                return { ...w, groups: previous ? [...others, previous] : others };
+            }));
+        }
+    }, []);
+
+    /** As with `handleColourChange`: a useCallback cannot close over itself. */
+    const writeGroupRef = useRef(writeGroup);
+    useEffect(() => { writeGroupRef.current = writeGroup; }, [writeGroup]);
+
+    const handleCreateGroup = useCallback((tables: string[]) => {
+        // Pressing the toolbar button with nothing selected is how most people will first meet
+        // this, so it answers rather than doing nothing: the gesture that selects tables is
+        // invisible, and a button that silently ignores you teaches nothing.
+        if (tables.length < 2) {
+            showToast({
+                message: 'Select two or more tables first — hold Shift and drag a box around them, '
+                    + 'or Ctrl-click each one.',
+                tone: 'error',
+            });
+            return;
+        }
+        // Letters, digits and underscores only: the backend validates the reference as an
+        // identifier and would rewrite a hyphen, leaving the two sides naming different groups.
+        const id = `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+        const existing = activeWorkspaceRef.current?.groups.length ?? 0;
+        void writeGroup(id, { id, name: `Group ${existing + 1}`, tables }, `Group ${tables.length} tables`);
+        showToast({ message: `Grouped ${tables.length} tables`, tone: 'ok' });
+    }, [writeGroup, showToast]);
+
+    const handleRenameGroup = useCallback((id: string, name: string) => {
+        const group = activeWorkspaceRef.current?.groups.find(g => g.id === id);
+        if (!group) return;
+        void writeGroup(id, { ...group, name }, `Rename group to ${name}`);
+    }, [writeGroup]);
+
+    const handleGroupColour = useCallback((id: string, colour: TagColour | undefined) => {
+        const group = activeWorkspaceRef.current?.groups.find(g => g.id === id);
+        if (!group) return;
+        void writeGroup(id, { ...group, colour }, `Colour group ${group.name}`);
+    }, [writeGroup]);
+
+    const handleUngroup = useCallback((id: string) => {
+        const group = activeWorkspaceRef.current?.groups.find(g => g.id === id);
+        if (!group) return;
+        void writeGroup(id, null, `Ungroup ${group.name}`);
+        showToast({ message: `Removed the ${group.name} box. The tables are untouched.`, tone: 'ok' });
+    }, [writeGroup, showToast]);
+
+    /**
+     * Everything the canvas draws: the tables, and the boxes derived from wherever they are.
+     *
+     * Declared after the group handlers on purpose — it calls them, and a `useMemo` body runs
+     * during render, so referencing a `const` defined further down would be a temporal dead zone
+     * error rather than a hoisting convenience.
+     *
+     * Groups come first in the array as well as carrying `zIndex: -1`: React Flow honours both,
+     * and the order decides paint order for anything that lands at the same z.
+     */
+    const canvasNodes = useMemo(() => {
+        if (!activeWorkspace || activeWorkspace.groups.length === 0) return nodesWithNotes;
+        return [
+            ...groupNodes(activeWorkspace.groups, nodesWithNotes, {
+                onRename: handleRenameGroup,
+                onColour: handleGroupColour,
+                onUngroup: handleUngroup,
+            }),
+            ...nodesWithNotes,
+        ];
+    }, [activeWorkspace, nodesWithNotes, handleRenameGroup, handleGroupColour, handleUngroup]);
+
+    /** Moves named nodes outright. The undo and redo of a drag are both just this. */
+    const placeNodes = useCallback((positions: Record<string, { x: number; y: number }>) => {
+        setWorkspaces(prev => prev.map(w => w.id !== activeWorkspaceIdRef.current ? w : {
+            ...w,
+            nodes: w.nodes.map(n => positions[n.id] ? { ...n, position: positions[n.id] } : n),
+        }));
+    }, []);
+
+    /**
+     * Where the dragged nodes were when the gesture began.
+     *
+     * Taken from React Flow's drag *callbacks* rather than from `onNodesChange`, for two reasons.
+     * A drag emits a position change on every mouse move, so reading them would put a hundred
+     * entries on the stack for one gesture and make Ctrl+Z crawl the node back across the canvas —
+     * and the bookkeeping would have to happen inside the `setWorkspaces` updater, which React is
+     * free to run twice, recording the same drag twice. Start and stop fire exactly once each.
+     */
+    const dragOriginRef = useRef<Record<string, { x: number; y: number }>>({});
+
+    /**
+     * Where a group box was when its drag began, and where each of its tables was.
+     *
+     * A group's position is derived from its members, so React Flow moving the box achieves
+     * nothing on its own — the next render would put it straight back. The box's movement is
+     * therefore read as an instruction and applied to the tables instead, which moves the box
+     * because the box *is* the tables.
+     */
+    const groupDragRef = useRef<{
+        id: string;
+        from: { x: number; y: number };
+        members: Record<string, { x: number; y: number }>;
+    } | null>(null);
+
+    const handleNodeDragStart = useCallback((_: unknown, node: Node, dragged: Node[]) => {
+        if (node.id.startsWith(GROUP_NODE_PREFIX)) {
+            const group = (node.data as GroupBoxData | undefined)?.group;
+            const nodes = activeWorkspaceRef.current?.nodes ?? [];
+            groupDragRef.current = {
+                id: node.id,
+                from: { ...node.position },
+                members: Object.fromEntries(nodes
+                    .filter(n => group?.tables.includes(n.id))
+                    .map(n => [n.id, { ...n.position }])),
+            };
+            return;
+        }
+        dragOriginRef.current = Object.fromEntries(dragged.map(n => [n.id, { ...n.position }]));
+    }, []);
+
+    /** Translates a group's tables as its box is dragged. */
+    const handleNodeDrag = useCallback((_: unknown, node: Node) => {
+        const drag = groupDragRef.current;
+        if (!drag || drag.id !== node.id) return;
+        const dx = node.position.x - drag.from.x;
+        const dy = node.position.y - drag.from.y;
+        placeNodes(Object.fromEntries(Object.entries(drag.members)
+            .map(([id, at]) => [id, { x: at.x + dx, y: at.y + dy }])));
+    }, [placeNodes]);
+
+    const handleNodeDragStop = useCallback((_: unknown, node: Node, dragged: Node[]) => {
+        const groupDrag = groupDragRef.current;
+        if (groupDrag && groupDrag.id === node.id) {
+            groupDragRef.current = null;
+            const dx = node.position.x - groupDrag.from.x;
+            const dy = node.position.y - groupDrag.from.y;
+            if (dx === 0 && dy === 0) return;
+
+            const before = groupDrag.members;
+            const after = Object.fromEntries(Object.entries(before)
+                .map(([id, at]) => [id, { x: at.x + dx, y: at.y + dy }]));
+            history.push({
+                label: `Move ${Object.keys(before).length} tables`,
+                undo: async () => placeNodes(before),
+                redo: async () => placeNodes(after),
+            });
+            return;
+        }
+
+        const from = dragOriginRef.current;
+        dragOriginRef.current = {};
+
+        const to: Record<string, { x: number; y: number }> = {};
+        let moved = false;
+        for (const node of dragged) {
+            const origin = from[node.id];
+            if (!origin) continue;
+            to[node.id] = { ...node.position };
+            if (origin.x !== node.position.x || origin.y !== node.position.y) moved = true;
+        }
+        // A click that shifted nothing is not a step worth undoing.
+        if (!moved) return;
+
+        const before = Object.fromEntries(Object.keys(to).map(id => [id, from[id]]));
+        history.push({
+            label: dragged.length > 1 ? `Move ${dragged.length} tables` : `Move ${dragged[0].id}`,
+            undo: async () => placeNodes(before),
+            redo: async () => placeNodes(to),
+        });
+    }, [placeNodes]);
+
     const selectFile = useCallback((fileId: string) => {
         setActiveWorkspaceId(fileId);
         // On a phone the explorer covers the canvas, so picking a file has to get out of
@@ -1050,10 +1658,19 @@ export default function Home() {
                     {activeWorkspace ? (
                         <Visualizer
                             key={activeWorkspace.id}
-                            nodes={nodesWithNotes}
+                            nodes={canvasNodes}
                             edges={activeWorkspace.edges}
                             onNodesChange={onNodesChange}
+                            onNodeDragStart={handleNodeDragStart}
+                            onNodeDrag={handleNodeDrag}
+                            onNodeDragStop={handleNodeDragStop}
                             onRefreshRequest={refreshActiveSchema}
+                            history={historyState}
+                            onUndo={requestUndo}
+                            onRedo={requestRedo}
+                            onCreateRelationship={handleCreateRelationship}
+                            onCreateGroup={handleCreateGroup}
+                            toast={<ActionToast toast={toast} onDismiss={() => setToast(null)} />}
                         />
                     ) : isRestoring ? (
                         <div className="flex-1 flex flex-col items-center justify-center bg-surface text-ink-400 gap-3">
@@ -1091,6 +1708,20 @@ export default function Home() {
                                 </div>
                             </div>
                         </div>
+                    )}
+                    {/* A sibling of the canvas, never a child of it: the visualiser should not
+                        own a text editor, and a scrolling editor inside a zoomable transformed
+                        viewport is unusable. Only with a file open — there is nothing to run
+                        against otherwise. */}
+                    {activeWorkspace && (
+                        <SqlScratchpad
+                            isOpen={isScratchpadOpen}
+                            onToggle={() => setScratchpadOpen(v => !v)}
+                            tableNames={activeWorkspace.fileData.tables.map(t => t.name)}
+                            hasAccount={!!user}
+                            onNeedsAccount={() => requireAccount('Running SQL')}
+                            onSchemaChanged={handleScratchpadRanDdl}
+                        />
                     )}
                 </main>
             </div>
@@ -1145,6 +1776,26 @@ export default function Home() {
                 />
             )}
 
+            {/* Undo that cannot put everything back asks first. Retyping VARCHAR to INT drops
+                whatever did not parse, and retyping back leaves nulls where the text was —
+                reversing the change is not the same as restoring the data. */}
+            <ConfirmDialog
+                isOpen={pendingLossyUndo !== null}
+                title="Undo this change?"
+                message={
+                    <>
+                        Undoing <span className="font-mono text-ink-900">{pendingLossyUndo}</span>{' '}
+                        restores the column&apos;s previous type, but not any values that were lost
+                        when the type changed.
+                    </>
+                }
+                detail="Changing a column's type discards anything that could not be converted. Undo puts the type back; it cannot put the data back."
+                confirmLabel="Undo anyway"
+                tone="danger"
+                onConfirm={() => { setPendingLossyUndo(null); void runUndo(); }}
+                onClose={() => setPendingLossyUndo(null)}
+            />
+
             <ConfirmDialog
                 isOpen={tableToDelete !== null}
                 title="Delete table?"
@@ -1154,9 +1805,8 @@ export default function Home() {
                         its rows will be permanently removed.
                     </>
                 }
-                detail="If another table's foreign key points at it, the delete is refused instead of leaving broken references behind."
+                detail="The table stays on the canvas for a few seconds with an Undo button before the delete is sent. If another table's foreign key points at it, the delete is refused instead of leaving broken references behind."
                 confirmLabel="Delete table"
-                isBusy={isDeletingTable}
                 onConfirm={confirmTableDelete}
                 onClose={() => setTableToDelete(null)}
             />

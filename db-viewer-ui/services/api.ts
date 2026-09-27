@@ -2,7 +2,7 @@ import axios from 'axios';
 import { getClientId } from './clientId';
 import {
     ColumnInfo, ImportPlan, RawColumnInfo, RawRelationship, RawSchemaResponse, Relationship,
-    RowData, SchemaResponse, SqlDialectId, TableDataResponse, TableInfo,
+    RowData, SchemaResponse, ScratchpadResult, SqlDialectId, TableDataResponse, TableInfo,
 } from '@/types';
 
 /* ── Wire -> UI normalisation ─────────────────────────────────────────────
@@ -41,6 +41,7 @@ export const normaliseSchema = (raw: RawSchemaResponse | undefined): SchemaRespo
         name: t.name,
         columns: (t.columns ?? []).map(normaliseColumn),
         rows: t.rows ?? [],
+        isView: t.isView ?? t.view ?? false,
     })),
     relationships: normaliseRelationships(raw?.relationships),
 });
@@ -198,6 +199,16 @@ export interface CanvasAnnotation {
     payload: Record<string, unknown>;
 }
 
+export interface ForeignKeyParams {
+    /** The table that will hold the foreign key. */
+    tableName: string;
+    columnName: string;
+    /** The table being pointed at. Its column must be a primary key or uniquely indexed. */
+    refTable: string;
+    refColumn: string;
+    onDelete?: string;
+}
+
 /** A file the signed-in user owns, as the backend reports it. */
 export interface WorkspaceSummary {
     id: string;
@@ -291,6 +302,34 @@ export const dbService = {
     },
 
     /** Drops a table. Rejected with 409 when another table's foreign key references it. */
+    /**
+     * Removes a column. The inverse of `addColumn`, which is how undo reverses one.
+     *
+     * Refused by the backend for a primary key, the last remaining column, and a column another
+     * table's foreign key points at.
+     */
+    dropColumn: async (tableName: string, columnName: string) => {
+        const response = await api.post('/drop-column', { tableName, columnName });
+        return response.data;
+    },
+
+    /**
+     * Declares a relationship between two existing tables — what dragging a line does.
+     *
+     * The backend validates before it writes (unique target, matching types, no orphan rows) and
+     * rebuilds the table on SQLite, which cannot add a constraint in place.
+     */
+    addForeignKey: async (params: ForeignKeyParams) => {
+        const response = await api.post('/add-foreign-key', params);
+        return response.data;
+    },
+
+    /** Removes a relationship, identified by the two columns it joins. The inverse of adding one. */
+    dropForeignKey: async (params: ForeignKeyParams) => {
+        const response = await api.post('/drop-foreign-key', params);
+        return response.data;
+    },
+
     dropTable: async (tableName: string) => {
         const res = await api.delete(`/table/${encodeURIComponent(tableName)}`);
         return res.data;
@@ -408,6 +447,21 @@ export const dbService = {
 
     deleteCanvasMeta: async (kind: CanvasAnnotationKind, ref: string): Promise<void> => {
         await api.delete(`/canvas-meta/${kind}/${encodeURIComponent(ref)}`);
+    },
+
+    /**
+     * Runs a script from the scratchpad. Requires an account, like export and sharing.
+     *
+     * Returns a result per statement rather than one for the whole script, because the useful
+     * question when a script fails is which statement did it.
+     */
+    runScratchpad: async (script: string): Promise<ScratchpadResult> => {
+        const res = await api.post<ScratchpadResult>('/scratchpad', { script });
+        return {
+            statements: res.data?.statements ?? [],
+            schemaChanged: !!res.data?.schemaChanged,
+            failed: !!res.data?.failed,
+        };
     },
 
     /** Version declared in the backend's pom.xml; shown in the info modal. */

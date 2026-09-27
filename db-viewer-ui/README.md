@@ -357,7 +357,7 @@ The transform tolerates both `snake_case` and `camelCase` on relationship fields
 | `Visualizer` | React Flow canvas, **New Table** button, minimap, search, zoom select | Renders `CreateTableModal` and `NewTableHelpModal` as *siblings* of the canvas wrapper — see [Gotchas](#gotchas) |
 | `CanvasSearch` | Find a table or column; arrow keys move the canvas with the selection | Bound to Ctrl+F, and stands down while a dialog is open |
 | `OrthogonalEdge` | One relationship line, routed around whatever is in its way | Reads node positions from React Flow's store, not from props — they must be the *current* ones while a node is being dragged |
-| `TableNode` | One table: header actions, column list, PK/FK handles, per-column edit button | Handles come from the relationship list, with `id` / `*_id` naming as the fallback |
+| `TableNode` | One table: header actions, column list, PK/FK handles, per-column edit button, a three-row sample-data strip, and the ghost banner while a delete is pending | Handles come from the relationship list, with `id` / `*_id` naming as the fallback. How much of it renders depends on the zoom tier — see [Gotchas](#gotchas) §0k |
 | `ImportPreviewModal` | The staging step: tables, inferred types, why, and sample values | Correcting a type here is the only chance to — a postcode imported as `INT` has lost its leading zeros for good |
 | `ExportModal` | SQL for a named engine, Mermaid, DBML, PNG | All four require an account — generated client-side is not the same as free to take out |
 | `DataEditor` | Row grid with per-cell and whole-row editing, insert form, delete | Assumes every row has an `id`/`ID`; input types derived from the SQL type |
@@ -367,6 +367,9 @@ The transform tolerates both `snake_case` and `camelCase` on relationship fields
 | `NewFileModal` | Name a new empty file | Appends `.sql` if omitted |
 | `InfoModal` | Five-line description of the app, the version badge, and developer credits | Opened from the **header's** help button. Version comes from `GET /version`, i.e. the backend's `pom.xml` |
 | `NewTableHelpModal` | What the **New Table** button does, step by step | Opened from the info button in the **canvas toolbar**. Deliberately distinct from `InfoModal`: help for a control lives next to that control |
+| `GroupBox` | A named boundary drawn around a set of tables | Carries no geometry — the box is the bounding rect of its members. See [Gotchas](#gotchas) |
+| `SqlScratchpad` | Bottom drawer for running SQL; per-statement results | Sibling of the canvas, never inside it. Editor is a textarea over a highlighted `<pre>` — no Monaco |
+| `ActionToast` | Brief confirmation over the canvas, with one optional action | Dismissal is the caller's timer, not an effect (`set-state-in-effect` is an error) |
 | `AnchoredMenu` | Portalled dropdown for controls that live on the canvas | Caller captures the anchor rect on click; closes on wheel/resize rather than following the canvas. See [Gotchas](#gotchas) |
 | `Tooltip` | Hover/focus definition popover | Portals to `document.body` and renders its own trigger `<span>`; see [Gotchas](#gotchas) |
 | `ColorSwatchPicker` | The six table colours plus "none", as a `radiogroup` | Deliberately not `<input type="color">`: an arbitrary hex is unreadable in one of the two themes and indistinguishable from its neighbours at canvas zoom |
@@ -392,6 +395,14 @@ The transform tolerates both `snake_case` and `camelCase` on relationship fields
   the editor — which is what made moving between them feel like moving between two apps.
 - **Shared utilities**: `brand-gradient(-hover)`, `brand-text-gradient`, `surface-card`,
   `section-wash(-tinted)`, `shadow-glow-sm|md|lg`, `rule-gradient`, `scroll-slim`.
+- **`.node-ghost` / `.ghost-drain` mark a table on its way out.** The node desaturates and dims
+  rather than fading almost away the way `.node-dim` does, because the user is being *asked to
+  look at it* and decide, not told to ignore it; `.node-ghost-body` turns pointer events off for
+  everything but the Undo button. The countdown is the `ghostDrain` keyframe with its duration set
+  inline from the same constant that arms the timer — `react-hooks/set-state-in-effect` is an
+  error here, so a per-tick `setState` countdown is not available, and an animation says the same
+  thing for no renders at all. Both are inside a `prefers-reduced-motion` guard: the bar still
+  empties, because it is the only indication of how long is left, but it steps rather than sweeps.
 - **Animation is local.** `tailwindcss-animate` was never installed, so the `animate-in` /
   `fade-in` / `slide-in-from-*` classes that appeared at 17 call sites did nothing at all. Use
   `anim-fade-in`, `anim-fade-up`, `anim-dialog-in`, `anim-menu-in`, all defined in `globals.css`
@@ -426,6 +437,22 @@ The transform tolerates both `snake_case` and `camelCase` on relationship fields
 
 ## Gotchas
 
+**0k. A node that renders fewer columns must still render their handles.** React Flow resolves an edge by looking its handle up by id; a handle that stops being rendered takes its relationship off the diagram with no warning. `TableNode`'s zoom tiers may drop a column's *row*, never its handle — the `block` tier emits a zero-height rail of transparent handles for every edge endpoint. And because React Flow **caches measured handle positions and never re-reads the DOM on its own**, any change to which handles exist has to call `useUpdateNodeInternals`, or the edges keep landing at the old offsets. Related: select the *tier* from the store, never the zoom — `useStore(s => s.transform[2])` hands every node a new value on every frame of a wheel and re-renders the whole canvas, which is the cost tiering exists to remove.
+
+**0j. A deferred destructive action must re-check its context before it fires.** The ghost node's timer sends `DELETE /table/{name}` seven seconds after the user confirms, and the workspace id travels as a *request header* — so a timer that outlived a file switch would drop a same-named table in whichever database is open now. It re-reads `activeWorkspaceIdRef` and abandons if it has changed. The unmount cleanup cancels every pending timer for the same reason: not deleting is the recoverable half of the two possible mistakes.
+
+**0i. `html-to-image` walks the live DOM, so filtering the node array is only half of an exclusion.** `exportImage.ts` filters ghosts out of `getRectOfNodes` *and* passes a `filter` that rejects `.node-ghost`; doing only the first left the greyed box in the picture while shrinking the canvas around it. Anything that should be on the canvas but not in the export needs both.
+
+**0h. `group` is a *built-in* React Flow node type.** Registering a custom type under that name makes every node inherit `.react-flow__node-group` — a grey rounded box with a dark border — drawn underneath your own. Domain boxes are registered as `domainGroup` for that reason. Check the library's stylesheet before naming a node type after a common noun.
+
+**0g. A `globals.css` edit can be served stale, and the browser will not tell you.** Changing a rule and seeing the *old* computed value is not a specificity problem — check what the browser actually loaded (walk `document.styleSheets` for the selector) before rewriting the CSS. Restarting `next dev` was not enough; `rm -rf .next` was. Same shape as the backend needing a restart after a Java change.
+
+**0f. `multiSelectionKeyCode` defaults to `Meta`, so Ctrl-click does nothing on Windows.** Set it to `['Meta', 'Control']`. More generally: a canvas gesture with no visible affordance is undiscoverable, so anything reached only by a lasso or a modifier key needs a button that names it.
+
+**0e. A React Flow node whose size you compute must declare `width`/`height`, not just `style`.** React Flow keeps a node `visibility: hidden` until it knows its dimensions, and in controlled mode it learns them from a `dimensions` change coming back through the `nodes` prop. `onNodesChange` applies changes to `workspace.nodes` — tables only — so a group box's measurement was discarded every time and the box was invisible while looking perfectly correct in the DOM. Related: `zIndex: -1` on a node puts it behind React Flow's own interaction pane, which makes everything on it unclickable; use array order for painting instead.
+
+**0d. Undo entries are pushed from the component that made the change, into a module singleton.** `services/history.ts` is not React state: `AddColumnModal`, `EditColumnModal` and `CreateTableModal` all call `dbService` directly, and threading a push callback into each would spread the same plumbing across five files. A node drag is captured from React Flow's `onNodeDragStart`/`onNodeDragStop` — **never** from `onNodesChange`, which fires once per frame and would force the bookkeeping inside a `setWorkspaces` updater that React is free to run twice.
+
 **0c. `fitView` measures nodes only, and will happily zoom *in*.** Pass the same `fitViewOptions` to `<ReactFlow>` and `<Controls>` (the button has its own defaults otherwise), cap `maxZoom` at 1 so a single table is not blown up to 200%, and keep the padding generous because edge notation is drawn outside the node boxes that `fitView` measures. Whenever the node width changes, `GRID_STEP_X` in `page.tsx` has to change with it — at a 250px step the 265px nodes nearly touched.
 
 **0b. A dismissal listener must not depend on a prop that changes identity every render.** `AnchoredMenu`'s Escape/outside-click effect originally listed `onClose` in its deps. Callers pass an inline arrow, so the effect re-ran on every render — and a real Escape keypress makes React Flow re-render the node *while the event is still bubbling*, so the cleanup removed the listener before the event reached `document`. Escape did nothing, while a synthetically dispatched Escape worked, which is exactly the shape of bug a test can miss. `onClose` now goes through a ref so the effect depends only on whether the menu is open.
@@ -454,11 +481,13 @@ and import through `next/dynamic` with `ssr: false`. This is load-bearing in two
 form-heavy code out of the initial bundle, and it means *mounting is the reset*, which is why no
 dialog re-seeds its form state from a `useEffect` (the lint config rejects that anyway).
 
-**3. The canvas is deliberately not connectable.** `nodesConnectable={false}`, and every `Handle`
-sets `isConnectable={false}`. Previously `onConnect` / `onEdgesChange` were no-ops while the
-handles stayed live, so dragging one started a connection gesture the app could never honour.
-Foreign keys are created through `CreateTableModal`. If drag-to-create is ever built, re-enable
-connectability *and* wire up persistence in the same change.
+**3. The canvas *is* connectable — and the rule that kept it switched off still stands.** It was
+`nodesConnectable={false}` for years because `onConnect` was a no-op, so dragging a handle started
+a gesture the app could never honour. It is on now only because `onConnect` calls
+`POST /add-foreign-key` and the key is real. The pairing is the rule, not the history: if a
+gesture cannot be honoured, do not offer it. Handles for non-key columns appear **only while a
+connection is live** (`connectionNodeId` from React Flow's store) — rendering them permanently
+would register around a thousand on a hundred-table schema for a gesture nobody is making.
 
 **4. Connection handles come from the relationships, and the naming heuristic is only a
 fallback.** `page.tsx` builds `foreignKeyColumns` / `referencedColumns` per table from the
@@ -468,8 +497,12 @@ fallback used to be the *whole* rule, and the cost was invisible: a schema whose
 called `customer` rather than `customer_id` got no handle, and an edge with no handle at one end
 does not render — so the relationship simply never appeared, with nothing logged.
 
-**5. Row operations need an `id` column.** `DataEditor`'s update and delete paths address rows by
-`id`/`ID`. A table without one can be viewed but not row-edited.
+**5. Row operations need an `id` column.** `POST /update-cell` and `POST /delete-row` address a
+row by `id`/`ID`, so `DataEditor` and the node's sample-data strip both disable editing — in words,
+with the reason — for a table that has none. Disabling beats a control that silently does nothing.
+Both surfaces also share one commit rule: **`onBlur` is the only path that writes.** Enter and
+Escape merely call `blur()`, with Escape setting an abandon flag first. A second commit in the key
+handler is what used to fire a duplicate `update-cell` on every Enter.
 
 ---
 

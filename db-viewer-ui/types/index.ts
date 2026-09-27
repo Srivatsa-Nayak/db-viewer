@@ -17,6 +17,26 @@
  * for light mode is unreadable in dark, which is exactly the mistake the token system exists to
  * prevent.
  */
+/**
+ * A named boundary drawn around a set of tables — "Authentication", "Billing".
+ *
+ * Stores **members, not geometry**. The box on screen is the bounding rectangle of whichever of
+ * its tables currently exist, recomputed each render. Node positions live in the browser while
+ * this lives on the server, so a stored rectangle would be wrong the first time the file was
+ * opened somewhere else — a labelled box hanging over empty canvas.
+ *
+ * `id` is restricted to letters, digits and underscores because the backend validates it as an
+ * identifier and would otherwise rewrite a hyphen to an underscore, leaving client and server
+ * disagreeing about which group is which.
+ */
+export interface CanvasGroup {
+    id: string;
+    name: string;
+    colour?: TagColour;
+    /** Table names. A name that no longer exists is simply skipped when the box is drawn. */
+    tables: string[];
+}
+
 export const TAG_COLOURS = ['slate', 'brand', 'violet', 'teal', 'amber', 'rose'] as const;
 export type TagColour = typeof TAG_COLOURS[number];
 
@@ -46,6 +66,31 @@ export interface TableInfo {
     name: string;
     columns: ColumnInfo[];
     rows: RowData[];
+    /**
+     * True for a view rather than a table.
+     *
+     * A view is drawn on the canvas but has no rows of its own, so it carries no edit
+     * affordances and the row endpoints refuse it.
+     */
+    isView?: boolean;
+}
+
+/** One statement's outcome from the SQL scratchpad. */
+export interface StatementResult {
+    sql: string;
+    kind: string;
+    columns?: string[];
+    rows?: RowData[];
+    rowCount?: number;
+    error?: string;
+    truncated?: boolean;
+}
+
+export interface ScratchpadResult {
+    statements: StatementResult[];
+    /** True when something ran that could have changed the schema, so the canvas needs re-reading. */
+    schemaChanged: boolean;
+    failed: boolean;
 }
 
 export interface Relationship {
@@ -165,6 +210,8 @@ export interface RawTableInfo {
     name: string;
     columns?: RawColumnInfo[];
     rows?: RowData[];
+    view?: boolean;
+    isView?: boolean;
 }
 
 export interface RawSchemaResponse {

@@ -442,10 +442,17 @@ Two deliberate constraints:
 
 - **A primary key can be renamed but not retyped.** Reshaping it would break row identity and
   auto-numbering, and every row-level endpoint addresses rows by `id`.
-- **Only metadata-expressible structure survives.** A hand-written `CHECK`, `UNIQUE`, or
-  `COLLATE` clause is not reported by `PRAGMA table_info`, so it is not carried across a rebuild.
-  Tables created through this application never have those; a table imported from a `.sql` script
-  might.
+- **Indexes, `UNIQUE` and `CHECK` are carried across — but by three different routes, because
+  no single PRAGMA reports them.** `UNIQUE` is recovered from `PRAGMA index_list` entries whose
+  origin is `u` (single-column ones go back on the column; multi-column ones become a table-level
+  clause, since `UNIQUE` on either column alone would be a *stronger* constraint than the schema
+  had). Indexes are re-run from their own `sqlite_master.sql` after the rename, with a renamed
+  column substituted. `CHECK` is extracted from the table's stored DDL by a quote- and
+  paren-aware scan, and re-emitted at table level. All three used to be dropped silently by any
+  retype; a `COLLATE` clause still is.
+- **The rebuild is no longer only for column edits.** It takes a spec — an optional column change,
+  foreign-key clauses to add, constraint ids to drop — because SQLite cannot add or remove a
+  constraint in place either. Adding a foreign key to an existing table is the same dance.
 
 > **Connection-state note.** A SQLite workspace holds one long-lived connection, so the rebuild
 > saves `PRAGMA foreign_keys` and restores its previous value rather than forcing it back ON.

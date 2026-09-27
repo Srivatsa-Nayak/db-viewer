@@ -10,6 +10,8 @@ import "reactflow/dist/style.css";
 import { shareService } from "@/services/api";
 import { ColumnInfo, Relationship, TableInfo } from "@/types";
 import { OrthogonalEdge } from "@/components/canvas/OrthogonalEdge";
+import GroupBox from "@/components/canvas/GroupBox";
+import { CanvasGroup } from "@/types";
 
 /**
  * Read-only view of a shared file.
@@ -23,7 +25,46 @@ interface SharedSchema {
     sharedBy?: string;
     tables: TableInfo[];
     relationships: Relationship[];
+    /** Table colours and domain groups, as `{kind, ref, payload}` rows. Absent on older links. */
+    canvasMeta?: { kind: string; ref: string; payload: string }[];
 }
+
+/** Clearance around the tables in a group, matching the editor so a shared diagram looks the same. */
+const GROUP_PADDING = 28;
+const GROUP_HEADER = 22;
+const GROUP_NODE_PREFIX = 'group:';
+
+/**
+ * Splits the annotation rows into the two things the canvas needs.
+ *
+ * `payload` arrives as a JSON string, and a row that will not parse is dropped rather than
+ * allowed to take the whole diagram down — a shared link is the one place where the reader can
+ * do nothing about a bad row.
+ */
+const readCanvasMeta = (rows: SharedSchema['canvasMeta']) => {
+    const colours: Record<string, string> = {};
+    const groups: CanvasGroup[] = [];
+
+    for (const row of rows ?? []) {
+        let payload: Record<string, unknown>;
+        try {
+            payload = JSON.parse(row.payload ?? '{}');
+        } catch {
+            continue;
+        }
+        if (row.kind === 'table') {
+            if (typeof payload.colour === 'string') colours[row.ref] = payload.colour;
+        } else if (row.kind === 'group') {
+            groups.push({
+                id: row.ref,
+                name: typeof payload.name === 'string' ? payload.name : 'Group',
+                colour: payload.colour as CanvasGroup['colour'],
+                tables: Array.isArray(payload.tables) ? payload.tables as string[] : [],
+            });
+        }
+    }
+    return { colours, groups };
+};
 
 interface ReadOnlyNodeData {
     label: string;
@@ -43,8 +84,11 @@ interface ReadOnlyNodeData {
  * still gets drawn.
  */
 const ReadOnlyTableNode = ({ data }: { data: ReadOnlyNodeData }) => (
-    <div className="bg-surface border border-brand-200 rounded-md min-w-[180px] max-w-[220px] shadow-xl">
-        <div className="bg-brand-600 px-2 py-1.5 flex items-center gap-1.5 rounded-t-md">
+    // `node-card` and `node-header` are the hooks the `.tag-*` rules in globals.css reach for.
+    // Without them the colour class lands on the node and styles nothing, which is exactly what
+    // happened: a shared link carried the colours in its payload and drew every table blue.
+    <div className="node-card bg-surface border border-brand-200 rounded-md min-w-[180px] max-w-[220px] shadow-xl">
+        <div className="node-header bg-brand-600 px-2 py-1.5 flex items-center gap-1.5 rounded-t-md">
             <Database size={10} className="text-white shrink-0" />
             <span className="font-bold text-white text-[10px] truncate" title={data.label}>
                 {data.label}
@@ -94,11 +138,13 @@ const ReadOnlyTableNode = ({ data }: { data: ReadOnlyNodeData }) => (
     </div>
 );
 
-const nodeTypes = { sharedTable: ReadOnlyTableNode };
 // The editor's own edge, so a shared link shows the same orthogonal routing and the same
 // crow's-foot notation. This page used to draw built-in `smoothstep` diagonals, which meant the
 // diagram someone shared did not look like the diagram they were looking at.
 const edgeTypes = { orthogonal: OrthogonalEdge };
+// The editor's own box, with its menu suppressed: a shared diagram should carry the boundaries
+// the sender drew, and nothing a reader can change.
+const nodeTypesWithGroups = { sharedTable: ReadOnlyTableNode, domainGroup: GroupBox };
 
 export default function SharedFilePage({ params }: { params: Promise<{ token: string }> }) {
     const { token } = use(params);
@@ -168,10 +214,15 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
             };
         });
 
-        const nodes: Node[] = (schema.tables || []).map((table, index) => ({
+        const { colours, groups } = readCanvasMeta(schema.canvasMeta);
+
+        const tableNodes: Node[] = (schema.tables || []).map((table, index) => ({
             id: table.name,
             type: "sharedTable",
             position: { x: 280 * (index % 3), y: 100 + Math.floor(index / 3) * 300 },
+            // The colour rides on `className`, exactly as it does in the editor, so the same
+            // `.tag-*` rules style it and the shared view needs no palette of its own.
+            className: colours[table.name] ? `tag-${colours[table.name]}` : undefined,
             data: {
                 label: table.name,
                 columns: table.columns,
@@ -180,7 +231,42 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
             },
         }));
 
-        return { nodes, edges };
+        /*
+         * Boxes derived from where the tables landed *here*.
+         *
+         * A shared link does not carry the sender's layout — positions live in their browser —
+         * so this view lays the tables out on its own grid. Because a group stores members
+         * rather than a rectangle, the boundary still lands correctly around them. That is the
+         * property the design was chosen for, and this is where it pays.
+         */
+        const groupNodes: Node[] = groups.flatMap(group => {
+            const members = tableNodes.filter(n => group.tables.includes(n.id));
+            if (members.length === 0) return [];
+
+            const left = Math.min(...members.map(n => n.position.x));
+            const top = Math.min(...members.map(n => n.position.y));
+            const right = Math.max(...members.map(n => n.position.x + 240));
+            const bottom = Math.max(...members.map(n => n.position.y + 200));
+            const width = right - left + GROUP_PADDING * 2;
+            const height = bottom - top + GROUP_PADDING * 2 + GROUP_HEADER;
+
+            return [{
+                id: `${GROUP_NODE_PREFIX}${group.id}`,
+                type: 'domainGroup',
+                position: { x: left - GROUP_PADDING, y: top - GROUP_PADDING - GROUP_HEADER },
+                style: { width, height },
+                // Given rather than measured: React Flow hides a node until it knows its size,
+                // and in controlled mode learns that from a change coming back through `nodes`.
+                width,
+                height,
+                selectable: false,
+                draggable: false,
+                data: { group, memberCount: members.length, readOnly: true },
+            }];
+        });
+
+        // Groups first, so they paint behind the tables they surround.
+        return { nodes: [...groupNodes, ...tableNodes], edges };
     }, [schema]);
 
     return (
@@ -236,7 +322,7 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
                     <ReactFlow
                         nodes={nodes}
                         edges={edges}
-                        nodeTypes={nodeTypes}
+                        nodeTypes={nodeTypesWithGroups}
                         edgeTypes={edgeTypes}
                         fitView
                         nodesDraggable={false}

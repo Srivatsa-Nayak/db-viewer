@@ -51,7 +51,9 @@ Built with **Spring Boot 3.3 (Java 17)** on the backend and **Next.js 16** on th
 | **📖 Docs you can press** | `/docs` carries a per-engine **support matrix** (what is read, what is partly read, what is skipped), the full type mapping, guides for putting a Mermaid or DBML export into a GitHub README, Notion, Jira or dbdiagram.io — and **live sandboxes**: press a button and watch a delete get refused by a real foreign key, or read the export this page generates as you look at it. |
 | **🧩 Starter templates** | Twelve ready-made schemas across seven categories. Preview shows the diagram — the SQL is not repeated there, since opening a template and exporting gives you your own edits with it. Authored on the backend — the frontend only renders them. |
 | **✨ Example schema** | The canvas's empty state loads the Online Store template, so it is never a blank page. |
-| **🗑️ Safe table deletion** | Delete a table from its node — refused with a clear message when another table's foreign key still references it. |
+| **🗑️ Safe table deletion** | Delete a table from its node — refused with a clear message when another table's foreign key still references it. Confirming leaves a **ghost**: the node stays put, greyed, with a countdown and an Undo button, and the delete is only sent when that runs out. Undo cancels it, and nothing was ever removed, so there is nothing to put back. |
+| **🔍 Detail that follows the zoom** | A table shows everything at 70% and above, its key columns between 40% and 70%, and just a name and a column count below that. Relationship lines are drawn at every level — seeing how things connect is the reason to zoom out. |
+| **⚡ Editing on the canvas** | Each node carries a three-row peek at its contents; double-click a cell to change it. Fetched only when you open it, and offered only where the text is big enough to read. |
 | **📝 Table notes** | A to-do list per table, stored with the file. Tick items off and come back to them later. |
 | **🔗 Share links** | Create a read-only link to a file. Anyone with the link can view the schema; nobody can edit it. |
 | **👤 Optional accounts** | Everything works signed out. Only exporting and sharing need a free account (password: 8+ chars, a capital and a special character). Signed in, you can change your display name and password from **Edit profile**. |
@@ -306,6 +308,10 @@ set headers.
 | `GET` | `/canvas-meta` | Canvas annotations for this file — table colours and tags, and domain groups |
 | `PUT` | `/canvas-meta/{kind}/{ref}` | Set one annotation (`kind` is `table` or `group`) |
 | `DELETE` | `/canvas-meta/{kind}/{ref}` | Clear one annotation |
+| `POST` | `/drop-column` | Remove a column. The inverse of adding one, so undo can reverse it |
+| `POST` | `/add-foreign-key` | Declare a relationship between two existing tables — what dragging a line does |
+| `POST` | `/drop-foreign-key` | Remove a relationship, identified by the two columns it joins |
+| `POST` | `/scratchpad` | Run a SQL script and report what each statement did **(account required)** |
 | `DELETE` | `/workspace` | Delete the workspace's database entirely |
 | `GET` | `/export/{table}?workspaceId=` | Download the table as CSV |
 | `GET` | `/export-sql?filename=&dialect=&workspaceId=` | Download the workspace as a SQL script, written for `dialect` (`mysql` \| `mariadb` \| `postgres` \| `sqlserver` \| `sqlite` \| `generic`) |
@@ -357,6 +363,12 @@ failure worth catching — and the suite is deliberately one layer deep per beha
 | `TableLifecycleTest` | Example schema, FK-guarded table deletion, per-table notes and their invisibility to the canvas and exports |
 | `TemplateCatalogueTest` | Every bundled template actually applies, produces relationships and sample rows, states counts that match what it really creates, and has its parsed preview schema checked against the real database |
 | `ColumnEditTest` | Rename/retype/renullify a column, SQLite table rebuild preserving keys, FKs and data, primary-key protection, identifier validation |
+| `DropColumnTest` | Dropping a column — the undo inverse of adding one — with primary keys and referenced columns refused |
+| `CanvasMetaTest` | Table colours and domain groups persisting with the file, cascading away with their table, and staying out of exported SQL |
+| `SchemaMetadataTest` | Uniqueness, defaults and auto-increment read back from SQLite, and foreign keys carrying their constraint id and `ON DELETE` rule — what crow's-foot notation is derived from |
+| `ForeignKeyConstraintTest` | Creating and dropping a foreign key from a canvas drag, its pre-flight refusals (orphan rows, non-unique target, type mismatch, duplicate), and indexes/`UNIQUE`/`CHECK` surviving the rebuild |
+| `ScratchpadTest` | Multi-statement SQL reporting per statement, the row/statement/timeout caps, and internal `__` tables refused |
+| `ShareDuplicateLinkTest` | Repeated and concurrent sharing returning one link, and pre-existing duplicates neither breaking the route nor being silently revoked |
 
 ---
 
@@ -425,6 +437,9 @@ keep.
 | Symptom | Cause / fix |
 |---|---|
 | Canvas is empty and the console shows network errors | The backend isn't running, or `NEXT_PUBLIC_API_URL` points somewhere else. Confirm `curl localhost:8080/` returns `{"status":"Service is up and running"}`. |
+| A table you deleted is still on the canvas, greyed out | That is the ghost, and the delete has not been sent yet. Wait a few seconds or press **Undo** on the node. Closing the file or the tab before it expires cancels the delete as well. |
+| A table node shows no column types, or no columns at all | The canvas is zoomed out. Detail is tiered — below 70% the type labels go, below 40% the columns do. Zoom in, or press the fit button and then zoom. |
+| The **Data** strip is missing from a table node | It appears at 70% zoom and above, and not at all on a view (which has no rows of its own) or on a table waiting to be deleted. |
 | Changing `NEXT_PUBLIC_API_URL` has no effect | It's a build-time constant — restart `npm run dev`, or rebuild for production. |
 | A new file shows tables it shouldn't | Stale build. Confirm requests carry `X-Workspace-Id` in the browser's network tab. |
 | `.sql` import produced fewer tables than expected | Unsupported statements are skipped, not fatal — the UI now reports how many and why. MySQL triggers, procedures and `SET`/`COMMIT` directives have no SQLite equivalent. |

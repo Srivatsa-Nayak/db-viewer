@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Pencil, Loader2, AlertCircle, KeyRound, AlertTriangle } from 'lucide-react';
 import { dbService } from '@/services/api';
+import { history } from '@/services/history';
 import { ColumnInfo } from '@/types';
 import { Callout, GhostButton, Modal, ModalActions, PrimaryButton } from '@/components/ui/Modal';
 
@@ -113,13 +114,33 @@ export const EditColumnModal = ({
         try {
             // Only send what actually changed - the backend treats omitted fields as
             // "leave alone", which keeps a no-op save from rebuilding the table.
-            await dbService.updateColumn({
+            const forward = {
                 tableName,
                 columnName: original.name,
                 newColumnName: nameChanged ? trimmed : undefined,
                 columnType: typeChanged ? base : undefined,
                 length: typeChanged && base === 'VARCHAR' ? length : undefined,
                 notNull: nullChanged ? notNull : undefined,
+            };
+            await dbService.updateColumn(forward);
+
+            // The inverse addresses the column by its *new* name, and restores the original type
+            // and nullability. Marked lossy whenever the type changed: retyping VARCHAR to INT
+            // drops whatever did not parse, and retyping back cannot conjure it up again, so
+            // undo has to ask before it pretends otherwise.
+            const back = {
+                tableName,
+                columnName: nameChanged ? trimmed : original.name,
+                newColumnName: nameChanged ? original.name : undefined,
+                columnType: typeChanged ? original.base : undefined,
+                length: typeChanged ? original.length : undefined,
+                notNull: nullChanged ? !!original.notNull : undefined,
+            };
+            history.push({
+                label: `Edit column ${tableName}.${original.name}`,
+                lossy: typeChanged,
+                undo: async () => { await dbService.updateColumn(back); onSuccess(); },
+                redo: async () => { await dbService.updateColumn(forward); onSuccess(); },
             });
             onSuccess();
             onClose();
