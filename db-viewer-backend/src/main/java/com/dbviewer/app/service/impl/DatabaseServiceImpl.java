@@ -26,6 +26,8 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -334,6 +336,19 @@ public class DatabaseServiceImpl implements DatabaseService {
             tables.add(TableInfo.builder().name(tbl).columns(columns).rows(rows).build());
         }
 
+        // Views come back as nodes too. `PRAGMA table_info` works on a view, so the columns are
+        // free; `PRAGMA foreign_key_list` returns nothing, so a view node simply has no edges.
+        for (String viewName : getViewNames()) {
+            List<Map<String, Object>> rows =
+                    safeQueryRows(String.format(Constants.Rows.SELECT_ALL_LIMITED, viewName));
+            tables.add(TableInfo.builder()
+                    .name(viewName)
+                    .columns(getColumnsForTable(viewName))
+                    .rows(rows)
+                    .view(true)
+                    .build());
+        }
+
         return Map.of("tables", tables, "relationships", relationships);
     }
 
@@ -346,6 +361,24 @@ public class DatabaseServiceImpl implements DatabaseService {
                 ? jdbc().queryForList(Constants.Introspection.MYSQL_SHOW_TABLES, String.class)
                 : jdbc().queryForList(Constants.Introspection.SQLITE_SELECT_USER_TABLES, String.class);
         return names.stream().filter(name -> !name.startsWith(INTERNAL_TABLE_PREFIX)).toList();
+    }
+
+    /**
+     * Views, which the canvas draws but nothing writes to.
+     *
+     * <p>Kept apart from {@link #getTableNames()} rather than folded into it, because almost every
+     * caller of that method goes on to do something only a table can take.
+     */
+    private List<String> getViewNames() {
+        try {
+            List<String> names = isMysql()
+                    ? jdbc().queryForList(Constants.Introspection.MYSQL_SHOW_VIEWS, String.class)
+                    : jdbc().queryForList(Constants.Introspection.SQLITE_SELECT_VIEWS, String.class);
+            return names.stream().filter(name -> !name.startsWith(INTERNAL_TABLE_PREFIX)).toList();
+        } catch (Exception e) {
+            log.debug("Could not list views: {}", e.getMessage());
+            return List.of();
+        }
     }
 
     private static final String INTERNAL_TABLE_PREFIX = Constants.Identifiers.INTERNAL_TABLE_PREFIX;
@@ -499,13 +532,106 @@ public class DatabaseServiceImpl implements DatabaseService {
      */
     @Override
     public void addColumn(AddColumnRequest req) {
-        String tableName = req.getTableName().replace(" ", "_");
-        String colName = req.getColumnName().replace(" ", "_");
+        // The table already exists, so it is checked against the real schema rather than run
+        // through `safeIdentifier` — see `requireExistingTable` for why rewriting would be wrong.
+        // The column is new, so the rewrite-and-validate rules do apply to it.
+        String tableName = requireExistingTable(req.getTableName());
+        String colName = safeIdentifier(req.getColumnName(), "column name");
         String baseType = req.getColumnType().toUpperCase();
 
         String typeDef = resolveTypeDef(baseType, req.getLength(), req.isNotNull());
         String sql = String.format(Constants.Tables.ADD_COLUMN, tableName, colName, typeDef);
         jdbc().execute(sql);
+    }
+
+    /**
+     * Removes a column. The inverse of {@link #addColumn}, and the reason undo can reverse one.
+     *
+     * <p>Refuses a primary key and a column another table's foreign key points at, for the same
+     * reason {@link #dropTable} refuses a referenced table: SQLite does not enforce either by
+     * default, so it would quietly leave the schema describing something that is no longer true.
+     */
+    @Override
+    public void dropColumn(String tableNameRaw, String columnNameRaw) {
+        String tableName = requireExistingTable(tableNameRaw);
+        String columnName = requireExistingColumn(tableName, columnNameRaw);
+
+        ColumnInfo column = getColumnsForTable(tableName).stream()
+                .filter(c -> c.getName().equals(columnName)).findFirst().orElseThrow();
+        if (column.isPk()) {
+            throw new IllegalArgumentException(
+                    "\"" + columnName + "\" is the primary key. Every row is addressed by it, so it "
+                            + "cannot be dropped.");
+        }
+        if (getColumnsForTable(tableName).size() == 1) {
+            throw new IllegalArgumentException(
+                    "A table must keep at least one column. Delete the table instead.");
+        }
+
+        List<String> dependents = new ArrayList<>();
+        for (String other : getTableNames()) {
+            if (other.equals(tableName)) continue;
+            for (Relationship rel : getForeignKeys(other)) {
+                if (tableName.equals(rel.getTargetTable()) && columnName.equals(rel.getTargetColumn())) {
+                    dependents.add(other + "." + rel.getSourceColumn());
+                }
+            }
+        }
+        if (!dependents.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "\"" + columnName + "\" is referenced by " + String.join(", ", dependents)
+                            + ". Remove those foreign keys first.");
+        }
+
+        jdbc().execute(String.format(Constants.Tables.DROP_COLUMN, tableName, columnName));
+    }
+
+    /**
+     * Confirms a table name against the schema, and returns it unchanged.
+     *
+     * <p>Deliberately *not* {@link #safeIdentifier}, which rewrites as well as validates: it turns
+     * spaces and hyphens into underscores, so a table called {@code my-table} — perfectly possible
+     * in an imported dump, which is executed as written — would become {@code my_table} and the
+     * statement would address a table that does not exist. An allowlist of names the database
+     * actually reports is both safer than a character check and incapable of that mistake.
+     */
+    private String requireExistingTable(String tableName) {
+        if (isBlank(tableName)) {
+            throw new IllegalArgumentException("Missing table name");
+        }
+        String trimmed = tableName.trim();
+        if (getTableNames().contains(trimmed)) {
+            return trimmed;
+        }
+        // Tolerate the rewrite the UI used to apply, so a caller that still sends "my table"
+        // finds "my_table" rather than a confusing "no such table".
+        String rewritten = trimmed.replace(" ", "_");
+        if (getTableNames().contains(rewritten)) {
+            return rewritten;
+        }
+        // A view reaches here whenever something tries to write to it. Saying so is far more
+        // use than the "no such table" the name check would otherwise produce.
+        if (getViewNames().contains(trimmed)) {
+            throw new IllegalArgumentException(
+                    "\"" + trimmed + "\" is a view. It has no rows of its own to change — edit the "
+                            + "tables it reads from instead.");
+        }
+        throw new IllegalArgumentException("No such table: \"" + tableName + "\"");
+    }
+
+    /** As {@link #requireExistingTable}, for a column of a table already confirmed. */
+    private String requireExistingColumn(String tableName, String columnName) {
+        if (isBlank(columnName)) {
+            throw new IllegalArgumentException("Missing column name");
+        }
+        String trimmed = columnName.trim();
+        boolean exists = getColumnsForTable(tableName).stream()
+                .anyMatch(c -> c.getName().equals(trimmed));
+        if (!exists) {
+            throw new IllegalArgumentException(
+                    "No such column: \"" + columnName + "\" on \"" + tableName + "\"");
+        }
+        return trimmed;
     }
 
     private String resolveTypeDef(String baseType, int length, boolean notNull) {
@@ -648,10 +774,64 @@ public class DatabaseServiceImpl implements DatabaseService {
      * <p>This is the sequence SQLite documents for unsupported ALTERs: create a replacement
      * table, copy the rows across, drop the original, rename the replacement into place.
      */
+    /**
+     * What a rebuild is being asked to change. Every field is optional: a rebuild that only adds
+     * a foreign key leaves the columns exactly as they were.
+     *
+     * @param oldColumn      the column being renamed or retyped, or null for no column change
+     * @param addForeignKeys table-level {@code FOREIGN KEY} clauses to append
+     * @param dropForeignKeys constraint ids (from {@code PRAGMA foreign_key_list}) to leave out
+     */
+    private record RebuildSpec(String oldColumn, String newColumn, String newType,
+                               boolean newNotNull, List<String> addForeignKeys,
+                               Set<Integer> dropForeignKeys) {
+        static RebuildSpec columnChange(String oldColumn, String newColumn, String newType,
+                                        boolean newNotNull) {
+            return new RebuildSpec(oldColumn, newColumn, newType, newNotNull, List.of(), Set.of());
+        }
+        static RebuildSpec foreignKeys(List<String> add, Set<Integer> drop) {
+            return new RebuildSpec(null, null, null, false, add, drop);
+        }
+    }
+
     private void rebuildSqliteTable(String tableName, String oldColumn, String newColumn,
                                     String newType, boolean newNotNull) {
+        rebuildSqliteTable(tableName,
+                RebuildSpec.columnChange(oldColumn, newColumn, newType, newNotNull));
+    }
+
+    /**
+     * Rebuilds a SQLite table to a new shape, preserving everything the old one carried.
+     *
+     * <p>SQLite cannot change a column's type, and cannot add or drop a constraint at all, so the
+     * documented workaround is to build a replacement, copy the rows across, and rename it into
+     * place. The risk in that is everything the replacement silently fails to carry over: this
+     * reconstructs the primary key, {@code AUTOINCREMENT}, defaults, {@code NOT NULL}, foreign
+     * keys, <strong>unique constraints, {@code CHECK} constraints and every index</strong>. The
+     * last three used to be lost on any column retype — quietly, and only noticeable later.
+     */
+    private void rebuildSqliteTable(String tableName, RebuildSpec spec) {
+        String oldColumn = spec.oldColumn();
+        String newColumn = spec.newColumn();
+        String newType = spec.newType();
+        boolean newNotNull = spec.newNotNull();
+
         List<SqliteColumn> columns = readSqliteColumns(tableName);
-        List<String> foreignKeys = readSqliteForeignKeys(tableName);
+        Map<Integer, String> foreignKeyClauses = readSqliteForeignKeyClauses(tableName);
+        List<String> foreignKeys = new ArrayList<>();
+        foreignKeyClauses.forEach((id, clause) -> {
+            if (!spec.dropForeignKeys().contains(id)) foreignKeys.add(clause);
+        });
+        foreignKeys.addAll(spec.addForeignKeys());
+
+        // Everything below this line is the F3 fix: constraints and indexes that no PRAGMA
+        // reports as part of the table definition, and that a naive rebuild therefore drops.
+        Set<String> singleColumnUnique = new HashSet<>();
+        List<String> compositeUnique = new ArrayList<>();
+        readUniqueConstraints(tableName, singleColumnUnique, compositeUnique);
+        List<String> checks = extractCheckConstraints(getCreateTableSql(tableName));
+        List<String> indexes = readCreatedIndexes(tableName);
+
         boolean autoIncrement = hasAutoIncrement(tableName);
         long pkCount = columns.stream().filter(c -> c.pkPosition() > 0).count();
 
@@ -682,6 +862,10 @@ public class DatabaseServiceImpl implements DatabaseService {
             } else {
                 if (notNull) def.append(" NOT NULL");
                 if (defaultValue != null) def.append(" DEFAULT ").append(defaultValue);
+                // A single-column UNIQUE is an auto-index, invisible to `PRAGMA table_info`, so it
+                // has to be put back by hand or the column quietly stops being unique — and
+                // uniqueness is what the diagram reads to tell a 1:1 from a 1:N.
+                if (singleColumnUnique.contains(col.name())) def.append(" UNIQUE");
             }
             definitions.add(def.toString());
 
@@ -699,6 +883,8 @@ public class DatabaseServiceImpl implements DatabaseService {
                     .collect(Collectors.joining(", "));
             definitions.add("PRIMARY KEY (" + composite + ")");
         }
+        definitions.addAll(compositeUnique);
+        definitions.addAll(checks);
         definitions.addAll(foreignKeys);
 
         String temp = tableName + Constants.Identifiers.REBUILD_TABLE_SUFFIX;
@@ -718,6 +904,21 @@ public class DatabaseServiceImpl implements DatabaseService {
                     tableName));
             jdbc().execute(String.format(Constants.Tables.DROP_TABLE, quote(tableName)));
             jdbc().execute(String.format(Constants.Tables.RENAME_TABLE, temp, tableName));
+
+            // Indexes belong to the table, so dropping it dropped them. They are recreated from
+            // their own DDL, with the renamed column substituted where one was renamed.
+            for (String indexSql : indexes) {
+                String sql = oldColumn != null && newColumn != null
+                        ? renameColumnInSql(indexSql, oldColumn, newColumn)
+                        : indexSql;
+                try {
+                    jdbc().execute(sql);
+                } catch (RuntimeException indexError) {
+                    // One index that will not rebuild must not roll back a successful migration
+                    // of the data; the table is correct either way.
+                    log.warn("Could not recreate index on {}: {}", tableName, indexError.getMessage());
+                }
+            }
         } catch (RuntimeException e) {
             // Leave the original table untouched rather than half-migrated.
             try {
@@ -759,7 +960,194 @@ public class DatabaseServiceImpl implements DatabaseService {
     }
 
     /** Rebuilds each foreign key as a table-level constraint clause, grouping composite keys by id. */
+    /**
+     * Unique constraints on a table, split by whether they cover one column or several.
+     *
+     * <p>{@code PRAGMA table_info} does not report uniqueness at all, so the only trace is an
+     * auto-index with {@code origin = 'u'}. A single-column one is re-emitted on the column; a
+     * multi-column one has to become a table-level clause, because putting {@code UNIQUE} on
+     * either column separately would be a stronger constraint than the schema actually had.
+     */
+    private void readUniqueConstraints(String tableName, Set<String> singleColumn,
+                                       List<String> composite) {
+        List<String> uniqueIndexes = new ArrayList<>();
+        try {
+            jdbc().query(String.format(Constants.Introspection.SQLITE_INDEX_LIST, tableName), rs -> {
+                // 'u' is a UNIQUE constraint in the table definition; 'c' is a CREATE INDEX,
+                // recreated separately, and 'pk' is the primary key, already handled above.
+                if (rs.getInt("unique") == 1 && "u".equalsIgnoreCase(rs.getString("origin"))) {
+                    uniqueIndexes.add(rs.getString("name"));
+                }
+            });
+        } catch (Exception e) {
+            log.debug("Could not read unique constraints for {}: {}", tableName, e.getMessage());
+            return;
+        }
+
+        for (String index : uniqueIndexes) {
+            List<String> cols = new ArrayList<>();
+            jdbc().query(String.format(Constants.Introspection.SQLITE_INDEX_INFO, index),
+                    rs -> { cols.add(rs.getString("name")); });
+            if (cols.size() == 1) {
+                singleColumn.add(cols.get(0));
+            } else if (cols.size() > 1) {
+                composite.add("UNIQUE (" + cols.stream()
+                        .map(c -> QUOTE + c + QUOTE).collect(Collectors.joining(", ")) + ")");
+            }
+        }
+    }
+
+    /**
+     * Indexes created with {@code CREATE INDEX}, as their own DDL.
+     *
+     * <p>Only those: an auto-index backing a {@code UNIQUE} or a primary key has a null
+     * {@code sql} and is reconstructed from the column definitions instead. Recreating one of
+     * those by hand would fail anyway, because SQLite reserves the {@code sqlite_} name prefix.
+     */
+    private List<String> readCreatedIndexes(String tableName) {
+        List<String> statements = new ArrayList<>();
+        try {
+            jdbc().query(Constants.Introspection.SQLITE_TABLE_INDEX_DDL,
+                    rs -> { statements.add(rs.getString("sql")); }, tableName);
+        } catch (Exception e) {
+            log.debug("Could not read indexes for {}: {}", tableName, e.getMessage());
+        }
+        return statements;
+    }
+
+    /**
+     * Table- and column-level {@code CHECK} constraints, pulled out of the table's own DDL.
+     *
+     * <p>No PRAGMA reports these, so the stored {@code CREATE TABLE} text is the only source. Each
+     * is re-emitted as a table-level clause, which is equivalent in SQLite however it was
+     * originally written and much simpler than working out which column it belonged to.
+     *
+     * <p>The scan tracks quoting and nesting rather than using a regex, because a {@code CHECK}
+     * body can contain parentheses and the word itself can appear inside a string literal or a
+     * quoted column name.
+     */
+    private List<String> extractCheckConstraints(String createSql) {
+        List<String> checks = new ArrayList<>();
+        if (createSql == null) {
+            return checks;
+        }
+        int bodyStart = createSql.indexOf('(');
+        if (bodyStart < 0) {
+            return checks;
+        }
+
+        int depth = 0;
+        char quote = 0;
+        for (int i = bodyStart; i < createSql.length(); i++) {
+            char c = createSql.charAt(i);
+
+            if (quote != 0) {
+                if (c == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (c == SINGLE_QUOTE || c == DOUBLE_QUOTE || c == BACKTICK) {
+                quote = c;
+                continue;
+            }
+            if (c == '(') {
+                depth++;
+                continue;
+            }
+            if (c == ')') {
+                depth--;
+                if (depth == 0) {
+                    break;
+                }
+                continue;
+            }
+
+            // Only at the top level of the column list, and only as a whole word.
+            if (depth == 1 && matchesWord(createSql, i, "CHECK")) {
+                int open = createSql.indexOf('(', i);
+                if (open < 0) {
+                    break;
+                }
+                int close = matchingParen(createSql, open);
+                if (close < 0) {
+                    break;
+                }
+                checks.add("CHECK " + createSql.substring(open, close + 1));
+                i = close;
+            }
+        }
+        return checks;
+    }
+
+    private static final char SINGLE_QUOTE = '\'';
+    private static final char DOUBLE_QUOTE = '"';
+    private static final char BACKTICK = '`';
+    private static final String QUOTE = "\"";
+
+    /** True when {@code word} starts at {@code at} and is not part of a longer identifier. */
+    private static boolean matchesWord(String text, int at, String word) {
+        if (!text.regionMatches(true, at, word, 0, word.length())) {
+            return false;
+        }
+        int before = at - 1;
+        int after = at + word.length();
+        boolean leftClear = before < 0 || !isIdentifierChar(text.charAt(before));
+        boolean rightClear = after >= text.length() || !isIdentifierChar(text.charAt(after));
+        return leftClear && rightClear;
+    }
+
+    private static boolean isIdentifierChar(char c) {
+        return Character.isLetterOrDigit(c) || c == '_' || c == DOUBLE_QUOTE;
+    }
+
+    /** Index of the {@code )} closing the {@code (} at {@code open}, honouring quotes. */
+    private static int matchingParen(String text, int open) {
+        int depth = 0;
+        char quote = 0;
+        for (int i = open; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (quote != 0) {
+                if (c == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (c == SINGLE_QUOTE || c == DOUBLE_QUOTE || c == BACKTICK) {
+                quote = c;
+                continue;
+            }
+            if (c == '(') {
+                depth++;
+            } else if (c == ')' && --depth == 0) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** Swaps a column name inside an index's DDL, so a rename does not orphan its indexes. */
+    private static String renameColumnInSql(String sql, String oldName, String newName) {
+        String quotedOld = Pattern.quote(QUOTE + oldName + QUOTE);
+        String quotedNew = Matcher.quoteReplacement(QUOTE + newName + QUOTE);
+        return sql
+                .replaceAll(quotedOld, quotedNew)
+                .replaceAll("\\b" + Pattern.quote(oldName) + "\\b",
+                        Matcher.quoteReplacement(newName));
+    }
+
     private List<String> readSqliteForeignKeys(String tableName) {
+        return new ArrayList<>(readSqliteForeignKeyClauses(tableName).values());
+    }
+
+    /**
+     * The same clauses, keyed by the constraint id SQLite assigns them.
+     *
+     * <p>Dropping a foreign key means rebuilding the table without one of these, and the id is
+     * the only thing that identifies which — a composite key is several {@code PRAGMA} rows
+     * sharing one id, and two constraints can name the same column.
+     */
+    private Map<Integer, String> readSqliteForeignKeyClauses(String tableName) {
         Map<Integer, List<String>> fromColumns = new LinkedHashMap<>();
         Map<Integer, List<String>> toColumns = new LinkedHashMap<>();
         Map<Integer, String> targetTables = new LinkedHashMap<>();
@@ -773,10 +1161,10 @@ public class DatabaseServiceImpl implements DatabaseService {
             onDelete.putIfAbsent(id, rs.getString("on_delete"));
         });
 
-        List<String> clauses = new ArrayList<>();
+        Map<Integer, String> clauses = new LinkedHashMap<>();
         for (Integer id : fromColumns.keySet()) {
             String action = onDelete.get(id);
-            clauses.add(String.format(Constants.Tables.FOREIGN_KEY_CLAUSE,
+            clauses.put(id, String.format(Constants.Tables.FOREIGN_KEY_CLAUSE,
                     String.join(", ", fromColumns.get(id)),
                     targetTables.get(id),
                     String.join(", ", toColumns.get(id)),
@@ -802,8 +1190,9 @@ public class DatabaseServiceImpl implements DatabaseService {
      */
     @Override
     public void updateCell(UpdateCellRequest req) {
-        String tableName = req.getTableName().replace(" ", "_");
-        String colName = req.getColumnName().replace(" ", "_");
+        // Both names go straight into the statement, so both are checked against the schema.
+        String tableName = requireExistingTable(req.getTableName());
+        String colName = requireExistingColumn(tableName, req.getColumnName());
         String sql = String.format(Constants.Rows.UPDATE_CELL_BY_ID, tableName, colName);
         jdbc().update(sql, req.getNewValue(), req.getRecordId());
     }
@@ -815,15 +1204,17 @@ public class DatabaseServiceImpl implements DatabaseService {
      */
     @Override
     public Map<String, Object> insertRow(InsertRowRequest req) {
-        String tableName = req.getTableName();
+        String tableName = requireExistingTable(req.getTableName());
         Map<String, Object> data = req.getData() != null ? req.getData() : new HashMap<>();
 
-        // Strip id and empty values
+        // Strip id and empty values. The column names arrive from the client and are interpolated
+        // into the statement, so each one is confirmed against the table before it gets there.
         Map<String, Object> cleanData = data.entrySet().stream()
                 .filter(e -> !e.getKey().equalsIgnoreCase("id"))
                 .filter(e -> e.getValue() != null)
                 .filter(e -> !(e.getValue() instanceof String s && s.trim().isEmpty()))
-                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+                .collect(Collectors.toMap(
+                        e -> requireExistingColumn(tableName, e.getKey()), Map.Entry::getValue));
 
         if (cleanData.isEmpty()) {
             String sql = isMysql()
@@ -850,7 +1241,7 @@ public class DatabaseServiceImpl implements DatabaseService {
      */
     @Override
     public void deleteRow(DeleteRowRequest req) {
-        String tableName = req.getTableName().replace(" ", "_");
+        String tableName = requireExistingTable(req.getTableName());
         jdbc().update(String.format(Constants.Rows.DELETE_BY_ID, tableName), req.getRecordId());
     }
 
@@ -862,6 +1253,15 @@ public class DatabaseServiceImpl implements DatabaseService {
     @Override
     public void clearDatabase() {
         List<String> tables = getTableNames();
+        // Views first: they depend on the tables and are not dropped by DROP TABLE.
+        for (String viewName : getViewNames()) {
+            try {
+                jdbc().execute(String.format(Constants.Tables.DROP_VIEW_IF_EXISTS, viewName));
+            } catch (Exception e) {
+                log.warn("Could not drop view {}: {}", viewName, e.getMessage());
+            }
+        }
+
         // Notes and annotations both describe tables that are about to stop existing.
         try {
             jdbc().execute(String.format(Constants.Tables.DROP_TABLE_IF_EXISTS_QUOTED, NOTES_TABLE));
@@ -1088,6 +1488,356 @@ public class DatabaseServiceImpl implements DatabaseService {
         if (removed == 0) {
             throw new IllegalArgumentException("No such note.");
         }
+    }
+
+    // ─── Raw SQL, run from the scratchpad ─────────────────────────────────────────
+
+    /** Enough statements for a real migration, few enough that a paste cannot run away. */
+    private static final int MAX_STATEMENTS = 50;
+    /** Rows returned to the UI per statement. The panel is not a data grid. */
+    private static final int MAX_RESULT_ROWS = 500;
+    /** A statement that has not finished in this long is not going to. */
+    private static final int STATEMENT_TIMEOUT_SECONDS = 15;
+
+    /**
+     * Runs a user's SQL, statement by statement, and reports what each one did.
+     *
+     * <p>Deliberately not {@link #executeQuery}, which runs a single statement and answers with
+     * either rows or a count. A scratchpad is used to run several at once, and the question that
+     * matters when something goes wrong is <em>which</em> one — a shape the old response could not
+     * express at all.
+     *
+     * <p>Execution stops at the first failure. A script is usually a sequence where the later
+     * statements assume the earlier ones worked, so carrying on past an error produces a cascade
+     * of confusing secondary failures and leaves the schema somewhere nobody intended.
+     */
+    @Override
+    public Map<String, Object> runScratchpad(String script) {
+        if (script == null || script.isBlank()) {
+            throw new IllegalArgumentException("Nothing to run.");
+        }
+
+        List<String> statements = SqlScriptSplitter.split(script);
+        if (statements.isEmpty()) {
+            throw new IllegalArgumentException("Nothing to run.");
+        }
+        if (statements.size() > MAX_STATEMENTS) {
+            throw new IllegalArgumentException(
+                    "That is " + statements.size() + " statements. Run at most " + MAX_STATEMENTS
+                            + " at a time — use Import for a whole file.");
+        }
+        for (String statement : statements) {
+            refuseInternalTables(statement);
+        }
+
+        List<Map<String, Object>> report = new ArrayList<>();
+        boolean schemaChanged = false;
+        boolean stopped = false;
+
+        for (String statement : statements) {
+            if (stopped) {
+                report.add(statementReport(statement, "skipped", null, null, null,
+                        "Not run: an earlier statement failed.", false));
+                continue;
+            }
+            String kind = statementKind(statement);
+            try {
+                if (returnsRows(statement)) {
+                    List<Map<String, Object>> rows = queryWithLimit(statement);
+                    boolean truncated = rows.size() > MAX_RESULT_ROWS;
+                    if (truncated) rows = rows.subList(0, MAX_RESULT_ROWS);
+                    report.add(statementReport(statement, kind,
+                            rows.isEmpty() ? List.of() : new ArrayList<>(rows.get(0).keySet()),
+                            rows, rows.size(), null, truncated));
+                } else {
+                    int affected = updateWithTimeout(statement);
+                    report.add(statementReport(statement, kind, null, null, affected, null, false));
+                    if (!"SELECT".equals(kind)) schemaChanged = true;
+                }
+            } catch (Exception e) {
+                report.add(statementReport(statement, kind, null, null, null,
+                        rootCauseMessage(e), false));
+                stopped = true;
+            }
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("statements", report);
+        // Tells the UI whether the canvas needs re-reading. A SELECT changes nothing, and
+        // refreshing the whole schema after every one of those would be wasteful and jumpy.
+        result.put("schemaChanged", schemaChanged);
+        result.put("failed", stopped);
+        return result;
+    }
+
+    private Map<String, Object> statementReport(String sql, String kind, List<String> columns,
+                                                List<Map<String, Object>> rows, Integer count,
+                                                String error, boolean truncated) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("sql", summarizeStatement(sql));
+        entry.put("kind", kind);
+        if (columns != null) entry.put("columns", columns);
+        if (rows != null) entry.put("rows", rows);
+        if (count != null) entry.put("rowCount", count);
+        if (error != null) entry.put("error", error);
+        entry.put("truncated", truncated);
+        return entry;
+    }
+
+    /**
+     * Whether a statement produces a result set.
+     *
+     * <p>{@code PRAGMA} is the awkward one: the read form returns rows and the assignment form
+     * does not, and sending the latter to a query call fails with "query does not return
+     * ResultSet" — which is exactly what {@link #executeQuery} still does.
+     */
+    private boolean returnsRows(String statement) {
+        String head = statement.stripLeading().toUpperCase();
+        if (head.startsWith("SELECT") || head.startsWith("WITH") || head.startsWith("EXPLAIN")
+                || head.startsWith("SHOW") || head.startsWith("VALUES")) {
+            return true;
+        }
+        // A read pragma is a bare name; `PRAGMA foreign_keys = ON` is an assignment.
+        return head.startsWith("PRAGMA") && !head.contains("=");
+    }
+
+    private String statementKind(String statement) {
+        String head = statement.stripLeading().toUpperCase();
+        for (String word : List.of("SELECT", "INSERT", "UPDATE", "DELETE", "CREATE VIEW",
+                "CREATE TABLE", "CREATE INDEX", "ALTER", "DROP", "PRAGMA", "WITH", "EXPLAIN")) {
+            if (head.startsWith(word)) return word;
+        }
+        int space = head.indexOf(' ');
+        return space > 0 ? head.substring(0, space) : head;
+    }
+
+    private List<Map<String, Object>> queryWithLimit(String sql) {
+        return jdbc().execute((org.springframework.jdbc.core.StatementCallback<List<Map<String, Object>>>) stmt -> {
+            stmt.setQueryTimeout(STATEMENT_TIMEOUT_SECONDS);
+            // One more than the cap, so the caller can tell "exactly 500" from "at least 500".
+            stmt.setMaxRows(MAX_RESULT_ROWS + 1);
+            try (java.sql.ResultSet rs = stmt.executeQuery(sql)) {
+                return readRows(rs);
+            }
+        });
+    }
+
+    private List<Map<String, Object>> readRows(java.sql.ResultSet rs) throws java.sql.SQLException {
+        java.sql.ResultSetMetaData meta = rs.getMetaData();
+        int columns = meta.getColumnCount();
+        List<Map<String, Object>> rows = new ArrayList<>();
+        while (rs.next()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            for (int i = 1; i <= columns; i++) {
+                row.put(meta.getColumnLabel(i), rs.getObject(i));
+            }
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    private int updateWithTimeout(String sql) {
+        Integer affected = jdbc().execute((org.springframework.jdbc.core.StatementCallback<Integer>) stmt -> {
+            stmt.setQueryTimeout(STATEMENT_TIMEOUT_SECONDS);
+            stmt.execute(sql);
+            int count = stmt.getUpdateCount();
+            return count < 0 ? 0 : count;
+        });
+        return affected == null ? 0 : affected;
+    }
+
+    /**
+     * Refuses a statement that names one of the application's own tables.
+     *
+     * <p>They are filtered out of every listing, so nobody can see them to mean them; a statement
+     * naming one is either a mistake or an attempt to reach behind the UI, and neither should be
+     * allowed to corrupt the notes or the canvas annotations.
+     */
+    private void refuseInternalTables(String statement) {
+        java.util.regex.Matcher matcher =
+                java.util.regex.Pattern.compile("(?<![A-Za-z0-9_])__[A-Za-z0-9_]+")
+                        .matcher(statement);
+        if (matcher.find()) {
+            throw new IllegalArgumentException(
+                    "\"" + matcher.group() + "\" belongs to the application. Tables whose names "
+                            + "start with __ are not yours to change.");
+        }
+    }
+
+    // ─── Foreign keys on an existing table ────────────────────────────────────────
+
+    /**
+     * Adds a foreign key to a table that already exists.
+     *
+     * <p>Everything is checked before anything is written, because the SQLite path is a table
+     * rebuild and a rebuild that fails halfway is far more expensive to reason about than a
+     * request that was refused. The checks are not pedantry:
+     *
+     * <ul>
+     *   <li>A key pointing at a non-unique column is accepted by SQLite and then <em>silently not
+     *       enforced</em>, which is worse than a refusal because the diagram would claim a
+     *       guarantee the database is not making.</li>
+     *   <li>Rows that already violate the key would make the copy step fail with a constraint
+     *       error naming nothing useful; counting them first lets us say how many and where.</li>
+     * </ul>
+     */
+    @Override
+    public void addForeignKey(String tableRaw, String columnRaw, String refTableRaw,
+                              String refColumnRaw, String onDelete) {
+        String table = requireExistingTable(tableRaw);
+        String column = requireExistingColumn(table, columnRaw);
+        String refTable = requireExistingTable(refTableRaw);
+        String refColumn = requireExistingColumn(refTable, refColumnRaw);
+
+        if (table.equals(refTable) && column.equals(refColumn)) {
+            throw new IllegalArgumentException("A column cannot reference itself.");
+        }
+
+        ColumnInfo child = columnOf(table, column);
+        ColumnInfo parent = columnOf(refTable, refColumn);
+
+        // SQLite requires the parent side to be unique for the key to mean anything at all.
+        if (!parent.isPk() && !parent.isUnique()) {
+            throw new IllegalArgumentException(
+                    "\"" + refTable + "." + refColumn + "\" is not unique. A foreign key must point at "
+                            + "a primary key or a column with a unique index, or the database will not "
+                            + "enforce it.");
+        }
+
+        if (!typesCompatible(child.getType(), parent.getType())) {
+            throw new IllegalArgumentException(
+                    "\"" + table + "." + column + "\" is " + child.getType() + " but \""
+                            + refTable + "." + refColumn + "\" is " + parent.getType()
+                            + ". A foreign key needs matching types.");
+        }
+
+        boolean exists = getForeignKeys(table).stream().anyMatch(rel ->
+                column.equals(rel.getSourceColumn())
+                        && refTable.equals(rel.getTargetTable())
+                        && refColumn.equals(rel.getTargetColumn()));
+        if (exists) {
+            throw new IllegalArgumentException(
+                    "That relationship already exists between " + table + " and " + refTable + ".");
+        }
+
+        long orphans = countOrphans(table, column, refTable, refColumn);
+        if (orphans > 0) {
+            boolean one = orphans == 1;
+            throw new IllegalArgumentException(
+                    orphans + (one ? " row in \"" : " rows in \"") + table
+                            + (one ? "\" holds a \"" : "\" hold a \"") + column
+                            + "\" that does not exist in \"" + refTable + "\". Fix or clear "
+                            + (one ? "that row first." : "those rows first."));
+        }
+
+        String action = normaliseOnDelete(onDelete);
+        if (isMysql()) {
+            // MySQL can do this properly, so it does — no rebuild, no data copy.
+            jdbc().execute(String.format(Constants.Tables.MYSQL_ADD_FOREIGN_KEY,
+                    table, column, refTable, refColumn, action));
+            return;
+        }
+
+        String clause = String.format(Constants.Tables.FOREIGN_KEY_CLAUSE,
+                "\"" + column + "\"", refTable, "\"" + refColumn + "\"", action);
+        rebuildSqliteTable(table, RebuildSpec.foreignKeys(List.of(clause), Set.of()));
+    }
+
+    /**
+     * Removes a foreign key — the inverse of {@link #addForeignKey}, and what undo runs.
+     *
+     * <p>Identified by the pair of columns rather than by the engine's constraint id, because the
+     * id is an index into a PRAGMA listing and shifts as other keys come and go; the caller holds
+     * a relationship, not a number.
+     */
+    @Override
+    public void dropForeignKey(String tableRaw, String columnRaw, String refTableRaw,
+                               String refColumnRaw) {
+        String table = requireExistingTable(tableRaw);
+        String column = requireExistingColumn(table, columnRaw);
+        String refTable = refTableRaw == null ? null : refTableRaw.trim();
+        String refColumn = refColumnRaw == null ? null : refColumnRaw.trim();
+
+        if (isMysql()) {
+            String constraint = mysqlConstraintName(table, column, refTable, refColumn);
+            if (constraint == null) {
+                throw new IllegalArgumentException("No such relationship on \"" + table + "\".");
+            }
+            jdbc().execute(String.format(Constants.Tables.MYSQL_DROP_FOREIGN_KEY, table, constraint));
+            return;
+        }
+
+        Integer id = null;
+        Map<Integer, List<String>> byId = new LinkedHashMap<>();
+        jdbc().query(String.format(Constants.Introspection.SQLITE_FOREIGN_KEY_LIST, table), rs -> {
+            int fkId = rs.getInt("id");
+            byId.computeIfAbsent(fkId, k -> new ArrayList<>())
+                    .add(rs.getString("from") + "\u0000" + rs.getString("table")
+                            + "\u0000" + rs.getString("to"));
+        });
+        String wanted = column + "\u0000" + refTable + "\u0000" + refColumn;
+        for (Map.Entry<Integer, List<String>> entry : byId.entrySet()) {
+            if (entry.getValue().contains(wanted)) {
+                id = entry.getKey();
+                break;
+            }
+        }
+        if (id == null) {
+            throw new IllegalArgumentException(
+                    "No relationship from \"" + table + "." + column + "\" to \"" + refTable + "\".");
+        }
+
+        rebuildSqliteTable(table, RebuildSpec.foreignKeys(List.of(), Set.of(id)));
+    }
+
+    private ColumnInfo columnOf(String table, String column) {
+        return getColumnsForTable(table).stream()
+                .filter(c -> c.getName().equals(column)).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No such column: \"" + column + "\" on \"" + table + "\""));
+    }
+
+    /**
+     * Whether two declared types can sit either side of a foreign key.
+     *
+     * <p>Compared by SQLite's type *affinity* rather than by spelling: {@code INT},
+     * {@code INTEGER} and {@code BIGINT} are the same storage class, and refusing a key because
+     * one side says one and the other says another would reject perfectly ordinary schemas.
+     */
+    private boolean typesCompatible(String childType, String parentType) {
+        return affinityOf(childType).equals(affinityOf(parentType));
+    }
+
+    private String affinityOf(String declaredType) {
+        String type = declaredType == null ? "" : declaredType.toUpperCase();
+        if (type.contains("INT")) return "INTEGER";
+        if (type.contains("CHAR") || type.contains("CLOB") || type.contains("TEXT")) return "TEXT";
+        if (type.contains("BLOB") || type.isEmpty()) return "BLOB";
+        if (type.contains("REAL") || type.contains("FLOA") || type.contains("DOUB")) return "REAL";
+        return "NUMERIC";
+    }
+
+    /** Rows whose foreign key names a parent that is not there. Nulls are allowed and not counted. */
+    private long countOrphans(String table, String column, String refTable, String refColumn) {
+        String sql = String.format(Constants.Tables.COUNT_ORPHANS,
+                quote(table), quote(column), quote(column), quote(refColumn), quote(refTable));
+        Long count = jdbc().queryForObject(sql, Long.class);
+        return count == null ? 0 : count;
+    }
+
+    private String normaliseOnDelete(String onDelete) {
+        if (onDelete == null || onDelete.isBlank()) return "";
+        String action = onDelete.trim().toUpperCase();
+        return switch (action) {
+            case "CASCADE", "SET NULL", "SET DEFAULT", "RESTRICT", "NO ACTION" -> " ON DELETE " + action;
+            default -> throw new IllegalArgumentException("Unknown ON DELETE action: " + onDelete);
+        };
+    }
+
+    private String mysqlConstraintName(String table, String column, String refTable, String refColumn) {
+        List<String> names = jdbc().queryForList(Constants.Introspection.MYSQL_CONSTRAINT_NAME,
+                String.class, table, column, refTable, refColumn);
+        return names.isEmpty() ? null : names.get(0);
     }
 
     // ─── Canvas annotations ───────────────────────────────────────────────────────

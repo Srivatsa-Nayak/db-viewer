@@ -209,6 +209,53 @@ class ColumnEditTest {
     }
 
     @Test
+    void retype_shouldPreserveIndexesUniqueAndCheck() {
+        // The pre-existing half of the same bug the foreign-key work fixed: a retype rebuilds the
+        // table, and the rebuild used to carry over only what PRAGMA table_info and
+        // foreign_key_list report — which is neither indexes, nor UNIQUE, nor CHECK. They went
+        // silently, and the loss of UNIQUE in particular makes the canvas draw a 1:1 as a 1:N.
+        service.executeQuery("""
+                CREATE TABLE widgets (
+                    id INTEGER PRIMARY KEY,
+                    sku TEXT UNIQUE,
+                    qty INTEGER CHECK (qty >= 0),
+                    note TEXT
+                )""");
+        service.executeQuery("CREATE INDEX idx_widgets_note ON widgets (note)");
+        service.executeQuery("INSERT INTO widgets (id, sku, qty, note) VALUES (1, 'A1', 3, 'x')");
+
+        service.updateColumn(new UpdateColumnRequest("widgets", "note", null, "VARCHAR", 64, null));
+
+        String schema = ddl("widgets");
+        assertThat(schema).contains("UNIQUE");
+        assertThat(schema).contains("CHECK");
+        assertThat(service.executeQuery(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='widgets' AND sql IS NOT NULL")
+                .toString()).contains("idx_widgets_note");
+
+        // Still enforced, not just still spelled out in the DDL.
+        assertThatThrownBy(() -> service.executeQuery(
+                "INSERT INTO widgets (id, sku, qty) VALUES (2, 'A1', 1)"))
+                .isInstanceOf(Exception.class);
+        assertThatThrownBy(() -> service.executeQuery(
+                "INSERT INTO widgets (id, sku, qty) VALUES (3, 'B2', -5)"))
+                .isInstanceOf(Exception.class);
+    }
+
+    @Test
+    void rename_shouldCarryItsIndexesOntoTheNewName() {
+        service.executeQuery("CREATE TABLE gadgets (id INTEGER PRIMARY KEY, label TEXT)");
+        service.executeQuery("CREATE INDEX idx_gadgets_label ON gadgets (label)");
+
+        service.updateColumn(new UpdateColumnRequest("gadgets", "label", "title", null, 0, null));
+
+        // The index DDL named the old column, so recreating it verbatim would have failed.
+        assertThat(service.executeQuery(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='gadgets' AND sql IS NOT NULL")
+                .toString()).contains("title");
+    }
+
+    @Test
     void noChangeRequested_shouldBeANoOp() {
         String before = ddl("books");
         service.updateColumn(new UpdateColumnRequest("books", "pages", null, null, 0, null));

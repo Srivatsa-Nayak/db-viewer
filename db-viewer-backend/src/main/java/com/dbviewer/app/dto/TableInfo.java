@@ -14,6 +14,15 @@ import java.util.Map;
 @NoArgsConstructor
 @AllArgsConstructor
 public class TableInfo {
+
+    /**
+     * True when this is a view rather than a table.
+     *
+     * <p>The canvas draws it differently, and the row-editing endpoints refuse it: a view has no
+     * rows of its own to update, and letting someone try produces a SQL error that explains
+     * nothing about why.
+     */
+    private boolean view;
     private String name;
     private List<ColumnInfo> columns;
     private List<Map<String, Object>> rows;

@@ -71,6 +71,41 @@ public interface DatabaseService {
     void updateColumn(UpdateColumnRequest req);
 
     /**
+     * Removes a column — the inverse of {@link #addColumn}, which is what lets undo reverse one.
+     *
+     * <p>Refuses a primary key, the last remaining column, and a column another table's foreign
+     * key references.
+     */
+    void dropColumn(String tableName, String columnName);
+
+    /**
+     * Declares a foreign key on a table that already exists — what dragging a line on the canvas
+     * actually does.
+     *
+     * <p>Validates before it writes: both ends must exist, the referenced column must be unique
+     * (or SQLite accepts the key and never enforces it), the types must be compatible, the key
+     * must not already be there, and no existing row may violate it.
+     *
+     * @param onDelete {@code CASCADE}, {@code SET NULL}, … or null for the engine default
+     */
+    void addForeignKey(String tableName, String columnName, String refTable, String refColumn,
+                       String onDelete);
+
+    /** Removes a foreign key, identified by the two columns it joins. The inverse of adding one. */
+    void dropForeignKey(String tableName, String columnName, String refTable, String refColumn);
+
+    /**
+     * Runs a script from the SQL scratchpad and reports what each statement did.
+     *
+     * <p>Unlike {@link #executeQuery}, which answers for one statement, this answers for several —
+     * including which one failed, which is the question that matters when a script goes wrong.
+     * Execution stops at the first error.
+     *
+     * @return {@code statements} (a report per statement), {@code schemaChanged}, {@code failed}
+     */
+    Map<String, Object> runScratchpad(String script);
+
+    /**
      * Updates a single cell value by record ID.
      * Mirrors HandleUpdateCell in Go.
      */

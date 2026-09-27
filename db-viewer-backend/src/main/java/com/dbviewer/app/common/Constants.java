@@ -219,8 +219,18 @@ public final class Constants {
                 "INSERT INTO shared_links (token, workspace_id, file_name, owner_email, created_at) "
                         + "VALUES (?, ?, ?, ?, ?)";
 
-        public static final String SELECT_TOKEN_BY_WORKSPACE_AND_OWNER =
-                "SELECT token FROM shared_links WHERE workspace_id = ? AND owner_email = ?";
+        /**
+         * Existing links for one file and owner, oldest first.
+         *
+         * <p>Plural, and ordered, on purpose. "One link per file per owner" is the intent but
+         * nothing in the schema enforces it, and duplicates do exist in the wild — two quick
+         * clicks can both pass the check-then-insert before either commits. Reading them as a
+         * list and taking the oldest is deterministic and, more to the point, does not throw;
+         * the oldest is also the one most likely to have been handed to somebody already.
+         */
+        public static final String SELECT_TOKENS_BY_WORKSPACE_AND_OWNER =
+                "SELECT token FROM shared_links WHERE workspace_id = ? AND owner_email = ? "
+                        + "ORDER BY created_at ASC";
 
         public static final String SELECT_LINK_BY_TOKEN =
                 "SELECT * FROM shared_links WHERE token = ?";
@@ -242,6 +252,24 @@ public final class Constants {
 
         public static final String MYSQL_SHOW_TABLES = "SHOW TABLES";
 
+        /**
+         * Views, listed separately from tables on purpose.
+         *
+         * <p>Widening the table query to {@code type IN ('table','view')} would have been shorter
+         * and wrong: nearly every caller of {@code getTableNames()} goes on to do something only a
+         * table can take — {@code DROP TABLE}, an {@code INSERT}, a rebuild — so a view arriving
+         * through that path fails somewhere far from here.
+         */
+        public static final String SQLITE_SELECT_VIEWS =
+                "SELECT name FROM sqlite_master WHERE type = 'view' AND name NOT LIKE 'sqlite_%'";
+
+        /** The stored {@code CREATE VIEW} text. ?: view name. */
+        public static final String SQLITE_VIEW_DDL =
+                "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?";
+
+        public static final String MYSQL_SHOW_VIEWS =
+                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = DATABASE()";
+
         public static final String SQLITE_SELECT_USER_TABLES =
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'";
 
@@ -262,6 +290,23 @@ public final class Constants {
 
         /** Columns in one index. %s: index name. */
         public static final String SQLITE_INDEX_INFO = "PRAGMA index_info(\"%s\")";
+
+        /**
+         * The DDL of every index a user created on a table. ?: table name.
+         *
+         * <p>{@code sql IS NOT NULL} excludes the auto-indexes SQLite creates to back UNIQUE and
+         * primary-key constraints: those have no DDL of their own and are reconstructed from the
+         * column definitions instead.
+         */
+        public static final String SQLITE_TABLE_INDEX_DDL =
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? "
+                        + "AND sql IS NOT NULL";
+
+        /** The generated name of one MySQL foreign key. ?: table, column, parent table, parent column. */
+        public static final String MYSQL_CONSTRAINT_NAME =
+                "SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE "
+                        + "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? "
+                        + "AND REFERENCED_TABLE_NAME = ? AND REFERENCED_COLUMN_NAME = ?";
 
         /** Single-column unique indexes, MySQL. ?: table name. */
         public static final String MYSQL_UNIQUE_COLUMNS =
@@ -329,6 +374,40 @@ public final class Constants {
         /** %s: table name. %s: column name. %s: rendered type definition. */
         public static final String ADD_COLUMN =
                 "ALTER TABLE \"%s\" ADD COLUMN \"%s\" %s";
+
+        /**
+         * %s: table name. %s: column name.
+         *
+         * <p>SQLite has supported this since 3.35 and the bundled driver is well past that, but it
+         * refuses on a column that forms part of the primary key, carries a UNIQUE constraint, or
+         * is named by an index or a CHECK. The caller checks what it usefully can beforehand and
+         * lets the engine's own refusal through for the rest.
+         */
+        /** %s: view name. */
+        public static final String DROP_VIEW_IF_EXISTS = "DROP VIEW IF EXISTS \"%s\"";
+
+        public static final String DROP_COLUMN =
+                "ALTER TABLE \"%s\" DROP COLUMN \"%s\"";
+
+        /**
+         * Rows whose foreign key names a parent row that does not exist.
+         *
+         * <p>%s, in order: child table, child column, child column again, parent column, parent
+         * table.
+         * A NULL key is not an orphan — an optional relationship is allowed to be absent — so it
+         * is excluded rather than counted.
+         */
+        public static final String COUNT_ORPHANS =
+                "SELECT COUNT(*) FROM %s WHERE %s IS NOT NULL "
+                        + "AND %s NOT IN (SELECT %s FROM %s)";
+
+        /** MySQL can add a constraint in place. %s: table, column, parent table, parent column, action. */
+        public static final String MYSQL_ADD_FOREIGN_KEY =
+                "ALTER TABLE `%s` ADD FOREIGN KEY (`%s`) REFERENCES `%s` (`%s`)%s";
+
+        /** %s: table, constraint name. */
+        public static final String MYSQL_DROP_FOREIGN_KEY =
+                "ALTER TABLE `%s` DROP FOREIGN KEY `%s`";
 
         /** %s: table. %s: existing column. %s: new column. %s: rendered type definition. */
         public static final String MYSQL_CHANGE_COLUMN =
