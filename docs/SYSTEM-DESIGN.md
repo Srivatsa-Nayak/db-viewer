@@ -275,7 +275,7 @@ client that knows an id can reach that workspace. This matches the app's current
 | `POST` | `/import/analyze` | Dry run: the tables, columns and inferred types an import would produce, plus the dialect detected and everything that would be skipped. Writes nothing | ✅ header |
 | `POST` | `/upload` | Import `.csv` or `.sql`, applying any `columnTypes` corrections; returns a report of what ran and what was skipped | ✅ header |
 | `POST` | `/query` | Execute raw SQL | ✅ header |
-| `GET` | `/db-info` | All tables, columns, row previews, relationships | ✅ header |
+| `GET` | `/db-info` | All tables, columns, row previews, relationships. Columns carry `unique` / `defaultValue` / `autoIncrement`, relationships carry `constraintId` / `onDelete` — the canvas needs all five to draw cardinality and column definitions | ✅ header |
 | `GET` | `/table-data/{table}` | Columns + up to 100 rows | ✅ header |
 | `POST` | `/create-table` | `CREATE TABLE` with PK/NOT NULL/FK | ✅ header |
 | `POST` | `/alter-table` | `ALTER TABLE ... ADD COLUMN` | ✅ header |
@@ -286,6 +286,12 @@ client that knows an id can reach that workspace. This matches the app's current
 | `DELETE` | `/clear` | Drop every table, keep the workspace | ✅ header |
 | `GET` | `/workspaces` | The caller's files, `{id, name}` each, that still have a database | — |
 | `POST` | `/workspace/name` | Record the file name against the workspace | ✅ header |
+| `GET` | `/canvas-meta` | Table colours and tags, and domain groups | ✅ header |
+| `PUT` `DELETE` | `/canvas-meta/{kind}/{ref}` | Set or clear one annotation | ✅ header |
+| `POST` | `/drop-column` | Remove a column; refuses a key, the last column, or a referenced one | ✅ header |
+| `POST` | `/add-foreign-key` | Declare a relationship; validates uniqueness, types and orphan rows first | ✅ header |
+| `POST` | `/drop-foreign-key` | Remove a relationship | ✅ header |
+| `POST` | `/scratchpad` | Run a script, reporting each statement **(account required)** | ✅ header |
 | `GET` | `/templates` | The starter-schema catalogue | — |
 | `GET` | `/templates/{id}` | One template, including its SQL | — |
 | `POST` | `/templates/{id}/apply` | Create a template's tables in the workspace | ✅ header |
@@ -294,7 +300,7 @@ client that knows an id can reach that workspace. This matches the app's current
 | `GET` `POST` `DELETE` | `/table-notes...` | Per-table to-do notes | ✅ header |
 | `POST` | `/auth/signup` · `/auth/login` | Accounts | — |
 | `POST` | `/share` | Create a read-only link **(account required)** | ✅ header |
-| `GET` | `/share/{token}` | View a shared schema (public) | — |
+| `GET` | `/share/{token}` | View a shared schema (public), including the table colours and domain groups | — |
 | `DELETE` | `/workspace` | Delete the workspace's database outright | ✅ header |
 | `GET` | `/export/{table}` | Download table as CSV | ✅ **query param** |
 | `GET` | `/export-sql` | Download workspace as a SQL script rebuilt for `?dialect=` | ✅ **query param** |
@@ -431,10 +437,12 @@ discussion.
 | Workspaces are never garbage-collected unless closed in the UI | No session lifecycle | A TTL sweeper over `app.workspace.dir`, or a session-bound registry |
 | SQLite files live on local disk | Zero-infrastructure default | Object storage or a managed MySQL/Postgres per tenant |
 | ~~Node positions are lost on reload~~ | **Fixed** — the open-file list and canvas layout are persisted to `localStorage` and reconciled against `GET /workspaces` on start | — |
-| Dragging an edge on the canvas does not persist | `onConnect` is a no-op | Map the connection to an `ALTER TABLE ... ADD FOREIGN KEY` (needs table rebuild on SQLite) |
-| Row addressing assumes an `id` column | Simplifies update/delete | Use the real primary key from metadata, or `rowid` on SQLite |
-| A column type change rebuilds the whole SQLite table | SQLite has no `ALTER COLUMN` | Unavoidable on SQLite; the rebuild is metadata-driven, so a hand-written CHECK/UNIQUE/COLLATE clause is not carried across |
-| Columns cannot be dropped from the UI | Not requested yet | `ALTER TABLE ... DROP COLUMN` works on SQLite 3.35+ and MySQL 8 |
+| ~~Dragging an edge on the canvas does not persist~~ | **Fixed** — `onConnect` creates a real foreign key through `POST /add-foreign-key`, which rebuilds the table on SQLite and validates uniqueness, types and orphan rows first | — |
+| Row addressing assumes an `id` column | Simplifies update/delete | Use the real primary key from metadata, or `rowid` on SQLite. Both editing surfaces — the row grid and the node's sample strip — disable editing with a stated reason when there is none |
+| ~~Dropping a table is immediate and unrecoverable~~ | **Fixed** — confirming leaves a ghost node on the canvas and `DELETE /table/{name}` is only sent when a 7-second countdown expires. Deferring rather than restoring needs no snapshot of rows, indexes or constraints, and fails safe: a closed tab means the drop never happened | — |
+| ~~Every node renders full detail at every zoom~~ | **Fixed** — three detail tiers driven by the canvas zoom, measured at 10,180 → 3,195 DOM elements on a 100-table file at fitted zoom. Off-viewport culling (`onlyRenderVisibleElements`) was measured and **not** adopted: frame rate was already at the 60fps cap, and it would break PNG export, which needs every node in the DOM | — |
+| A column type change rebuilds the whole SQLite table | SQLite has no `ALTER COLUMN` | Unavoidable on SQLite. The rebuild now carries indexes, `UNIQUE` and `CHECK` across — it used to drop all three silently — but a `COLLATE` clause is still lost |
+| ~~Columns cannot be dropped from the UI~~ | **Fixed** — `POST /drop-column`, which is also what undo runs to reverse an added column | — |
 | Row previews capped at 100 | Keeps `/db-info` cheap | Server-side pagination on `/table-data` |
 | `.sql` import skips statements it cannot run | Best-effort import of MySQL dumps | Now reported to the UI via the upload report and `NoticeModal`; MySQL triggers/procedures still have no SQLite equivalent |
 | Indexes and `UNIQUE`/`CHECK` constraints in a dump are dropped | The translator folds only primary and foreign keys | Emit `CREATE INDEX` / table-level constraints during translation |
@@ -457,10 +465,29 @@ The filter deliberately never rejects: almost everything is meant to work withou
 the two endpoints that do need one ask for it themselves. Enforcement is server-side rather than a
 hidden button, so calling the API directly does not bypass it.
 
+A deferred delete is the one place where the UI, not the database, decides when a destructive
+statement runs — so it carries two guards. The timer re-reads which file is open before firing,
+because the workspace id travels as a request header and a timer that outlived a file switch
+would drop a same-named table in the wrong database; and leaving the page cancels every pending
+drop, because not deleting is the recoverable half of the two possible mistakes. The referencing
+check is *also* made client-side from the relationship list, so a table another table points at
+is refused immediately rather than seven seconds later — the backend's 409 remains authoritative.
+
 **Share links** are a random 192-bit token mapped to a workspace id. Viewing one is public — the
 token is the credential, which is the only way a link can be handed to someone — and read-only:
 the route reads the schema and nothing else. Deleting a workspace revokes its links, so a link
 never points at a database that no longer exists.
+
+Sharing the same file twice returns the same token, and `createLink` is **synchronized** to make
+that true. "Reuse the existing link" is a check-then-insert, which is not atomic: two callers can
+both find nothing and both insert. That is not a theoretical race — opening the share dialog fires
+the request twice under React's development double-invoke, and a double-click does the same in
+production, so the very first share reliably created two tokens and the dialog showed a different
+link on every open afterwards. A lock on the singleton is the right scope here (one process, and a
+call that returns in milliseconds); a multi-instance deployment would want a unique index on
+`(workspace_id, owner_email)` instead, which cannot be added while duplicates created before this
+fix still exist. Reads therefore stay tolerant of duplicates and return the **oldest** token — the
+one most likely to be in somebody's inbox already — rather than failing.
 
 Application-owned tables (`app_users`, `shared_links`) live in the **default** database, because a
 user and their links span every file. Per-table notes live *inside* the workspace as
@@ -483,6 +510,12 @@ returns 200 without doing anything is the failure worth catching.
 | Column edit | `ColumnEditTest` — rename, retype, renullify; the SQLite rebuild preserving keys, foreign keys and data; primary-key protection; identifier validation; `PRAGMA foreign_keys` restoration |
 | SQL import | `SqlImportTest` — a real phpMyAdmin dump end to end, comment-prefixed statements, semicolons inside string literals, `DELIMITER` blocks, ALTER-key folding, skip reporting |
 | Auth & sharing | `AuthAndSharingTest` — signup validation, BCrypt hashing, no account enumeration, forged tokens, share create/view/revoke, anonymous refusal of export and share |
+| Canvas metadata | `CanvasMetaTest` — colours and groups surviving a schema refresh, cascading away with their table, staying out of exports, and never reaching the canvas as a table |
+| Schema metadata | `SchemaMetadataTest` — `isUnique`, `defaultValue` and `autoIncrement` read back correctly, and foreign keys carrying their constraint id and `ON DELETE` rule |
+| Drop column | `DropColumnTest` — the undo inverse of add-column: primary keys and referenced columns refused, everything else preserved through the rebuild |
+| Foreign keys | `ForeignKeyConstraintTest` — adding and dropping a constraint from a drag gesture, with the pre-flight refusals (orphan rows, non-unique target, type mismatch, duplicate) and indexes, `UNIQUE` and `CHECK` surviving the rebuild |
+| Scratchpad | `ScratchpadTest` — multi-statement execution reporting per statement, the row/statement/timeout caps, and internal `__` tables refused |
+| Share link reuse | `ShareDuplicateLinkTest` — repeated and concurrent sharing returning one link, pre-existing duplicates not breaking the route or being silently revoked, and colours and groups travelling with the link |
 | Table lifecycle | `TableLifecycleTest` — the example schema, FK-guarded deletion, and notes staying invisible to the canvas and exports |
 | Frontend | No test suite; `npx tsc --noEmit` and `npm run lint` are the gates |
 

@@ -419,6 +419,148 @@ public class DatabaseController {
         }
     }
 
+    /** Body for {@link #dropColumn}. */
+    public record DropColumnRequest(String tableName, String columnName) { }
+
+    @PostMapping("/drop-column")
+    @Operation(summary = "Drop Column",
+            description = "Removes a column. The inverse of adding one, so undo can reverse it. "
+                    + "Refuses a primary key, the last column, and a column another table's "
+                    + "foreign key references.")
+    public ResponseEntity<?> dropColumn(@RequestBody DropColumnRequest request) {
+        try {
+            databaseService.dropColumn(request.tableName(), request.columnName());
+            return ResponseEntity.ok(Map.of("message", "Column dropped"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Drop column error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", rootMessage(e)));
+        }
+    }
+
+    /** The engine's own refusal is usually the useful part, and it is nested deep in the cause chain. */
+    private String rootMessage(Throwable error) {
+        Throwable cause = error;
+        while (cause.getCause() != null && cause.getCause() != cause) cause = cause.getCause();
+        return cause.getMessage() == null ? error.toString() : cause.getMessage();
+    }
+
+    /** Body for {@link #runScratchpad}. */
+    public record ScriptRequest(String script) { }
+
+    @PostMapping("/scratchpad")
+    @Operation(summary = "Run SQL",
+            description = "Runs a script statement by statement and reports what each one did, "
+                    + "including which failed. Requires an account. Stops at the first error.")
+    public ResponseEntity<?> runScratchpad(@RequestBody ScriptRequest request) {
+        try {
+            // Gated the way export and sharing are. Running arbitrary SQL is the most powerful
+            // thing the app offers, and enforcing it here rather than only in the UI means
+            // calling the API directly does not bypass it.
+            AuthContext.require();
+            return ResponseEntity.ok(databaseService.runScratchpad(request.script()));
+        } catch (UnauthorizedException e) {
+            return ResponseEntity.status(401).body(Map.of("error", e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Scratchpad error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", rootMessage(e)));
+        }
+    }
+
+    /** Body for {@link #addForeignKey} and {@link #dropForeignKey}. */
+    public record ForeignKeyRequest(String tableName, String columnName, String refTable,
+                                    String refColumn, String onDelete) { }
+
+    @PostMapping("/add-foreign-key")
+    @Operation(summary = "Add Foreign Key",
+            description = "Declares a relationship between two existing tables — what dragging a "
+                    + "line on the canvas does. Refused if the referenced column is not unique, "
+                    + "the types do not match, or existing rows would violate the key.")
+    public ResponseEntity<?> addForeignKey(@RequestBody ForeignKeyRequest request) {
+        try {
+            databaseService.addForeignKey(request.tableName(), request.columnName(),
+                    request.refTable(), request.refColumn(), request.onDelete());
+            return ResponseEntity.ok(Map.of("message", "Relationship created"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Add foreign key error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", rootMessage(e)));
+        }
+    }
+
+    @PostMapping("/drop-foreign-key")
+    @Operation(summary = "Drop Foreign Key",
+            description = "Removes a relationship, identified by the two columns it joins. The "
+                    + "inverse of adding one, so undo can reverse it.")
+    public ResponseEntity<?> dropForeignKey(@RequestBody ForeignKeyRequest request) {
+        try {
+            databaseService.dropForeignKey(request.tableName(), request.columnName(),
+                    request.refTable(), request.refColumn());
+            return ResponseEntity.ok(Map.of("message", "Relationship removed"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Drop foreign key error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", rootMessage(e)));
+        }
+    }
+
+    // ─── Canvas annotations ───────────────────────────────────────────────────────
+
+    /** Body for {@link #setCanvasMeta}. {@code payload} is JSON the backend stores verbatim. */
+    public record CanvasMetaRequest(String payload) { }
+
+    @GetMapping("/canvas-meta")
+    @Operation(summary = "List Canvas Annotations",
+            description = "Table colours and tags, and domain groups, for this workspace. "
+                    + "Returned in one call because the canvas needs all of them to draw once.")
+    public ResponseEntity<?> getCanvasMeta() {
+        try {
+            return ResponseEntity.ok(Map.of("meta", databaseService.getCanvasMeta()));
+        } catch (Exception e) {
+            log.error("Get canvas meta error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PutMapping("/canvas-meta/{kind}/{ref}")
+    @Operation(summary = "Set Canvas Annotation",
+            description = "Stores one annotation, replacing any previous one for the same kind "
+                    + "and reference. Kind is 'table' or 'group'.")
+    public ResponseEntity<?> setCanvasMeta(@PathVariable String kind,
+                                           @PathVariable String ref,
+                                           @RequestBody CanvasMetaRequest request) {
+        try {
+            databaseService.setCanvasMeta(kind, ref, request.payload());
+            return ResponseEntity.ok(Map.of("message", "Annotation saved"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Set canvas meta error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/canvas-meta/{kind}/{ref}")
+    @Operation(summary = "Remove Canvas Annotation",
+            description = "Clears one annotation — a table back to its default colour, or a "
+                    + "domain group removed.")
+    public ResponseEntity<?> deleteCanvasMeta(@PathVariable String kind, @PathVariable String ref) {
+        try {
+            databaseService.deleteCanvasMeta(kind, ref);
+            return ResponseEntity.ok(Map.of("message", "Annotation removed"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Delete canvas meta error", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
     // ─── Delete Workspace ─────────────────────────────────────────────────────────
 
     @DeleteMapping("/workspace")

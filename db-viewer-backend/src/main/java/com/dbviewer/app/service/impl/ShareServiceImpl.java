@@ -36,9 +36,23 @@ public class ShareServiceImpl implements ShareService {
     private final JdbcTemplate jdbcTemplate;
     private final DatabaseService databaseService;
 
-    /** Creates (or reuses) a link for the workspace on the current request. */
+    /**
+     * Creates (or reuses) a link for the workspace on the current request.
+     *
+     * <p>Synchronized because "one link per file per owner" is a check-then-insert, and that is
+     * not atomic: two requests can both find nothing and both insert. This is not hypothetical —
+     * opening the share dialog fires the request twice under React's development double-invoke,
+     * and a double-click on Share does the same in production. The result was a second token for
+     * the same file, so the dialog showed one link on first open and a different one afterwards.
+     *
+     * <p>A lock on the singleton is the right scope for this application: one process, and a
+     * call that is rare and returns in milliseconds, so the contention is not measurable. It
+     * would not survive a multi-instance deployment — that would want a unique index on
+     * {@code (workspace_id, owner_email)}, which cannot be added while duplicates from before
+     * this fix still exist in the wild. {@link #findExistingToken} stays tolerant of them.
+     */
     @Override
-    public Map<String, Object> createLink(String fileName) {
+    public synchronized Map<String, Object> createLink(String fileName) {
         String owner = AuthContext.require();
         String workspaceId = WorkspaceContext.get();
         if (workspaceId == null || workspaceId.isBlank()) {
@@ -81,6 +95,10 @@ public class ShareServiceImpl implements ShareService {
             result.put("sharedAt", link.get("created_at"));
             result.put("tables", schema.get("tables"));
             result.put("relationships", schema.get("relationships"));
+            // The colours and domain groups travel with the link. They are statements about the
+            // schema — which tables belong together, which are reference data — and a shared
+            // diagram that drops them is a worse copy of the thing the sender was looking at.
+            result.put("canvasMeta", databaseService.getCanvasMeta());
             return result;
         } finally {
             if (previous == null) {
@@ -127,14 +145,29 @@ public class ShareServiceImpl implements ShareService {
         return result;
     }
 
+    /**
+     * The link this file already has, or null.
+     *
+     * <p>Deliberately not {@code queryForObject}. That throws
+     * {@code IncorrectResultSizeDataAccessException} the moment a second row exists, and the
+     * {@code EmptyResultDataAccessException} this used to catch is a *subclass* of it — so "no
+     * link yet" was handled and "two links" brought sharing down with a 500. Duplicates are
+     * possible because nothing in the schema forbids them: the check-then-insert below is not
+     * atomic, and two quick clicks can both find nothing.
+     *
+     * <p>Returning the oldest keeps the answer stable across calls, and the oldest is the one a
+     * user is most likely to have already sent to somebody. Nothing is deleted — every token
+     * that exists still resolves, and quietly revoking one would break a link already shared.
+     */
     private String findExistingToken(String workspaceId, String owner) {
-        try {
-            return jdbcTemplate.queryForObject(
-                    Constants.Share.SELECT_TOKEN_BY_WORKSPACE_AND_OWNER,
-                    String.class, workspaceId, owner);
-        } catch (EmptyResultDataAccessException e) {
-            return null;
+        List<String> tokens = jdbcTemplate.queryForList(
+                Constants.Share.SELECT_TOKENS_BY_WORKSPACE_AND_OWNER,
+                String.class, workspaceId, owner);
+        if (tokens.size() > 1) {
+            log.warn("Workspace {} has {} share links for {}; using the oldest",
+                    workspaceId, tokens.size(), owner);
         }
+        return tokens.isEmpty() ? null : tokens.get(0);
     }
 
     private Map<String, Object> findLink(String token) {

@@ -43,6 +43,9 @@ const collectHits = (nodes: Node[], query: string): SearchHit[] => {
     const columnHits: SearchHit[] = [];
 
     for (const node of nodes) {
+        // A table counting down to deletion is not a place to navigate to: jumping to it, and
+        // then watching it disappear on arrival, is worse than it not being in the list.
+        if (node.data?.ghost) continue;
         const table = String(node.data?.label ?? node.id);
         if (table.toLowerCase().includes(needle)) {
             tableHits.push({ nodeId: node.id, table });

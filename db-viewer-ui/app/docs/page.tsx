@@ -5,7 +5,8 @@ import Link from "next/link";
 import {
     ArrowRight, StickyNote, Pencil, Plus, Download, Trash2, Edit3,
     Files, Share2, HelpCircle, LayoutPanelLeft, Search, ZoomIn, Database,
-    FileCode, Image as ImageIcon, KeyRound, GitBranch, Table2 as TableIcon, Map as MapIcon, Moon,
+    FileCode, Image as ImageIcon, KeyRound, GitBranch, Table2 as TableIcon, Map as MapIcon, Moon, Palette,
+    Minus, Circle,
 } from "lucide-react";
 
 import { LandingNav } from "@/components/landing/LandingNav";
@@ -62,16 +63,25 @@ const GROUPS: DocsGroup[] = [
         items: [
             { id: "create-table", label: "Creating a table" },
             { id: "table-actions", label: "Table actions" },
+            { id: "colour-tagging", label: "Colour-coding tables" },
+            { id: "drawing-relationships", label: "Drawing relationships" },
+            { id: "grouping", label: "Grouping tables" },
             { id: "columns", label: "Adding a column" },
             { id: "edit-column", label: "Editing a column" },
             { id: "types", label: "Column types" },
             { id: "relationships", label: "Relationships" },
+            { id: "detail-levels", label: "Detail and zoom" },
             { id: "delete-table", label: "Deleting a table" },
         ],
     },
     {
         title: "Data",
-        items: [{ id: "data-editor", label: "Viewing and editing rows" }],
+        items: [
+            { id: "data-editor", label: "Viewing and editing rows" },
+            { id: "inline-data", label: "Editing on the canvas" },
+            { id: "sql-scratchpad", label: "Running SQL" },
+            { id: "views", label: "Views" },
+        ],
     },
     {
         title: "Getting work out",
@@ -86,6 +96,7 @@ const GROUPS: DocsGroup[] = [
     {
         title: "Reference",
         items: [
+            { id: "undo", label: "Undoing a change" },
             { id: "shortcuts", label: "Keys" },
             { id: "faq", label: "Common questions" },
         ],
@@ -565,8 +576,16 @@ export default function DocsPage() {
                     <Section
                         id="table-actions"
                         title="Table actions"
-                        lead="The icons in a table's blue header, left to right."
+                        lead="Everything you can do to a table, from the menu in its header."
                     >
+                        <p>
+                            Each table header carries one control: the <UI>⋮</UI> button on the
+                            right. It opens a menu of everything you can do to that table. The only
+                            other thing that ever appears in the header is an amber count, when the
+                            table has open <a href="#notes" className="text-brand-700 underline underline-offset-2">notes</a> —
+                            that is information rather than an action, so it stays where you can
+                            see it without opening anything.
+                        </p>
                         <ActionTable
                             rows={[
                                 {
@@ -590,6 +609,11 @@ export default function DocsPage() {
                                     effect: <>Downloads this table&apos;s rows as a CSV. Needs an account.</>,
                                 },
                                 {
+                                    icon: <Palette size={15} />,
+                                    action: "Colour",
+                                    effect: <>A row of swatches at the bottom of the menu. See <a href="#colour-tagging" className="text-brand-700 underline underline-offset-2">Colour-coding tables</a>.</>,
+                                },
+                                {
                                     icon: <Trash2 size={15} />,
                                     action: "Delete table",
                                     effect: <>Drops the table, after a confirmation. See <a href="#delete-table" className="text-brand-700 underline underline-offset-2">Deleting a table</a>.</>,
@@ -601,6 +625,129 @@ export default function DocsPage() {
                                 },
                             ]}
                         />
+                    </Section>
+
+                    <Section
+                        id="colour-tagging"
+                        title="Colour-coding tables"
+                        lead="Six colours, to tell kinds of table apart at a glance."
+                    >
+                        <p>
+                            Open a table&apos;s <UI>⋮</UI> menu and pick one of the six swatches
+                            under <UI>Colour</UI>. The table&apos;s header and border take it; the
+                            crossed-out swatch puts it back to the default blue.
+                        </p>
+                        <p>
+                            The point is legibility at scale. On a schema of ten tables you can read
+                            every name; on one of a hundred you cannot, and colour is the only thing
+                            that still carries meaning when a table is a few pixels wide. Typical
+                            uses: reference data one colour, transactional tables another, join
+                            tables a third. The <UI>minimap</UI> picks the colours up too, which is
+                            where they do the most work.
+                        </p>
+                        <Callout tone="note" title="Colours belong to the file, not to you">
+                            A colour is saved with the file on the server, so it is there when you
+                            open it on another machine, and anyone you share the file with sees the
+                            same one. Where tables sit on the canvas is the opposite — that is
+                            remembered in your browser alone, because a layout is one person&apos;s
+                            arrangement on one screen.
+                        </Callout>
+                        <p>
+                            Colours never reach your data. They are kept apart from your tables and
+                            are not written into a SQL export, so a script you generate is exactly
+                            the schema and nothing else.
+                        </p>
+                    </Section>
+
+                    <Section
+                        id="drawing-relationships"
+                        title="Drawing relationships"
+                        lead="Drag from a key in one table onto a column in another."
+                    >
+                        <p>
+                            Hover the small dot to the right of a table&apos;s{" "}
+                            <Code>id</Code>, hold the mouse down, and drag across to the column in
+                            another table that should point at it. Every column grows a drop target
+                            while you are dragging. Let go, and the foreign key is created in the
+                            database — the line you see afterwards is drawn from the real schema,
+                            not from the gesture.
+                        </p>
+                        <Callout tone="note" title="Some drops are refused, and that is the useful part">
+                            A relationship is only meaningful if the database can enforce it, so a
+                            few are turned down rather than half-made:
+                        </Callout>
+                        <ActionTable
+                            caption="Why a drop might be refused"
+                            rows={[
+                                {
+                                    action: "The target is not unique",
+                                    effect: <>A foreign key must point at a primary key or a uniquely indexed column. Pointing at anything else is accepted by the database and then never enforced, which is worse than refusing.</>,
+                                },
+                                {
+                                    action: "Existing rows would break it",
+                                    effect: <>If rows already hold a value that does not exist in the other table, the message says how many. Fix or clear those rows and try again.</>,
+                                },
+                                {
+                                    action: "The types do not match",
+                                    effect: <>A number cannot point at a text column. Equivalent spellings — <Code>INT</Code> and <Code>INTEGER</Code> — are fine.</>,
+                                },
+                            ]}
+                        />
+                        <p>
+                            Got it wrong? <Key>Ctrl</Key> + <Key>Z</Key> removes the relationship
+                            from the database again.
+                        </p>
+                    </Section>
+
+                    <Section
+                        id="grouping"
+                        title="Grouping tables"
+                        lead="Draw a labelled boundary around the tables that belong together."
+                    >
+                        <p>
+                            Select the tables you want together, then press the <UI>group</UI>
+                            button in the canvas toolbar. Two ways to select more than one:
+                        </p>
+                        <ActionTable
+                            caption="Selecting several tables"
+                            rows={[
+                                { action: "Shift + drag", effect: <>Drag a box across empty canvas. Everything inside it is selected.</> },
+                                { action: "Ctrl + click", effect: <>Click each table in turn. <Key>Cmd</Key> on a Mac.</> },
+                            ]}
+                        />
+                        <p>
+                            Once two or more are selected the toolbar button shows how many, and a{" "}
+                            <UI>Group these N tables</UI> button appears at the top of the canvas
+                            as well — either one draws the boundary.
+                        </p>
+                        <p>
+                            The point is seeing the shape of a schema at a glance —
+                            &quot;Authentication&quot;, &quot;Billing&quot;, &quot;Inventory&quot;.
+                            It is most useful when you are planning a migration or working out how
+                            to split something up, because the lines that cross a boundary are
+                            exactly the couplings you would have to deal with. Those lines are
+                            drawn straight through the box, not around it, for that reason.
+                        </p>
+                        <ActionTable
+                            caption="What you can do with a group"
+                            rows={[
+                                { action: "Rename it", effect: <>The <UI>⋮</UI> button beside the label opens a menu with the name in it.</> },
+                                { action: "Colour it", effect: <>Same menu. Useful when two boxes overlap.</> },
+                                { action: "Move it", effect: <>Drag the label. Every table inside moves with it.</> },
+                                { action: "Ungroup", effect: <>Removes the box. The tables themselves are untouched.</> },
+                            ]}
+                        />
+                        <Callout tone="note" title="The box follows the tables, not the other way round">
+                            A group remembers <em>which tables</em> are in it, not where the box
+                            was drawn. Move a table and the boundary stretches to keep it; delete
+                            one and the box simply closes up around the rest. That is also why
+                            groups look right when you open the file on another machine, where
+                            your layout has not travelled with you.
+                        </Callout>
+                        <p>
+                            Groups are saved with the file, like colours, and never appear in an
+                            export — a SQL script you generate is the schema and nothing else.
+                        </p>
                     </Section>
 
                     <Section
@@ -702,6 +849,55 @@ export default function DocsPage() {
                             <a href="#create-table" className="text-brand-700 underline underline-offset-2">create a table</a>, or
                             import a file that already has them, and the edge is drawn for you.
                         </p>
+                        <p>
+                            Each line is marked at both ends with <strong>crow&apos;s foot
+                            notation</strong>, so how many rows sit at each end is readable without
+                            opening anything:
+                        </p>
+                        <ActionTable
+                            caption="What the marks at the end of a line mean"
+                            rows={[
+                                {
+                                    icon: <Minus size={15} />,
+                                    action: "A single bar",
+                                    effect: <>Exactly one row. Always shown at the parent end, and at both ends when the relationship is one-to-one.</>,
+                                },
+                                {
+                                    icon: <GitBranch size={15} />,
+                                    action: "A three-pronged foot",
+                                    effect: <>Many rows. The usual case: many orders per customer.</>,
+                                },
+                                {
+                                    icon: <Circle size={15} />,
+                                    action: "A small circle",
+                                    effect: <>Optional — the foreign key allows nulls, so a row on that side may have no counterpart.</>,
+                                },
+                            ]}
+                        />
+                        <p>
+                            None of this is stored anywhere; it is read from the schema. A foreign
+                            key on a <Code>UNIQUE</Code> column can only ever match one row, so the
+                            relationship is drawn one-to-one; on an ordinary column it is drawn
+                            one-to-many. Whether the column allows nulls decides the circle. Prefer
+                            plain arrowheads? The <UI>notation</UI> button in the canvas toolbar
+                            switches between the two.
+                        </p>
+                        <Callout tone="note" title="Many-to-many is drawn as what it really is">
+                            A relational database cannot store a many-to-many relationship directly
+                            — it is always two one-to-many relationships through a join table. So
+                            rather than draw an edge that matches nothing in your schema, the join
+                            table itself is marked <UI>join</UI>. A table earns that label when its
+                            whole primary key is made of foreign keys. One with its own{" "}
+                            <Code>id</Code> is a table in its own right and is left alone, even if
+                            it holds two foreign keys.
+                        </Callout>
+                        <p>
+                            Hovering a column name shows its full definition — type, length,{" "}
+                            <Code>NOT NULL</Code>, <Code>UNIQUE</Code>, any default, and what a
+                            foreign key points at. The node itself stays narrow enough to read at a
+                            glance; the detail is one hover away, or one <Key>Tab</Key> away if you
+                            are on the keyboard.
+                        </p>
                         <Callout tone="warn" title="The key icons follow a naming convention, not the schema">
                             On the canvas, the small <KeyRound size={12} className="inline -mt-0.5" /> icon and the
                             blue connection dots are shown for any column named <Code>id</Code> or
@@ -709,6 +905,38 @@ export default function DocsPage() {
                             <Code>parent_id</Code> gets the icon whether or not it is really a key. The
                             Explorer&apos;s blue primary-key marking uses the real schema, so trust that
                             one when the two disagree.
+                        </Callout>
+                    </Section>
+
+                    <Section
+                        id="detail-levels"
+                        title="Detail and zoom"
+                        lead="How much of a table you see depends on how far out you are looking."
+                    >
+                        <p>
+                            Zooming out does not just shrink the diagram — it simplifies it. There
+                            are three levels, and the canvas moves between them on its own:
+                        </p>
+                        <ActionTable
+                            rows={[
+                                {
+                                    action: "70% and above",
+                                    effect: <>Everything: every column, its type, the edit pencil and the sample-data strip.</>,
+                                },
+                                {
+                                    action: "40% to 70%",
+                                    effect: <>Keys only — the columns relationships attach to, by name. The type labels are dropped because at this size they are too small to read.</>,
+                                },
+                                {
+                                    action: "Below 40%",
+                                    effect: <>The table name and how many columns it has. This is the level for seeing the shape of a whole schema at once.</>,
+                                },
+                            ]}
+                        />
+                        <Callout tone="note" title="Relationships are never simplified">
+                            The lines between tables are drawn at every level, including the
+                            smallest — the point of zooming out is to see how things connect, so
+                            that is the last thing that would be worth dropping.
                         </Callout>
                     </Section>
 
@@ -723,6 +951,15 @@ export default function DocsPage() {
                             references first. This is enforced by the database, not by the interface,
                             so it cannot be worked around by accident.
                         </p>
+
+                        <Callout tone="note" title="There is a few seconds to change your mind">
+                            Confirming does not delete anything straight away. The table stays on
+                            the canvas, greyed out, with a countdown and an <strong>Undo</strong>
+                            {" "}button on it, and only then is the delete sent. Pressing Undo cancels
+                            it — nothing was ever removed, so there is nothing to restore. Closing
+                            the file or the tab before the countdown finishes cancels it too, which
+                            is deliberate: a table that is still there can always be deleted again.
+                        </Callout>
 
                         <DeleteSandbox />
                     </Section>
@@ -765,7 +1002,107 @@ export default function DocsPage() {
                         </Callout>
                     </Section>
 
+                    <Section
+                        id="inline-data"
+                        title="Editing on the canvas"
+                        lead="A three-row peek at a table's contents, without opening anything."
+                    >
+                        <p>
+                            Every table node has a <strong>Data</strong> strip along the bottom.
+                            Opening it fetches the first rows and shows three of them in place —
+                            enough to answer the question a diagram cannot, which is what the values
+                            actually look like: whether <Code>status</Code> holds{" "}
+                            <Code>active</Code> or <Code>1</Code>, whether that date column is
+                            really a date.
+                        </p>
+                        <ActionTable
+                            rows={[
+                                {
+                                    action: "Data",
+                                    effect: <>Opens or closes the strip. Nothing is fetched until you open it, so a large schema does not pay for rows nobody asked to see.</>,
+                                },
+                                {
+                                    action: "Double-click a cell",
+                                    effect: <>Edits that one value. <Key>Enter</Key> or clicking away saves it; <Key>Esc</Key> abandons it. A single click is left alone because that is how the canvas selects and drags a node.</>,
+                                },
+                            ]}
+                        />
+                        <Callout tone="note" title="It is a peek, not a way to find a row">
+                            The three rows are whichever three the database returns first, so on a
+                            table of any size this is for seeing what the values <em>look like</em>,
+                            not for reaching a particular record. It quotes no row count for the
+                            same reason — the preview is capped, so any number it printed would
+                            describe the preview rather than the table. When there is more than
+                            the strip can show, <strong>All rows</strong> opens the full editor,
+                            which is where searching, adding and deleting live. A table with three
+                            rows or fewer says so and leaves the link out: they are all already in
+                            front of you.
+                        </Callout>
+                        <Callout tone="note" title="It only appears when you are close enough">
+                            The strip is offered at 70% zoom and above. Below that the text is too
+                            small to read and the cells too small to hit, so it is not shown at all
+                            rather than shown in a state nobody could use. Views have no rows of
+                            their own, so they do not get one either — and a table without an{" "}
+                            <Code>id</Code> column says so in place of offering an edit that could
+                            not be addressed. For anything more than a quick correction, the full
+                            row editor is still the right tool.
+                        </Callout>
+                    </Section>
+
                     {/* ═══ Getting work out ═══ */}
+
+                    <Section
+                        id="sql-scratchpad"
+                        title="Running SQL"
+                        lead="A panel at the bottom of the canvas for anything the buttons do not cover."
+                    >
+                        <p>
+                            Click <UI>SQL</UI> at the bottom of the editor to open it. Type a
+                            statement and press <Key>Ctrl</Key> + <Key>Enter</Key>. Several
+                            statements separated by semicolons are fine — each one is reported
+                            separately, so if something goes wrong you can see which.
+                        </p>
+                        <p>
+                            The chips along the top are your table names; clicking one drops it in
+                            at the cursor. Anything that changes the schema refreshes the canvas
+                            automatically — create a table here and it appears as a node.
+                        </p>
+                        <Callout tone="warn" title="It stops at the first error">
+                            Later statements usually assume the earlier ones worked, so when one
+                            fails the rest are left unrun rather than producing a cascade of
+                            confusing follow-on errors. The report marks them as skipped.
+                        </Callout>
+                        <p>
+                            Running SQL needs an account, the same as exporting and sharing. Very
+                            large results are capped at 500 rows, and the panel says when it has
+                            trimmed something.
+                        </p>
+                        <Callout tone="note" title="Undo does not reach past it">
+                            Once you have run SQL by hand, the app can no longer be sure what the
+                            earlier steps assumed — a column an undo wants to remove may have been
+                            changed or dropped in the meantime. <Key>Ctrl</Key> + <Key>Z</Key>
+                            therefore stops at that point and tells you so, rather than applying a
+                            reversal that may no longer fit.
+                        </Callout>
+                    </Section>
+
+                    <Section
+                        id="views"
+                        title="Views"
+                        lead="Saved queries, drawn on the canvas alongside the tables."
+                    >
+                        <p>
+                            Create one in the SQL panel — <Code>CREATE VIEW recent AS SELECT …</Code>
+                            — and it appears as a node with a dashed border and an eye icon. Its
+                            columns are listed like any table&apos;s.
+                        </p>
+                        <p>
+                            A view has no rows of its own; it reads from other tables every time
+                            you look at it. So it has no <UI>Edit data</UI> or <UI>Add column</UI>
+                            in its menu, and the app will not let you write to it — change the
+                            tables it reads from instead. Views in a file you import are kept too.
+                        </p>
+                    </Section>
 
                     <Section
                         id="notes"
@@ -960,12 +1297,57 @@ export default function DocsPage() {
                     {/* ═══ Reference ═══ */}
 
                     <Section
+                        id="undo"
+                        title="Undoing a change"
+                        lead="Ctrl+Z, and it reaches the database — not just the picture."
+                    >
+                        <p>
+                            <Key>Ctrl</Key> + <Key>Z</Key> reverses the last change;{" "}
+                            <Key>Ctrl</Key> + <Key>Shift</Key> + <Key>Z</Key> puts it back. The two
+                            arrows in the canvas toolbar do the same and name what they would
+                            reverse. Undoing an added column really drops it again, not just its
+                            box on screen.
+                        </p>
+                        <ActionTable
+                            caption="What can and cannot be undone"
+                            rows={[
+                                {
+                                    action: "Moving tables",
+                                    effect: <>A whole drag is one step, however far you moved it.</>,
+                                },
+                                {
+                                    action: "Adding a column, creating a table, drawing a relationship, colouring a table",
+                                    effect: <>All reversed for real, in the database.</>,
+                                },
+                                {
+                                    action: "Changing a column's type",
+                                    effect: <>Undoable, but you are asked first: changing a type discards anything that could not be converted, and putting the type back cannot bring those values back.</>,
+                                },
+                                {
+                                    action: "Deleting a table, editing rows, SQL you ran yourself",
+                                    effect: <>Not in the undo history. Deleting asks for confirmation instead, row edits belong to the row editor, and hand-written SQL is not something the app can safely reverse.</>,
+                                },
+                            ]}
+                        />
+                        <p>
+                            The history is per file and is cleared when you switch between them —
+                            a step that names a table in one file means nothing in another.
+                        </p>
+                    </Section>
+
+                    <Section
                         id="shortcuts"
                         title="Keys"
-                        lead="What the keyboard does in the row editor and the dialogs."
+                        lead="What the keyboard and mouse do on the canvas, in the row editor and in the dialogs."
                     >
                         <ActionTable
                             rows={[
+                                { action: "Ctrl + Z  /  Ctrl + Shift + Z", effect: <>Undo and redo — see <a href="#undo" className="text-brand-700 underline underline-offset-2">Undoing a change</a>. Ignored while you are typing, so text fields keep their own undo.</> },
+                                { action: "Ctrl + F", effect: <>Search the canvas for a table or column. The browser&apos;s own find cannot see inside the diagram, which is why this one replaces it.</> },
+                                { action: "Ctrl + Enter", effect: <>Run whatever is in the SQL panel.</> },
+                                { action: "Shift + drag", effect: <>Drag a selection box across the canvas. With two or more tables selected you can <a href="#grouping" className="text-brand-700 underline underline-offset-2">group them</a>.</> },
+                                { action: "Ctrl + click", effect: <>Add a table to the selection. <Key>Cmd</Key> on a Mac.</> },
+                                { action: "Double-click", effect: <>On a cell in a table node&apos;s <a href="#inline-data" className="text-brand-700 underline underline-offset-2">Data strip</a>, edits that value. A single click is left to the canvas, which uses it to select and drag.</> },
                                 { action: "Enter", effect: <>Saves the cell or row you are editing.</> },
                                 { action: "Esc", effect: <>Abandons the current edit, or closes the open dialog or menu.</> },
                                 { action: "Scroll wheel", effect: <>Zooms the canvas. Drag the background to pan.</> },

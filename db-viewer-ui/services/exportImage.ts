@@ -26,7 +26,11 @@ export const downloadCanvasImage = async (nodes: Node[], fileName: string): Prom
         throw new Error('The diagram is not ready yet. Try again in a moment.');
     }
 
-    const bounds = getRectOfNodes(nodes);
+    // Ghosts are excluded from the bounds *and* from the image below. A table the user has
+    // asked to delete is not part of the diagram they are exporting, and a greyed-out box with
+    // a countdown bar frozen mid-drain is not something anyone means to put in a document.
+    const solid = nodes.filter(n => !n.data?.ghost);
+    const bounds = getRectOfNodes(solid.length > 0 ? solid : nodes);
     const width = Math.min(MAX_DIMENSION, Math.max(MIN_WIDTH, Math.ceil(bounds.width) + PADDING * 2));
     const height = Math.min(MAX_DIMENSION, Math.max(MIN_HEIGHT, Math.ceil(bounds.height) + PADDING * 2));
     const [x, y, zoom] = getTransformForBounds(bounds, width, height, 0.5, 2);
@@ -38,6 +42,10 @@ export const downloadCanvasImage = async (nodes: Node[], fileName: string): Prom
         // pixelRatio 2 keeps the small 9px column labels legible when the image is zoomed.
         pixelRatio: 2,
         cacheBust: true,
+        // `html-to-image` walks the live DOM, so filtering the node array above is not enough
+        // to keep a ghost out of the picture — it has to be rejected here as well.
+        filter: (node: HTMLElement) =>
+            !(node.classList?.contains('node-ghost')),
         style: {
             width: `${width}px`,
             height: `${height}px`,

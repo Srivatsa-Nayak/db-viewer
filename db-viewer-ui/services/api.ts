@@ -2,7 +2,7 @@ import axios from 'axios';
 import { getClientId } from './clientId';
 import {
     ColumnInfo, ImportPlan, RawColumnInfo, RawRelationship, RawSchemaResponse, Relationship,
-    RowData, SchemaResponse, SqlDialectId, TableDataResponse, TableInfo,
+    RowData, SchemaResponse, ScratchpadResult, SqlDialectId, TableDataResponse, TableInfo,
 } from '@/types';
 
 /* ── Wire -> UI normalisation ─────────────────────────────────────────────
@@ -15,6 +15,10 @@ export const normaliseColumn = (c: RawColumnInfo): ColumnInfo => ({
     type: c.type,
     isPk: c.isPk ?? c.is_pk ?? false,
     notNull: c.notNull ?? c.not_null ?? false,
+    isUnique: c.isUnique ?? c.unique ?? false,
+    // Null and empty string both mean "no default"; only a real value is worth showing.
+    defaultValue: c.defaultValue ?? c.default_value ?? undefined,
+    autoIncrement: c.autoIncrement ?? c.auto_increment ?? false,
 });
 
 /** Drops a relationship that is missing an endpoint rather than drawing half an edge. */
@@ -25,7 +29,11 @@ export const normaliseRelationships = (raw: RawRelationship[] = []): Relationshi
         const sourceColumn = r.sourceColumn ?? r.source_column;
         const targetColumn = r.targetColumn ?? r.target_column ?? 'id';
         if (!sourceTable || !targetTable || !sourceColumn) return [];
-        return [{ sourceTable, targetTable, sourceColumn, targetColumn }];
+        return [{
+            sourceTable, targetTable, sourceColumn, targetColumn,
+            constraintId: r.constraintId ?? r.constraint_id,
+            onDelete: r.onDelete ?? r.on_delete ?? undefined,
+        }];
     });
 
 export const normaliseSchema = (raw: RawSchemaResponse | undefined): SchemaResponse => ({
@@ -33,6 +41,7 @@ export const normaliseSchema = (raw: RawSchemaResponse | undefined): SchemaRespo
         name: t.name,
         columns: (t.columns ?? []).map(normaliseColumn),
         rows: t.rows ?? [],
+        isView: t.isView ?? t.view ?? false,
     })),
     relationships: normaliseRelationships(raw?.relationships),
 });
@@ -174,6 +183,32 @@ interface UpdateCellParams {
     newValue: string;
 }
 
+/** Annotations the canvas keeps about a workspace: `table` colours/tags, `group` domain boxes. */
+export type CanvasAnnotationKind = 'table' | 'group';
+
+interface RawCanvasAnnotation {
+    kind?: CanvasAnnotationKind;
+    ref?: string;
+    payload?: string;
+}
+
+export interface CanvasAnnotation {
+    kind: CanvasAnnotationKind;
+    /** Table name for `table`, the group's own id for `group`. */
+    ref: string;
+    payload: Record<string, unknown>;
+}
+
+export interface ForeignKeyParams {
+    /** The table that will hold the foreign key. */
+    tableName: string;
+    columnName: string;
+    /** The table being pointed at. Its column must be a primary key or uniquely indexed. */
+    refTable: string;
+    refColumn: string;
+    onDelete?: string;
+}
+
 /** A file the signed-in user owns, as the backend reports it. */
 export interface WorkspaceSummary {
     id: string;
@@ -267,6 +302,34 @@ export const dbService = {
     },
 
     /** Drops a table. Rejected with 409 when another table's foreign key references it. */
+    /**
+     * Removes a column. The inverse of `addColumn`, which is how undo reverses one.
+     *
+     * Refused by the backend for a primary key, the last remaining column, and a column another
+     * table's foreign key points at.
+     */
+    dropColumn: async (tableName: string, columnName: string) => {
+        const response = await api.post('/drop-column', { tableName, columnName });
+        return response.data;
+    },
+
+    /**
+     * Declares a relationship between two existing tables — what dragging a line does.
+     *
+     * The backend validates before it writes (unique target, matching types, no orphan rows) and
+     * rebuilds the table on SQLite, which cannot add a constraint in place.
+     */
+    addForeignKey: async (params: ForeignKeyParams) => {
+        const response = await api.post('/add-foreign-key', params);
+        return response.data;
+    },
+
+    /** Removes a relationship, identified by the two columns it joins. The inverse of adding one. */
+    dropForeignKey: async (params: ForeignKeyParams) => {
+        const response = await api.post('/drop-foreign-key', params);
+        return response.data;
+    },
+
     dropTable: async (tableName: string) => {
         const res = await api.delete(`/table/${encodeURIComponent(tableName)}`);
         return res.data;
@@ -354,6 +417,51 @@ export const dbService = {
         } catch (e) {
             console.error('Could not record the file name', e);
         }
+    },
+
+    /**
+     * Every canvas annotation in the active workspace — table colours and tags, and groups.
+     *
+     * One call, because the canvas needs all of them before it can draw once. The payload is
+     * JSON the backend stores verbatim, so parsing it is this layer's job.
+     */
+    getCanvasMeta: async (): Promise<CanvasAnnotation[]> => {
+        const res = await api.get<{ meta?: RawCanvasAnnotation[] }>(
+            `/canvas-meta?_t=${new Date().getTime()}`);
+        return (res.data?.meta ?? []).flatMap(row => {
+            if (!row?.kind || !row?.ref) return [];
+            try {
+                return [{ kind: row.kind, ref: row.ref, payload: JSON.parse(row.payload ?? '{}') }];
+            } catch {
+                // A payload we cannot read is a bad row, not a reason to lose the other colours.
+                console.error('Ignoring an unreadable canvas annotation', row.ref);
+                return [];
+            }
+        });
+    },
+
+    setCanvasMeta: async (kind: CanvasAnnotationKind, ref: string, payload: unknown): Promise<void> => {
+        await api.put(`/canvas-meta/${kind}/${encodeURIComponent(ref)}`,
+            { payload: JSON.stringify(payload) });
+    },
+
+    deleteCanvasMeta: async (kind: CanvasAnnotationKind, ref: string): Promise<void> => {
+        await api.delete(`/canvas-meta/${kind}/${encodeURIComponent(ref)}`);
+    },
+
+    /**
+     * Runs a script from the scratchpad. Requires an account, like export and sharing.
+     *
+     * Returns a result per statement rather than one for the whole script, because the useful
+     * question when a script fails is which statement did it.
+     */
+    runScratchpad: async (script: string): Promise<ScratchpadResult> => {
+        const res = await api.post<ScratchpadResult>('/scratchpad', { script });
+        return {
+            statements: res.data?.statements ?? [],
+            schemaChanged: !!res.data?.schemaChanged,
+            failed: !!res.data?.failed,
+        };
     },
 
     /** Version declared in the backend's pom.xml; shown in the info modal. */

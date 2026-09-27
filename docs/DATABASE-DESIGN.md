@@ -115,9 +115,23 @@ Two kinds, in two different places, for a reason:
 |---|---|---|
 | `app_users`, `shared_links`, `workspace_owners` | The **default** database | A user, the links they created and which files are theirs all span every file they open, so they cannot belong to one workspace |
 | `__table_notes` | **Inside each workspace** | Notes are about that file's tables, so they should travel with the file — export it, delete it, and the notes go too |
+| `__canvas_meta` | **Inside each workspace** | Same reasoning: a table's colour, its tag and the domain groups are statements about *this file's* schema |
 
-`__table_notes` is prefixed with `__` and filtered out of `getTableNames()`, so it never reaches
-the canvas, a table listing, or a SQL export. Dropping a table deletes its notes with it.
+Both are prefixed with `__` and filtered out of `getTableNames()`, so neither ever reaches the
+canvas, a table listing, or a SQL export. Dropping a table deletes its notes *and* its colour with
+it; `DELETE /clear` drops both tables. A third internal table must wire all three hooks — the `__`
+filter alone is not enough, and the two it misses fail silently.
+
+`__canvas_meta` is keyed `(kind, ref)`: `kind='table'` with the table name as `ref` is a colour and
+tag, `kind='group'` with a generated id is a domain box. `payload` is JSON the backend never parses.
+That is deliberate — what a colour or a group *contains* is a question about the canvas, and encoding
+it in columns would mean a migration every time the canvas learned a new adjective. The cost is that
+the database cannot validate it; the payload is size-capped and the `ref` is identifier-checked,
+because that one does reach SQL.
+
+Node **positions** are the deliberate exception: they stay in `localStorage`. A colour is a statement
+about the schema and belongs to everyone who opens the file; a layout is one person's arrangement on
+one screen.
 
 ### 3.2b Why the file name lives on the server
 
@@ -256,7 +270,7 @@ This is a real subtlety worth stating plainly, because the two disagree:
 
 | Source | Where it is used | Basis |
 |---|---|---|
-| **Declared foreign keys** | The `relationships[]` array → the animated edges between nodes | Real `FOREIGN KEY` metadata from the database |
+| **Declared foreign keys** | The `relationships[]` array → the edges between nodes | Real `FOREIGN KEY` metadata from the database, now including the constraint id (so a composite key is one edge, not several overlapping ones) and the `ON DELETE` action |
 | **Naming convention** | Which columns get a connection handle on a node (`TableNode`) | A column literally named `id`, or ending in `_id` |
 
 So a table can show a key icon and a connection handle on `customer_id` without any foreign key
@@ -428,10 +442,17 @@ Two deliberate constraints:
 
 - **A primary key can be renamed but not retyped.** Reshaping it would break row identity and
   auto-numbering, and every row-level endpoint addresses rows by `id`.
-- **Only metadata-expressible structure survives.** A hand-written `CHECK`, `UNIQUE`, or
-  `COLLATE` clause is not reported by `PRAGMA table_info`, so it is not carried across a rebuild.
-  Tables created through this application never have those; a table imported from a `.sql` script
-  might.
+- **Indexes, `UNIQUE` and `CHECK` are carried across — but by three different routes, because
+  no single PRAGMA reports them.** `UNIQUE` is recovered from `PRAGMA index_list` entries whose
+  origin is `u` (single-column ones go back on the column; multi-column ones become a table-level
+  clause, since `UNIQUE` on either column alone would be a *stronger* constraint than the schema
+  had). Indexes are re-run from their own `sqlite_master.sql` after the rename, with a renamed
+  column substituted. `CHECK` is extracted from the table's stored DDL by a quote- and
+  paren-aware scan, and re-emitted at table level. All three used to be dropped silently by any
+  retype; a `COLLATE` clause still is.
+- **The rebuild is no longer only for column edits.** It takes a spec — an optional column change,
+  foreign-key clauses to add, constraint ids to drop — because SQLite cannot add or remove a
+  constraint in place either. Adding a foreign key to an existing table is the same dance.
 
 > **Connection-state note.** A SQLite workspace holds one long-lived connection, so the rebuild
 > saves `PRAGMA foreign_keys` and restores its previous value rather than forcing it back ON.

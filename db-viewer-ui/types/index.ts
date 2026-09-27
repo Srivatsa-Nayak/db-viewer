@@ -9,6 +9,37 @@
  * downstream has to know the wire format ever had two.
  */
 
+/**
+ * The colours a table can be tagged with.
+ *
+ * Token names, not hex values. The palette is defined once as `--color-tag-*` in `globals.css`
+ * with a dark-theme counterpart, so a tagged table reads correctly in both themes; a hex chosen
+ * for light mode is unreadable in dark, which is exactly the mistake the token system exists to
+ * prevent.
+ */
+/**
+ * A named boundary drawn around a set of tables — "Authentication", "Billing".
+ *
+ * Stores **members, not geometry**. The box on screen is the bounding rectangle of whichever of
+ * its tables currently exist, recomputed each render. Node positions live in the browser while
+ * this lives on the server, so a stored rectangle would be wrong the first time the file was
+ * opened somewhere else — a labelled box hanging over empty canvas.
+ *
+ * `id` is restricted to letters, digits and underscores because the backend validates it as an
+ * identifier and would otherwise rewrite a hyphen to an underscore, leaving client and server
+ * disagreeing about which group is which.
+ */
+export interface CanvasGroup {
+    id: string;
+    name: string;
+    colour?: TagColour;
+    /** Table names. A name that no longer exists is simply skipped when the box is drawn. */
+    tables: string[];
+}
+
+export const TAG_COLOURS = ['slate', 'brand', 'violet', 'teal', 'amber', 'rose'] as const;
+export type TagColour = typeof TAG_COLOURS[number];
+
 export interface ColumnInfo {
     name: string;
     type: string;
@@ -16,6 +47,17 @@ export interface ColumnInfo {
     isPk?: boolean;
     /** True when the column is declared NOT NULL. */
     notNull?: boolean;
+    /**
+     * True when a single-column UNIQUE index covers this column, or it is the sole primary key.
+     *
+     * This is what separates a 1:1 relationship from a 1:N — a foreign key pointing at a unique
+     * column can match at most one row. Composite keys report false for every member, because
+     * none of them is unique alone.
+     */
+    isUnique?: boolean;
+    /** The DEFAULT as written in the schema (`'active'`, `0`), or undefined. */
+    defaultValue?: string;
+    autoIncrement?: boolean;
 }
 
 export type RowData = Record<string, string | number | boolean | null>;
@@ -24,13 +66,49 @@ export interface TableInfo {
     name: string;
     columns: ColumnInfo[];
     rows: RowData[];
+    /**
+     * True for a view rather than a table.
+     *
+     * A view is drawn on the canvas but has no rows of its own, so it carries no edit
+     * affordances and the row endpoints refuse it.
+     */
+    isView?: boolean;
+}
+
+/** One statement's outcome from the SQL scratchpad. */
+export interface StatementResult {
+    sql: string;
+    kind: string;
+    columns?: string[];
+    rows?: RowData[];
+    rowCount?: number;
+    error?: string;
+    truncated?: boolean;
+}
+
+export interface ScratchpadResult {
+    statements: StatementResult[];
+    /** True when something ran that could have changed the schema, so the canvas needs re-reading. */
+    schemaChanged: boolean;
+    failed: boolean;
 }
 
 export interface Relationship {
+    /** The table holding the foreign key — the "many" end, usually. */
     sourceTable: string;
     sourceColumn: string;
+    /** The table being pointed at — the "one" end. */
     targetTable: string;
     targetColumn: string;
+    /**
+     * The engine's id for the constraint. Columns of a composite key share one.
+     *
+     * Without it two columns of a single constraint look like two constraints, and the canvas
+     * draws two edges on top of each other where there is one relationship.
+     */
+    constraintId?: number;
+    /** Declared ON DELETE action, or undefined when none was written. */
+    onDelete?: string;
 }
 
 export interface SchemaResponse {
@@ -105,9 +183,19 @@ export interface RawColumnInfo {
     isPk?: boolean;
     not_null?: boolean;
     notNull?: boolean;
+    unique?: boolean;
+    isUnique?: boolean;
+    default_value?: string | null;
+    defaultValue?: string | null;
+    auto_increment?: boolean;
+    autoIncrement?: boolean;
 }
 
 export interface RawRelationship {
+    constraintId?: number;
+    constraint_id?: number;
+    onDelete?: string | null;
+    on_delete?: string | null;
     source_table?: string;
     target_table?: string;
     source_column?: string;
@@ -122,6 +210,8 @@ export interface RawTableInfo {
     name: string;
     columns?: RawColumnInfo[];
     rows?: RowData[];
+    view?: boolean;
+    isView?: boolean;
 }
 
 export interface RawSchemaResponse {

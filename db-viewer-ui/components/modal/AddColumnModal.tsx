@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Columns, Loader2, AlertCircle, Info } from 'lucide-react';
 import { dbService } from '@/services/api';
+import { history } from '@/services/history';
 import { Callout, GhostButton, Modal, ModalActions, PrimaryButton } from '@/components/ui/Modal';
 
 const COLUMN_TYPES = ["VARCHAR", "INT", "DECIMAL", "BOOLEAN", "DATE", "TIME", "DATETIME"] as const;
@@ -72,12 +73,22 @@ export const AddColumnModal = ({
         setIsSaving(true);
         setError(null);
         try {
-            await dbService.addColumn({
+            const params = {
                 tableName,
                 columnName: name,
                 columnType,
                 length: columnType === 'VARCHAR' ? length : undefined,
                 notNull: isNotNull,
+            };
+            await dbService.addColumn(params);
+
+            // Registered here rather than in the page because this is the only place that knows
+            // what was added. Adding a column has a clean inverse, so it is one of the operations
+            // Ctrl+Z can genuinely reverse rather than merely un-draw.
+            history.push({
+                label: `Add column ${tableName}.${name}`,
+                undo: async () => { await dbService.dropColumn(tableName, name); onSuccess(); },
+                redo: async () => { await dbService.addColumn(params); onSuccess(); },
             });
             onSuccess();
             onClose();

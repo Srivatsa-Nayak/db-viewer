@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { Plus, Trash2, Table2, Loader2, AlertCircle } from 'lucide-react';
 import { dbService, NewTableColumn } from '@/services/api';
+import { history } from '@/services/history';
 import { Callout, GhostButton, Modal, ModalActions, PrimaryButton } from '@/components/ui/Modal';
 
 interface Props {
@@ -92,6 +93,17 @@ export const CreateTableModal = ({ isOpen, onClose, onSuccess, existingTables }:
         setIsSaving(true);
         try {
             await dbService.createTable(name, columns);
+
+            // Creating a table is reversible exactly because the table is new: dropping it again
+            // destroys nothing that existed beforehand. That is not true of dropping a table the
+            // user already had, which is why only this direction is in the stack.
+            const created = name.trim();
+            const definition = columns.map(c => ({ ...c }));
+            history.push({
+                label: `Create table ${created}`,
+                undo: async () => { await dbService.dropTable(created); onSuccess(); },
+                redo: async () => { await dbService.createTable(created, definition); onSuccess(); },
+            });
             onSuccess();
             onClose();
         } catch (err: unknown) {

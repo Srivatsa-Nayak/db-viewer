@@ -113,7 +113,11 @@ public final class SqlDialectTranslator {
                     + "|COMMENT\\s+ON|SELECT\\s+pg_catalog|\\\\connect|\\\\\\."
                     // SQL Server batch chatter.
                     + "|EXEC(?:UTE)?\\b|PRINT\\b|IF\\s+NOT\\s+EXISTS\\s*\\(|IF\\s+EXISTS\\s*\\("
-                    + "|CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:MATERIALIZED\\s+)?VIEW)\\b",
+                    // CREATE VIEW used to be listed here and dropped on import. SQLite supports
+                // views perfectly well and the canvas now draws them, so discarding one silently
+                // lost part of the schema the user was importing. A MATERIALIZED view is still
+                // unsupported — SQLite has no equivalent — so only the plain form is let through.
+                + "|CREATE\\s+(?:OR\\s+REPLACE\\s+)?MATERIALIZED\\s+VIEW)\\b",
             Pattern.CASE_INSENSITIVE);
 
     /**
