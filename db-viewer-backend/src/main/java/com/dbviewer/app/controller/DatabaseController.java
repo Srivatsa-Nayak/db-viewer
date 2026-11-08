@@ -127,12 +127,18 @@ public class DatabaseController {
 
     @PostMapping("/query")
     @Operation(summary = "Run SQL Query",
-            description = "Executes a raw SQL query against the database",
+            description = "Executes one raw SQL statement against the current workspace. "
+                    + "Requires an account, like the scratchpad.",
             tags = {"QueryExecuter"})
     public ResponseEntity<?> runQuery(@RequestBody QueryRequest request) {
         try {
+            // The same gate as /scratchpad: this is arbitrary SQL, and it used to be the one
+            // route that ran it anonymously.
+            AuthContext.require();
             List<Map<String, Object>> data = databaseService.executeQuery(request.getQuery());
             return ResponseEntity.ok(Map.of("data", data));
+        } catch (UnauthorizedException e) {
+            return ResponseEntity.status(401).body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
@@ -159,6 +165,9 @@ public class DatabaseController {
     public ResponseEntity<?> getTableData(@PathVariable String tableName) {
         try {
             return ResponseEntity.ok(databaseService.getTableData(tableName));
+        } catch (IllegalArgumentException e) {
+            // An unknown name is the caller's mistake (or a probe), not a server failure.
+            return ResponseEntity.status(404).body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
             log.error("Table data error for {}", tableName, e);
             return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
@@ -592,11 +601,12 @@ public class DatabaseController {
         try {
             // Taking data out of the app is the one thing that needs an account.
             AuthContext.require();
+            // Read first, so an unknown name fails before any header is written.
+            List<Map<String, Object>> rows = databaseService.getTableRows(tableName);
+
             response.setContentType("text/csv");
             response.setHeader(HttpHeaders.CONTENT_DISPOSITION,
-                    "attachment; filename=" + tableName + ".csv");
-
-            List<Map<String, Object>> rows = databaseService.getTableRows(tableName);
+                    "attachment; filename=\"" + csvFileName(tableName) + "\"");
             PrintWriter writer = response.getWriter();
 
             if (!rows.isEmpty()) {
@@ -627,6 +637,16 @@ public class DatabaseController {
             log.error("Export CSV error for {}", tableName, e);
             response.setStatus(HttpServletResponse.SC_NOT_FOUND);
         }
+    }
+
+    /**
+     * A table name made safe for a quoted {@code Content-Disposition} filename. A real table can
+     * be called anything an imported dump said, including quotes and semicolons, and those would
+     * otherwise end up in a response header.
+     */
+    static String csvFileName(String tableName) {
+        String safe = tableName == null ? "" : tableName.replaceAll("[^A-Za-z0-9._-]", "_");
+        return (safe.isBlank() ? "table" : safe) + ".csv";
     }
 
     // ─── Export SQL ───────────────────────────────────────────────────────────────

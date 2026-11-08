@@ -547,4 +547,5 @@ CREATE TABLE "customers" (
 
 `GET /db-info` with `X-Workspace-Id: 1736512345` returns `customers` + `orders` and one
 relationship. The same call with `X-Workspace-Id: 1736512890` returns a single, different
-`customers`. With no header at all it returns the default database, which contains neither.
+`customers`. With no header at all it returns the shared `__sandbox` workspace, which contains
+neither — and never the application's own database, which holds the accounts.

@@ -46,6 +46,7 @@ const GROUPS: DocsGroup[] = [
             { id: "tour", label: "A tour of the screen" },
             { id: "explorer", label: "The Explorer" },
             { id: "canvas", label: "The canvas" },
+            { id: "assistant", label: "The schema assistant" },
         ],
     },
     {
@@ -91,6 +92,7 @@ const GROUPS: DocsGroup[] = [
             { id: "handoff", label: "Where to put the export" },
             { id: "sharing", label: "Sharing a link" },
             { id: "accounts", label: "Accounts" },
+            { id: "assistant-key", label: "Your own API key" },
         ],
     },
     {
@@ -380,12 +382,66 @@ export default function DocsPage() {
                             table can be told apart from one that merely passes it. Primary keys are
                             gold and foreign keys blue, in both themes.
                         </p>
-                        <Callout tone="warn" title="Dragging between the blue dots does not create a relationship">
-                            The dots on table edges are anchor points for drawing existing foreign
-                            keys. Dragging a new line between two of them will not write anything to
-                            the database — define the foreign key when you{" "}
-                            <a href="#create-table" className="underline underline-offset-2">create the table</a> instead.
+                        <Callout tone="note" title="The dots on a table are drag handles">
+                            They are where a relationship line attaches, and you can start one from
+                            them: drag from a key onto a column in another table and the foreign key
+                            is created in the database for real. See{" "}
+                            <a href="#drawing-relationships" className="underline underline-offset-2">Drawing relationships</a>{" "}
+                            for what happens, and for the drops that are refused.
                         </Callout>
+                    </Section>
+
+                    <Section
+                        id="assistant"
+                        title="The schema assistant"
+                        lead="A chat panel on the canvas that knows the schema you have open."
+                    >
+                        <p>
+                            The round <UI>✦</UI> button in the top-right corner of the canvas opens
+                            it as a panel down the right-hand side, opposite the Explorer — the
+                            diagram makes room for it rather than disappearing behind it, so you
+                            can read both. Ask what a schema does, what is wrong with it, or for a
+                            table to be designed, and it answers from the structure of the file you
+                            actually have open, not from a general idea of what a blog or a shop
+                            looks like.
+                        </p>
+                        <p>
+                            If you are not sure what to ask, the panel opens with example questions
+                            written around <em>your</em> tables — click one to send it. They stay
+                            reachable from <UI>Examples</UI> next to the message box once a
+                            conversation is under way.
+                        </p>
+                        <p>
+                            It can also explain the app itself. &ldquo;How do I share this?&rdquo;
+                            and &ldquo;what does the ghost node mean?&rdquo; are fair questions.
+                        </p>
+                        <Callout tone="note" title="It sees the shape of your data, never the data">
+                            Table names, columns, types, keys, relationships and your table notes
+                            are sent to the model. Row values never are — not one. Ask it who your
+                            customers are and it will tell you it cannot see them, because it
+                            genuinely cannot.
+                        </Callout>
+                        <p>
+                            When it writes SQL you get a <UI>Open in scratchpad</UI> button beside
+                            the block. That loads the statements into the{" "}
+                            <a href="#sql-scratchpad" className="text-brand-700 underline underline-offset-2">SQL panel</a>{" "}
+                            so you can read them and press Run yourself.
+                        </p>
+                        <Callout tone="warn" title="The assistant cannot change anything on its own">
+                            It has no write access to your database. Everything it proposes goes
+                            through the SQL panel, where you review it first. This is deliberate:
+                            a model that misreads &ldquo;drop the author column&rdquo; should not be
+                            able to act on it.
+                        </Callout>
+                        <p>
+                            Every file keeps its own conversation. Switching to another file shows
+                            that file&apos;s talk — a fresh one if it has none yet — and switching
+                            back brings the first one with it, exactly where you left off. They stay
+                            separate on purpose: an assistant carrying &ldquo;the orders table you
+                            mentioned&rdquo; into a different database would be confidently wrong.
+                            Conversations last as long as the tab does; a reload starts fresh, and
+                            deleting a file takes its conversation with it.
+                        </p>
                     </Section>
 
                     {/* ═══ Files ═══ */}
@@ -1294,6 +1350,36 @@ export default function DocsPage() {
                         </p>
                     </Section>
 
+                    <Section
+                        id="assistant-key"
+                        title="Your own API key"
+                        lead="Bring an Anthropic, OpenAI or OpenRouter key and the assistant uses yours instead."
+                    >
+                        <p>
+                            Open the account menu, choose <UI>Your profile</UI>, and paste a key
+                            into <UI>Assistant API key</UI>. Leave the provider on{" "}
+                            <UI>Detect from the key</UI> unless you are routing an ordinary-looking
+                            key through somewhere unusual, and leave the model blank to take the
+                            provider&apos;s default.
+                        </p>
+                        <p>
+                            Saving costs nothing — the key is not tried against the provider first,
+                            because doing that would spend a little of your credit every time you
+                            pasted one. If it turns out to be wrong, the next question you ask says
+                            so and names the provider. Once saved it is encrypted, and the app will
+                            not show it to you again — only a masked hint like{" "}
+                            <Code>sk-ant-…4f2a</Code>, which is enough to recognise which key is in
+                            place. To change it, paste a new one over the top; <UI>Remove</UI> puts
+                            you back on the app&apos;s key.
+                        </p>
+                        <Callout tone="note" title="Why you might want to">
+                            Usage on your own key is billed to you and not rate-limited alongside
+                            everyone else&apos;s, and you can name any model your account can
+                            reach. On a self-hosted copy with no key configured, bringing one is
+                            the only way to use the assistant at all.
+                        </Callout>
+                    </Section>
+
                     {/* ═══ Reference ═══ */}
 
                     <Section
@@ -1380,7 +1466,7 @@ export default function DocsPage() {
                                 },
                                 {
                                     q: "Can I draw a relationship by dragging between tables?",
-                                    a: <>Not currently. Foreign keys are defined when you create a table, or imported with a file. Dragging between the connection dots does not write anything.</>,
+                                    a: <>Yes. Drag from a key onto a column in another table and the foreign key is created in the database — see <a href="#drawing-relationships" className="text-brand-700 underline underline-offset-2">Drawing relationships</a>. You can still define one when you create a table, or import it with a file.</>,
                                 },
                             ].map(({ q, a }) => (
                                 <div key={q} className="surface-card rounded-xl border p-5">

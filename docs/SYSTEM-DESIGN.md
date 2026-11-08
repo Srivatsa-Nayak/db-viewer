@@ -91,6 +91,10 @@ db-viewer-ui/
 │   ├── editor/DataEditor.tsx       Row-level view / edit / insert / delete modal
 │   ├── canvas/Visualizer.tsx       React Flow canvas + toolbar
 │   ├── tables/TableNode.tsx        A single table as a graph node
+│   ├── chat/ChatLauncher.tsx       The round button in the canvas's top-right corner
+│   ├── chat/SchemaChat.tsx         The panel: a shell column, mirroring FileExplorer
+│   ├── chat/ChatConversation.tsx   Messages, examples, composer; keyed per workspace
+│   ├── chat/ChatAnswer.tsx         Prose + the fenced SQL block, no markdown dep
 │   └── modal/
 │       ├── NewFileModal.tsx        Name a new (empty) SQL file
 │       ├── CreateTableModal.tsx    Full table definition incl. FKs
@@ -101,6 +105,7 @@ db-viewer-ui/
 │       └── InfoModal.tsx           "What is this" blurb + version + credits
 ├── services/
 │   ├── api.ts              ★ The only place that talks to the backend
+│   ├── chatStore.ts        One assistant conversation per open file, for the tab's lifetime
 │   ├── sessionStorage.ts   Open files + layout, persisted across a refresh
 │   └── exportImage.ts      Canvas → PNG
 ├── types/index.ts          Shared response/DTO types
@@ -198,7 +203,8 @@ Controllers stay thin — route, delegate, wrap the result or the error. Parsing
 and formatting live in `DatabaseServiceImpl`.
 
 Every service is an interface in `service/` with its implementation in `service/impl/`:
-`DatabaseService`, `AuthService`, `JwtService`, `ShareService`, `TemplateService`. Nothing is
+`DatabaseService`, `AuthService`, `JwtService`, `ShareService`, `TemplateService`,
+`ChatService`, `ApiKeyService`. Nothing is
 typed against a `*Impl` — controllers and services depend on the contract, so Spring injects the
 implementation and a collaborator can be substituted without touching the caller. Shapes that are
 part of a contract live on the interface too: `TemplateService.Template` and its nested records are
@@ -212,6 +218,11 @@ statement can be corrected without reading the control flow wrapped around it. T
 hold throughout: `?` is a real JDBC bind parameter, and `%s` is a format slot for an identifier
 that the caller has already validated — identifiers cannot be bound, so `safeIdentifier` does that
 job before the name reaches a statement.
+
+Two classes sit outside that pattern, deliberately. `llm/LlmClient` is a `@Component` with no
+interface: there is one implementation, it wraps an HTTP call rather than a decision, and the
+thing a test wants to substitute is the *provider*, which a base-URL property already does.
+`auth/SecretCipher` is the same — an algorithm, not a policy.
 
 `GlobalExceptionHandler` covers anything that escapes a controller's own try/catch.
 
@@ -274,7 +285,7 @@ client that knows an id can reach that workspace. This matches the app's current
 | `GET` | `/version` | Version declared in `pom.xml`; shown in the UI's info modal | — |
 | `POST` | `/import/analyze` | Dry run: the tables, columns and inferred types an import would produce, plus the dialect detected and everything that would be skipped. Writes nothing | ✅ header |
 | `POST` | `/upload` | Import `.csv` or `.sql`, applying any `columnTypes` corrections; returns a report of what ran and what was skipped | ✅ header |
-| `POST` | `/query` | Execute raw SQL | ✅ header |
+| `POST` | `/query` | Execute one raw SQL statement (account required) | ✅ header |
 | `GET` | `/db-info` | All tables, columns, row previews, relationships. Columns carry `unique` / `defaultValue` / `autoIncrement`, relationships carry `constraintId` / `onDelete` — the canvas needs all five to draw cardinality and column definitions | ✅ header |
 | `GET` | `/table-data/{table}` | Columns + up to 100 rows | ✅ header |
 | `POST` | `/create-table` | `CREATE TABLE` with PK/NOT NULL/FK | ✅ header |
@@ -292,6 +303,9 @@ client that knows an id can reach that workspace. This matches the app's current
 | `POST` | `/add-foreign-key` | Declare a relationship; validates uniqueness, types and orphan rows first | ✅ header |
 | `POST` | `/drop-foreign-key` | Remove a relationship | ✅ header |
 | `POST` | `/scratchpad` | Run a script, reporting each statement **(account required)** | ✅ header |
+| `POST` | `/chat` | Ask the schema assistant. Streams SSE: `meta`, `delta`×n, `done` \| `error` **(account required)** | ✅ header |
+| `GET` | `/chat/config` | Whether the assistant is usable, and whose key would pay | — |
+| `GET` `PUT` `DELETE` | `/auth/api-key` | The caller's own model key: masked status, store, forget. Stores without calling the provider | — |
 | `GET` | `/templates` | The starter-schema catalogue | — |
 | `GET` | `/templates/{id}` | One template, including its SQL | — |
 | `POST` | `/templates/{id}/apply` | Create a template's tables in the workspace | ✅ header |
@@ -446,6 +460,10 @@ discussion.
 | Row previews capped at 100 | Keeps `/db-info` cheap | Server-side pagination on `/table-data` |
 | `.sql` import skips statements it cannot run | Best-effort import of MySQL dumps | Now reported to the UI via the upload report and `NoticeModal`; MySQL triggers/procedures still have no SQLite equivalent |
 | Indexes and `UNIQUE`/`CHECK` constraints in a dump are dropped | The translator folds only primary and foreign keys | Emit `CREATE INDEX` / table-level constraints during translation |
+| The whole schema goes into every chat prompt | A schema is small and already structured, so retrieval over it would be slower and lossier than sending it — see §8b | Chunk and retrieve only past a few hundred tables, where the 60,000-character cap starts truncating |
+| A chat answer holds a request thread for its duration | `StreamingResponseBody` on Tomcat's pool, capped at 120s per provider call and 180s per request | Fine at this scale; a reactive client (`WebClient`) would free the thread while waiting |
+| Stored API keys are encrypted with a key derived from `AUTH_SECRET` | One secret to manage rather than two | Rotating `AUTH_SECRET` makes every stored key unreadable. Decryption answers null rather than throwing, and the user is asked to paste theirs again — but a real deployment wants a separate, rotatable data key |
+| The chat assistant cannot execute anything | Deliberate, not missing — see §8b | Not a fix. Any write path should stay a proposal the user runs |
 
 ---
 
@@ -496,6 +514,94 @@ listing, keeping it off the canvas and out of exports.
 
 ---
 
+## 8b. The schema assistant
+
+The chat panel on the canvas is a port of a standalone document chatbot, and what was left behind
+matters more than what was taken.
+
+**No retrieval.** The original vectorised uploads into a JSON store and retrieved nearest-neighbour
+passages — roughly 1,400 of its 1,600 lines. None of that is here. Retrieval exists to find the
+relevant few thousand words inside something that cannot fit in a prompt, and a schema is not that:
+it is already structured, already in memory, and a hundred tables serialise to a few tens of
+kilobytes. Chunking it would be slower, lossier, and would introduce the one failure this must not
+have — answering confidently about a table while the table it joins to was not retrieved. The whole
+schema goes into every prompt, capped at 60,000 characters, and a truncated one says so. What did
+port over is the streaming transport (`LlmClient`, from `src/llm.js`) and the grounding rules,
+which are domain-independent.
+
+**Structure only, never data.** `getDbInfo()` returns up to 100 rows per table and `ChatServiceImpl`
+drops every one of them. The prompt carries table and column names, types, keys, nullability,
+defaults, foreign keys with their `ON DELETE` rule, and the user's open table notes — the notes
+because they record intent rather than structure, and an assistant that suggests normalising a
+table the user has already explained is worse than none. This is a promise made to the user in the
+UI, so it is asserted in two places: against the prompt (`ChatPromptTest`) and against the bytes on
+the wire (a browser harness that plants a marker row and greps the outbound request).
+
+**Two phases, because of thread-locals.** `ChatService.prepare` runs on the request thread, where
+`AuthContext` and `WorkspaceContext` are bound; `ChatService.stream` runs on a container thread
+after Spring has dispatched the response asynchronously, by which point the filters have unwound
+and those thread-locals are gone. Reading the schema from inside the stream would read the wrong
+database, or none. The split also puts every failure that can happen *before* the first byte —
+no account, no key, an empty question — into an ordinary JSON response with a real status code;
+only a mid-answer failure has to be reported as an `error` frame inside a 200 that has already
+been sent.
+
+**Three providers, two wire formats.** OpenAI and OpenRouter speak chat-completions
+(`choices[0].delta.content`, terminated by `data: [DONE]`); Anthropic speaks the Messages API
+(`content_block_delta` → `delta.text`, terminated by the stream closing, with the system prompt as
+a top-level field rather than a message). `LlmClient` branches once on `LlmProvider` and nothing
+else in the application knows which is in use. Base URLs are configurable per provider, because a
+gateway — Azure OpenAI, LiteLLM, an internal proxy with a spend cap — is a normal way to consume
+these APIs.
+
+**A column, not a popover.** The panel is built like `FileExplorer` and mirrored to the right
+edge: a real flex child from `lg` up, so opening it narrows the canvas rather than covering it,
+and an overlay drawer below that. The first version was a floating card anchored to the launcher,
+and it was the wrong container for what it holds — conversations grow, schema summaries are long,
+and SQL blocks want width. Sharing the layout with the diagram is also the point of putting the
+assistant on the canvas at all: the two are meant to be read together.
+
+**Examples are written around the open schema.** The empty state offers four groups of prompts
+that name the user's own tables — "How are `customers` and `categories` related?" rather than a
+sample question about a `posts` table they do not have. That does two jobs: it shows what a good
+question looks like, and it demonstrates that the assistant can already see the file, which is the
+thing people do not believe until they watch it happen. An empty file gets a different set
+entirely, because "summarise this schema" is not a useful first move when there is nothing to
+summarise.
+
+**A conversation belongs to a file.** `services/chatStore.ts` keeps one per workspace for as long
+as the tab lives; the panel is keyed by workspace id, so switching files swaps which conversation
+is on screen rather than ending one. The first version simply cleared it, and that was a bug
+rather than a trade-off. The reasoning behind clearing was right — the history talks about *a*
+schema, and replaying "the orders table you mentioned" against a different file has the model
+answer confidently about a table that is not there — but the remedy destroyed something the user
+could not recover. Keeping conversations apart is what was actually wanted; deleting one was not.
+Two details follow. Unmounting mid-answer aborts the request, because it is a paid call for a file
+the user has left, and marks the stored turn as cut short — otherwise returning to that file shows
+a spinner against a request that no longer exists. And the store is memory-only: a transcript is
+far larger than the layout data in `localStorage`, it quotes the user's schema back at them, and
+`sessionStorage.ts` is layout-only by rule. Deleting a file forgets its conversation; signing out
+forgets all of them, for the same reason the open-file list is cleared there.
+
+**It proposes; it does not execute.** SQL the assistant writes arrives as a fenced block with a
+button that loads it into the SQL scratchpad, which is already the reviewed, account-gated,
+per-statement-reporting path for arbitrary SQL. The assistant has no write access of its own. A
+confirmation dialog would have been the alternative, and a confirmation dialog that appears often
+is one that gets clicked through.
+
+**Keys.** The application's own key is configuration (`app.llm.api-key`). A user's own key is
+stored in `app_users`, encrypted with AES-GCM under a key derived from `AUTH_SECRET`. It is checked
+for shape but **not** against the provider: a live check would prove the key works, and would cost
+one model call every time somebody pasted one, on their own account. A key typed wrong announces
+itself on the first question instead, where the error path already names the provider and says to
+re-enter it in the profile — the same advice a failed check would have given, at no cost to anyone
+who got it right. It is never returned to the browser; only a masked
+hint (`sk-ant-…4f2a`) is, which is enough to recognise a key without being one. Rotating
+`AUTH_SECRET` makes stored keys unreadable, and `SecretCipher.decrypt` answers null rather than
+throwing so that this is a re-entry prompt instead of a 500.
+
+---
+
 ## 9. Testing strategy
 
 The suite is kept deliberately small: a test earns its place only if its failure says something
@@ -517,7 +623,10 @@ returns 200 without doing anything is the failure worth catching.
 | Scratchpad | `ScratchpadTest` — multi-statement execution reporting per statement, the row/statement/timeout caps, and internal `__` tables refused |
 | Share link reuse | `ShareDuplicateLinkTest` — repeated and concurrent sharing returning one link, pre-existing duplicates not breaking the route or being silently revoked, and colours and groups travelling with the link |
 | Table lifecycle | `TableLifecycleTest` — the example schema, FK-guarded deletion, and notes staying invisible to the canvas and exports |
-| Frontend | No test suite; `npx tsc --noEmit` and `npm run lint` are the gates |
+| Secret storage | `SecretCipherTest` — a stored key round-tripping, a fresh nonce per encryption, a tampered ciphertext failing closed, and an unreadable one answering null rather than throwing |
+| Bring-your-own keys | `ApiKeyStorageTest` — encrypted at rest, never returned to the caller, masked to a hint, and the user's key taking precedence over the app's. The provider is mocked and asserted to have **no interactions**: saving a key must not cost a model call |
+| Chat prompt | `ChatPromptTest` — what the assistant is shown (tables, columns, keys, foreign keys, engine, open notes) and what it is not (**no row values**, no forged `system` turn from the browser's history). No model is called: `prepare` builds the prompt and stops, which is the seam the two-phase `ChatService` exists to create |
+| Frontend | No test suite; `npx tsc --noEmit` and `npm run lint` are the gates. The chat path is additionally driven end to end by Playwright harnesses against a local stub provider — including one that writes a marker value into a table and asserts it appears nowhere in the bytes sent onward |
 
 All backend tests run against in-memory SQLite (`jdbc:sqlite::memory:`), including the workspace
 tests, which use named shared-cache in-memory databases so isolation is exercised without touching

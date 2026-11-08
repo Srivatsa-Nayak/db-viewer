@@ -306,6 +306,11 @@ public class DatabaseServiceImpl implements DatabaseService {
      */
     @Override
     public List<Map<String, Object>> executeQuery(String sql) {
+        if (sql == null || sql.isBlank()) {
+            throw new IllegalArgumentException("Nothing to run.");
+        }
+        // The scratchpad's guard. The application's bookkeeping tables are not the caller's.
+        refuseInternalTables(sql);
         String trimmed = sql.trim().toUpperCase();
         if (trimmed.startsWith("SELECT") || trimmed.startsWith("PRAGMA") || trimmed.startsWith("SHOW")) {
             return jdbc().queryForList(sql);
@@ -520,6 +525,9 @@ public class DatabaseServiceImpl implements DatabaseService {
      */
     @Override
     public Map<String, Object> getTableData(String tableName) {
+        // The name comes straight from the URL and is formatted into SQL below. Checking it
+        // against what the database reports is what keeps a quote in it from being an injection.
+        tableName = requireExistingTableOrView(tableName);
         List<ColumnInfo> columns = getColumnsForTable(tableName);
         List<Map<String, Object>> rows = safeQueryRows(String.format(Constants.Rows.SELECT_ALL_LIMITED, tableName));
         return Map.of("columns", columns, "rows", rows);
@@ -617,6 +625,22 @@ public class DatabaseServiceImpl implements DatabaseService {
                             + "tables it reads from instead.");
         }
         throw new IllegalArgumentException("No such table: \"" + tableName + "\"");
+    }
+
+    /**
+     * As {@link #requireExistingTable}, but a view is accepted too: reading a view's rows is
+     * fine, it is only writing to one that is refused. For the read paths whose name comes from
+     * the URL.
+     */
+    private String requireExistingTableOrView(String tableName) {
+        if (isBlank(tableName)) {
+            throw new IllegalArgumentException("Missing table name");
+        }
+        String trimmed = tableName.trim();
+        if (getViewNames().contains(trimmed)) {
+            return trimmed;
+        }
+        return requireExistingTable(trimmed);
     }
 
     /** As {@link #requireExistingTable}, for a column of a table already confirmed. */
@@ -1942,7 +1966,9 @@ public class DatabaseServiceImpl implements DatabaseService {
      * Gets all rows from a table for CSV export. Mirrors HandleExportCSV.
      */
     public List<Map<String, Object>> getTableRows(String tableName) {
-        return jdbc().queryForList(String.format(Constants.Rows.SELECT_ALL, tableName));
+        // As getTableData: the name is from the URL, so it must be one the database reports.
+        String name = requireExistingTableOrView(tableName);
+        return jdbc().queryForList(String.format(Constants.Rows.SELECT_ALL, name));
     }
 
     // ─── Export SQL ───────────────────────────────────────────────────────────────

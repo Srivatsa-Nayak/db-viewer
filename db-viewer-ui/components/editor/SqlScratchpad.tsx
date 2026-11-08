@@ -66,6 +66,15 @@ const PLACEHOLDER = `-- Ctrl+Enter to run. Several statements are fine.
 SELECT * FROM your_table LIMIT 10;`;
 
 interface SqlScratchpadProps {
+    /**
+     * Text to start the editor with — how the chat assistant hands SQL over.
+     *
+     * Read once, at mount. The caller remounts with a new `key` to send a second snippet, which
+     * is deliberate on both sides: it keeps this component's editor state local, and it makes
+     * "replace what is in the editor" the explicit behaviour rather than an append nobody asked
+     * for. The result pane goes with it, correctly — those results belonged to the old script.
+     */
+    initialSql?: string;
     isOpen: boolean;
     onToggle: () => void;
     /** Table names, offered as chips so nobody has to remember an exact spelling. */
@@ -77,9 +86,9 @@ interface SqlScratchpadProps {
 }
 
 export const SqlScratchpad = ({
-    isOpen, onToggle, tableNames, hasAccount, onNeedsAccount, onSchemaChanged,
+    initialSql, isOpen, onToggle, tableNames, hasAccount, onNeedsAccount, onSchemaChanged,
 }: SqlScratchpadProps) => {
-    const [sql, setSql] = useState('');
+    const [sql, setSql] = useState(initialSql ?? '');
     const [isRunning, setRunning] = useState(false);
     const [result, setResult] = useState<ScratchpadResult | null>(null);
     const [error, setError] = useState<string | null>(null);

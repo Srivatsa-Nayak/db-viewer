@@ -1,6 +1,7 @@
 package com.dbviewer.app.controller;
 
 import com.dbviewer.app.exception.EmailAlreadyRegisteredException;
+import com.dbviewer.app.service.ApiKeyService;
 import com.dbviewer.app.service.AuthService;
 import com.dbviewer.app.exception.UnauthorizedException;
 import io.swagger.v3.oas.annotations.Operation;
@@ -27,6 +28,7 @@ import java.util.Map;
 public class AuthController {
 
     private final AuthService authService;
+    private final ApiKeyService apiKeyService;
 
     public record Credentials(String email, String password, String displayName) {
     }
@@ -87,6 +89,56 @@ public class AuthController {
             log.error("Profile update failed", e);
             return ResponseEntity.internalServerError()
                     .body(Map.of("error", "Could not update your profile."));
+        }
+    }
+
+    /** The user's own model API key. Only ever a description of it - never the key itself. */
+    public record ApiKeyUpdate(String provider, String apiKey, String model) {
+    }
+
+    @GetMapping("/api-key")
+    @Operation(summary = "Model API key status",
+            description = "Which key the chat assistant would use for this account, masked, and "
+                    + "what the fallback is. The key itself is never returned.")
+    public ResponseEntity<?> apiKey() {
+        try {
+            return ResponseEntity.ok(apiKeyService.describe());
+        } catch (UnauthorizedException e) {
+            return ResponseEntity.status(401).body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PutMapping("/api-key")
+    @Operation(summary = "Store your own model API key",
+            description = "Stores the key encrypted. The provider is deliberately not called "
+                    + "to check it, so saving costs nothing; a wrong key is reported on the "
+                    + "first question. Send `provider` as ANTHROPIC, OPENAI or OPENROUTER, or "
+                    + "omit it to infer the provider from the key.")
+    public ResponseEntity<?> saveApiKey(@RequestBody ApiKeyUpdate request) {
+        try {
+            return ResponseEntity.ok(apiKeyService.save(
+                    request.provider(), request.apiKey(), request.model()));
+        } catch (UnauthorizedException e) {
+            return ResponseEntity.status(401).body(Map.of("error", e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            // A malformed request: an empty key, or one of no recognisable shape. The key is not
+            // checked against the provider, so "this key does not work" never arrives here.
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Could not store the API key", e);
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("error", "Could not save the key."));
+        }
+    }
+
+    @DeleteMapping("/api-key")
+    @Operation(summary = "Forget your model API key",
+            description = "Reverts to the application's own key.")
+    public ResponseEntity<?> deleteApiKey() {
+        try {
+            return ResponseEntity.ok(apiKeyService.clear());
+        } catch (UnauthorizedException e) {
+            return ResponseEntity.status(401).body(Map.of("error", e.getMessage()));
         }
     }
 

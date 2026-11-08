@@ -5,6 +5,7 @@ import { Loader2, AlertCircle, User, Check, CheckCircle2 } from 'lucide-react';
 import { authService, AuthUser } from '@/services/api';
 import { Callout, GhostButton, Modal, ModalActions, PrimaryButton } from '@/components/ui/Modal';
 import { PasswordField } from '@/components/ui/PasswordField';
+import { ApiKeySection } from './ApiKeySection';
 
 interface ProfileModalProps {
     isOpen: boolean;
@@ -170,6 +171,12 @@ export const ProfileModal = ({ isOpen, user, onClose, onUpdated }: ProfileModalP
                             : undefined}
                     />
                 </div>
+
+                {/* Below the password, above the status messages: an API key is account-level
+                    settings like the two fields above it, but it saves on its own button rather
+                    than through the dialog's submit, so it must not sit between a field and the
+                    confirmation of that field being saved. */}
+                <ApiKeySection />
 
                 {saved && (
                     <Callout tone="info" icon={<CheckCircle2 size={14} />}>Your profile has been updated.</Callout>

@@ -48,6 +48,17 @@ public class DatabaseConfig {
 
         jdbcTemplate.execute(Constants.Ddl.CREATE_SHARED_LINKS_TABLE);
 
+        for (String alter : Constants.Ddl.ADD_APP_USERS_LLM_COLUMNS) {
+            try {
+                jdbcTemplate.execute(alter);
+                log.info("Added an LLM key column to app_users");
+            } catch (Exception e) {
+                // Already there, which is every boot after the first. Same reasoning as
+                // workspace_owners.file_name below: the attempt is the check.
+                log.debug("app_users LLM column already present: {}", e.getMessage());
+            }
+        }
+
         jdbcTemplate.execute(Constants.Ddl.CREATE_WORKSPACE_OWNERS_TABLE);
         try {
             jdbcTemplate.execute(Constants.Ddl.ADD_WORKSPACE_OWNERS_FILE_NAME);

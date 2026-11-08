@@ -126,7 +126,8 @@ class DatabaseControllerIntegrationTest {
     void query_validSelect_shouldReturnRows() throws Exception {
         String body = objectMapper.writeValueAsString(Map.of("query", "SELECT * FROM products"));
 
-        mockMvc.perform(post("/query").contentType(MediaType.APPLICATION_JSON).content(body))
+        mockMvc.perform(post("/query").header("Authorization", token())
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data", hasSize(2)));
     }
@@ -137,9 +138,44 @@ class DatabaseControllerIntegrationTest {
         String body = objectMapper.writeValueAsString(
                 Map.of("query", "SELECT * FROM no_such_table_xyz"));
 
-        mockMvc.perform(post("/query").contentType(MediaType.APPLICATION_JSON).content(body))
+        mockMvc.perform(post("/query").header("Authorization", token())
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").exists());
+    }
+
+    @Test
+    @Order(6)
+    void query_shouldRequireAnAccount() throws Exception {
+        String body = objectMapper.writeValueAsString(Map.of("query", "SELECT * FROM products"));
+        mockMvc.perform(post("/query").contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isUnauthorized());
+    }
+
+    /**
+     * The table name in these two URLs is formatted into SQL. It used to go in unchecked, so a
+     * quote in it closed the identifier and the rest ran as SQL.
+     */
+    @Test
+    @Order(6)
+    void tableNameInTheUrl_shouldNotBeInjectable() throws Exception {
+        String injected = "products\" UNION SELECT sql, sql, sql, sql FROM sqlite_master --";
+
+        mockMvc.perform(get("/table-data/{t}", injected))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/export/{t}", injected).header("Authorization", token()))
+                .andExpect(status().isNotFound());
+
+        // The real table still reads fine.
+        mockMvc.perform(get("/table-data/{t}", "products"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void csvFileName_shouldStripHeaderBreakingCharacters() {
+        org.assertj.core.api.Assertions.assertThat(
+                DatabaseController.csvFileName("a\"; b\r\nX-Evil: 1"))
+                .isEqualTo("a___b__X-Evil__1.csv");
     }
 
     // ─── Schema changes ───────────────────────────────────────────────────────────
@@ -166,7 +202,7 @@ class DatabaseControllerIntegrationTest {
         String pkQuery = objectMapper.writeValueAsString(Map.of(
                 "query", "SELECT sql FROM sqlite_master WHERE type='table' AND name='categories'"));
 
-        mockMvc.perform(post("/query")
+        mockMvc.perform(post("/query").header("Authorization", token())
                         .contentType(MediaType.APPLICATION_JSON).content(pkQuery))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].sql", containsString("PRIMARY KEY")))

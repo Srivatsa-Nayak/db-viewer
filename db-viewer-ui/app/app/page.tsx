@@ -9,6 +9,9 @@ import { Visualizer, RelationshipDraft } from "@/components/canvas/Visualizer";
 import type { EdgeCardinality } from "@/components/canvas/OrthogonalEdge";
 import { FileExplorer, ExplorerFile } from "@/components/editor/FileExplorer";
 import { SqlScratchpad } from "@/components/editor/SqlScratchpad";
+import { SchemaChat } from "@/components/chat/SchemaChat";
+import { chatStore } from "@/services/chatStore";
+import { ChatLauncher } from "@/components/chat/ChatLauncher";
 import { Notice } from '@/components/modal/NoticeModal';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { ActionToast, ToastState } from '@/components/ui/ActionToast';
@@ -326,6 +329,11 @@ export default function Home() {
     const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
     const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
     const [isExplorerOpen, setIsExplorerOpen] = useState(false);
+    /**
+     * The assistant panel, which is a column of the shell rather than a popover — so its open
+     * state belongs here with the explorer's, not inside the component.
+     */
+    const [isChatOpen, setChatOpen] = useState(false);
     const [editingTable, setEditingTable] = useState<string | null>(null);
     const [notice, setNotice] = useState<Notice>({ isOpen: false, severity: 'error', title: '', message: '' });
     const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -354,6 +362,17 @@ export default function Home() {
     const [pendingImport, setPendingImport] = useState<{ file: File; plan: ImportPlan } | null>(null);
     const [isProfileOpen, setProfileOpen] = useState(false);
     const [isScratchpadOpen, setScratchpadOpen] = useState(false);
+    /**
+     * SQL the chat assistant has written, waiting to be loaded into the scratchpad.
+     *
+     * The counter is the point of the shape. `SqlScratchpad` holds its editor text in local
+     * state, and pushing new text into it from outside would mean either lifting that state to
+     * this page — re-rendering a 1,700-line component on every keystroke — or setting state from
+     * an effect, which the lint config rejects. Remounting on a changed `key` is the repo's
+     * documented third option: mounting is the reset. Sending a second snippet with identical
+     * text still reloads it, because the counter moved even though the SQL did not.
+     */
+    const [scratchpadSeed, setScratchpadSeed] = useState<{ sql: string; n: number } | null>(null);
     const [notes, setNotes] = useState<TableNote[]>([]);
     const [tableToDelete, setTableToDelete] = useState<string | null>(null);
     /**
@@ -1155,6 +1174,10 @@ export default function Home() {
         } catch (e) {
             console.error("Failed to delete workspace", e);
         }
+        // The schema this conversation was about no longer exists, so neither should the
+        // conversation. Every other file's is untouched.
+        if (closingId) chatStore.forget(closingId);
+
         const remaining = workspaces.filter(w => w.id !== closingId);
         const nextId = remaining.length > 0 ? remaining[remaining.length - 1].id : null;
         setWorkspaces(remaining);
@@ -1243,6 +1266,10 @@ export default function Home() {
         setActiveWorkspaceId(null);
         setActiveWorkspace(null);
         setNotes([]);
+        // The assistant conversations go with the files they were about. Same reasoning as the
+        // open-file list: those workspaces are no longer this caller's, and a second user on a
+        // shared browser must not find the first one's talk waiting for them.
+        chatStore.forgetAll();
         clearSession();
     };
 
@@ -1396,6 +1423,19 @@ export default function Home() {
         history.pushBarrier(
             'Undo stops here: SQL you ran by hand may have changed what the earlier steps assumed.');
     }, [refreshActiveSchema]);
+
+    /**
+     * Loads the assistant's SQL into the scratchpad and opens it.
+     *
+     * The assistant never runs anything. This is the whole of its write path: the scratchpad is
+     * already the reviewed, account-gated, per-statement-reporting route for arbitrary SQL, so
+     * the assistant becomes another way to fill it rather than a second way around it. The user
+     * still reads the statements and still presses Run.
+     */
+    const handleAssistantSql = useCallback((sql: string) => {
+        setScratchpadSeed({ sql, n: Date.now() });
+        setScratchpadOpen(true);
+    }, []);
 
     /* ── Domain groups ───────────────────────────────────────────────────── */
 
@@ -1608,6 +1648,24 @@ export default function Home() {
         });
     }, [placeNodes]);
 
+    /**
+     * Opens or closes the assistant.
+     *
+     * Below `lg` both side panels are overlay drawers on the same canvas, so opening one closes
+     * the other — two stacked drawers would leave the lower one unreachable behind the upper
+     * one's scrim. From `lg` up they are real columns and can both stay open, which is the whole
+     * point of the canvas being between them.
+     */
+    const toggleChat = useCallback(() => {
+        setChatOpen(open => {
+            const next = !open;
+            if (next && !window.matchMedia('(min-width: 1024px)').matches) {
+                setIsExplorerOpen(false);
+            }
+            return next;
+        });
+    }, []);
+
     const selectFile = useCallback((fileId: string) => {
         setActiveWorkspaceId(fileId);
         // On a phone the explorer covers the canvas, so picking a file has to get out of
@@ -1634,14 +1692,17 @@ export default function Home() {
             />
 
             <div className="flex-1 flex overflow-hidden relative min-h-0">
-                {/* Scrim for the drawer. Only below lg, where the explorer overlays the canvas.
-                    Always mounted and animated by opacity, so it fades out with the drawer's
-                    slide rather than blinking away the instant the state flips. */}
+                {/* Scrim for whichever drawer is open. Only below lg, where the explorer and the
+                    assistant overlay the canvas instead of flanking it. Always mounted and
+                    animated by opacity, so it fades out with the drawer's slide rather than
+                    blinking away the instant the state flips. One element for both panels: they
+                    are mutually exclusive at this width, and a second scrim would only ever
+                    stack on the first. */}
                 <div
                     className={`lg:hidden absolute inset-0 z-30 bg-scrim/50 transition-opacity duration-300 motion-reduce:transition-none ${
-                        isExplorerOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
+                        isExplorerOpen || isChatOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
                     }`}
-                    onClick={() => setIsExplorerOpen(false)}
+                    onClick={() => { setIsExplorerOpen(false); setChatOpen(false); }}
                     aria-hidden="true"
                 />
 
@@ -1671,6 +1732,7 @@ export default function Home() {
                             onCreateRelationship={handleCreateRelationship}
                             onCreateGroup={handleCreateGroup}
                             toast={<ActionToast toast={toast} onDismiss={() => setToast(null)} />}
+                            chat={<ChatLauncher isOpen={isChatOpen} onToggle={toggleChat} />}
                         />
                     ) : isRestoring ? (
                         <div className="flex-1 flex flex-col items-center justify-center bg-surface text-ink-400 gap-3">
@@ -1715,6 +1777,8 @@ export default function Home() {
                         against otherwise. */}
                     {activeWorkspace && (
                         <SqlScratchpad
+                            key={scratchpadSeed?.n ?? 'blank'}
+                            initialSql={scratchpadSeed?.sql}
                             isOpen={isScratchpadOpen}
                             onToggle={() => setScratchpadOpen(v => !v)}
                             tableNames={activeWorkspace.fileData.tables.map(t => t.name)}
@@ -1724,6 +1788,24 @@ export default function Home() {
                         />
                     )}
                 </main>
+
+                {/* The far side of the canvas, mirroring the explorer. A column from `lg` up and
+                    an overlay drawer below, so opening it narrows the diagram rather than
+                    covering it — the two are meant to be read together. Only with a file open:
+                    there is nothing to ask about otherwise. */}
+                {activeWorkspace && (
+                    <SchemaChat
+                        isOpen={isChatOpen}
+                        onClose={() => setChatOpen(false)}
+                        workspaceKey={activeWorkspace.id}
+                        tableNames={activeWorkspace.fileData.tables.map(t => t.name)}
+                        hasAccount={!!user}
+                        onNeedsAccount={() => requireAccount('Asking the assistant')}
+                        onSendToScratchpad={handleAssistantSql}
+                        onManageKey={() => (user ? setProfileOpen(true)
+                            : requireAccount('Adding your own API key'))}
+                    />
+                )}
             </div>
 
             {editingTable && <DataEditor tableName={editingTable} onClose={() => setEditingTable(null)} />}

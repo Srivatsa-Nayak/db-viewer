@@ -76,6 +76,15 @@ interface VisualizerProps {
      * and the page's own layout has no element in that position.
      */
     toast?: React.ReactNode;
+    /**
+     * The chat assistant's launcher, rendered into the top-right panel.
+     *
+     * Passed in as a node for the same reason `toast` is: it has to sit over the diagram, the
+     * page has no element in that position, and the canvas has no business knowing what an API
+     * key is. Unlike the toast it belongs *inside* `<ReactFlow>` — a `Panel` is a sibling of the
+     * transformed viewport, not a child of it, so the panel keeps its size at every zoom.
+     */
+    chat?: React.ReactNode;
     /** Called when a relationship is dragged between two columns. */
     onCreateRelationship?: (link: RelationshipDraft) => void;
     /** Called with the table names to put in a new domain group. */
@@ -103,7 +112,7 @@ const columnFromHandle = (handleId: string | null | undefined, suffix: string): 
 
 export const Visualizer = ({
     nodes, edges, onNodesChange, onNodeDragStart, onNodeDragStop, onRefreshRequest,
-    history, onUndo, onRedo, toast, onCreateRelationship, onCreateGroup, onNodeDrag,
+    history, onUndo, onRedo, toast, chat, onCreateRelationship, onCreateGroup, onNodeDrag,
 }: VisualizerProps) => {
     const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null);
     const [zoomLevel, setZoomLevel] = useState(1);
@@ -549,6 +558,7 @@ export const Visualizer = ({
                     )}
 
                     <Panel position="top-right" className="!m-2 sm:!m-4">
+                      <div className="flex flex-col items-end gap-2">
                         {/* Hidden on the narrowest screens, where pinch-zoom is the natural
                             gesture and the control would sit on top of the canvas content. */}
                         <div className="hidden sm:flex items-center gap-2 px-2 py-1 rounded-md shadow-glow-md border bg-surface border-line">
@@ -566,6 +576,13 @@ export const Visualizer = ({
                                 ))}
                             </select>
                         </div>
+
+                        {/* Below the zoom control rather than beside it: the panel it opens is
+                            wider than the corner, and stacking keeps the launcher in the same
+                            place at every width, including the ones where the zoom pill is not
+                            rendered at all. */}
+                        {chat}
+                      </div>
                     </Panel>
                 </ReactFlow>
 

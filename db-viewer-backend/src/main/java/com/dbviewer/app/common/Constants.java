@@ -121,6 +121,25 @@ public final class Constants {
                 )
                 """;
 
+        /**
+         * Columns for a user's own LLM API key, added to an {@code app_users} table created
+         * before the chat assistant existed.
+         *
+         * <p>Run unconditionally and ignore the failure, exactly as
+         * {@link #ADD_WORKSPACE_OWNERS_FILE_NAME} does: neither SQLite nor MySQL has a portable
+         * "add column if missing", so the attempt is the check.
+         *
+         * <p>The key is stored encrypted ({@code SecretCipher}) rather than hashed. A password is
+         * only ever compared and so can be hashed; an API key has to be recovered in full and
+         * handed to the provider.
+         */
+        public static final String[] ADD_APP_USERS_LLM_COLUMNS = {
+                "ALTER TABLE app_users ADD COLUMN llm_provider VARCHAR(32)",
+                "ALTER TABLE app_users ADD COLUMN llm_key_cipher TEXT",
+                "ALTER TABLE app_users ADD COLUMN llm_model VARCHAR(120)",
+                "ALTER TABLE app_users ADD COLUMN llm_key_hint VARCHAR(32)",
+        };
+
         /** %s: notes table name. %s: the engine's auto-increment primary key clause. */
         public static final String CREATE_NOTES_TABLE = """
                 CREATE TABLE IF NOT EXISTS "%s" (
@@ -171,6 +190,20 @@ public final class Constants {
 
         public static final String UPDATE_PASSWORD_HASH =
                 "UPDATE app_users SET password_hash = ? WHERE email = ?";
+
+        /**
+         * Stores the user's own model key. {@code llm_key_hint} is the masked tail shown back to
+         * them — the ciphertext cannot be, and an input that renders as eight bullets gives no
+         * way to tell a stale key from the current one.
+         */
+        public static final String UPDATE_LLM_KEY =
+                "UPDATE app_users SET llm_provider = ?, llm_key_cipher = ?, llm_model = ?, "
+                        + "llm_key_hint = ? WHERE email = ?";
+
+        /** Reverts to the application's default key. The row stays; only the key is forgotten. */
+        public static final String CLEAR_LLM_KEY =
+                "UPDATE app_users SET llm_provider = NULL, llm_key_cipher = NULL, "
+                        + "llm_model = NULL, llm_key_hint = NULL WHERE email = ?";
     }
 
     /**

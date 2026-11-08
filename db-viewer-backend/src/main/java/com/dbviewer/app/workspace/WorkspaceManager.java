@@ -15,7 +15,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -37,8 +36,14 @@ import java.util.stream.Stream;
  *   <li><b>MySQL</b> - one schema per workspace ({@code ws_<id>}), created on demand.</li>
  * </ul>
  *
- * <p>Requests that carry no workspace id fall back to the default JdbcTemplate,
- * which preserves the original single-database behaviour for direct API/Swagger use.
+ * <p>Requests that carry no workspace id fall back to a shared <b>sandbox</b> workspace
+ * ({@link #SANDBOX_ID}), which keeps direct API and Swagger use working. They do <em>not</em>
+ * reach the application's own database. That one holds {@code app_users} (password hashes,
+ * encrypted API keys), {@code workspace_owners} and {@code shared_links}. It used to be the
+ * fallback, which let an anonymous caller with no header read password hashes through
+ * {@code /query} or {@code /table-data/app_users}, reassign ownership of any workspace, or drop
+ * every account with {@code DELETE /workspace}. The sandbox is an ordinary workspace database;
+ * clients cannot address it by id, because {@link #sanitize} rejects the reserved prefix.
  */
 @Slf4j
 @Component
@@ -46,6 +51,16 @@ public class WorkspaceManager {
 
     /** Workspace ids come from the browser, so they are whitelisted before touching a path or SQL identifier. */
     private static final int MAX_ID_LENGTH = 64;
+
+    /**
+     * Ids starting with this are the server's own and are refused from clients. Without that, a
+     * caller could claim the sandbox through {@code X-Workspace-Id} and then own the database
+     * every header-less request lands in.
+     */
+    static final String RESERVED_PREFIX = "__";
+
+    /** The workspace a request with no {@code X-Workspace-Id} is served from. */
+    public static final String SANDBOX_ID = RESERVED_PREFIX + "sandbox";
 
     private final JdbcTemplate defaultJdbcTemplate;
     private final Map<String, Workspace> workspaces = new ConcurrentHashMap<>();
@@ -74,11 +89,16 @@ public class WorkspaceManager {
         this.workspaceDir = workspaceDir;
     }
 
-    /** JdbcTemplate for the workspace bound to the current request, or the default one. */
+    /**
+     * JdbcTemplate for the workspace bound to the current request, or the shared sandbox.
+     *
+     * <p>Never the application's own database: that is reached only through the injected
+     * {@code JdbcTemplate} bean, by services that own its tables.
+     */
     public JdbcTemplate current() {
         String id = WorkspaceContext.get();
         if (id == null || id.isBlank()) {
-            return defaultJdbcTemplate;
+            return workspaces.computeIfAbsent(SANDBOX_ID, this::createWorkspace).jdbcTemplate();
         }
         return forWorkspace(id).jdbcTemplate();
     }
@@ -124,7 +144,11 @@ public class WorkspaceManager {
     }
 
     public List<String> openWorkspaceIds() {
-        return new ArrayList<>(workspaces.keySet());
+        return workspaces.keySet().stream().filter(id -> !isReserved(id)).toList();
+    }
+
+    private static boolean isReserved(String id) {
+        return id.startsWith(RESERVED_PREFIX);
     }
 
     /**
@@ -142,6 +166,7 @@ public class WorkspaceManager {
                                 Constants.Workspaces.MYSQL_LIST_WORKSPACE_SCHEMAS, String.class)
                         .stream()
                         .map(schema -> schema.substring("ws_".length()))
+                        .filter(id -> !isReserved(id))
                         .sorted()
                         .toList();
             } catch (Exception e) {
@@ -164,6 +189,7 @@ public class WorkspaceManager {
             return files.map(path -> path.getFileName().toString())
                     .filter(name -> name.startsWith("ws_") && name.endsWith(".db"))
                     .map(name -> name.substring("ws_".length(), name.length() - ".db".length()))
+                    .filter(id -> !isReserved(id))
                     .sorted()
                     .toList();
         } catch (IOException e) {
@@ -230,6 +256,10 @@ public class WorkspaceManager {
         if (!trimmed.matches("[A-Za-z0-9_-]+")) {
             throw new IllegalArgumentException(
                     "Workspace id may only contain letters, digits, underscores and hyphens");
+        }
+        if (isReserved(trimmed)) {
+            throw new IllegalArgumentException(
+                    "Workspace ids starting with " + RESERVED_PREFIX + " are reserved");
         }
         return trimmed;
     }
