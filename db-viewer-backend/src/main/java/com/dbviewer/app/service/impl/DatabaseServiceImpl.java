@@ -702,12 +702,27 @@ public class DatabaseServiceImpl implements DatabaseService {
         int skip = Math.max(0, offset);
 
         List<ColumnInfo> columns = getColumnsForTable(table);
-        List<Map<String, Object>> rows;
-        try {
-            rows = jdbc().queryForList(String.format(Constants.Rows.SELECT_PAGE, table), pageSize, skip);
-        } catch (Exception e) {
-            log.debug("Could not read a page of {}: {}", table, e.getMessage());
-            rows = List.of();
+        String key = keyColumnOf(columns);
+        List<Map<String, Object>> rows = null;
+        // No id and no single-column key: on SQLite every ordinary table still has a row id, so
+        // rows are read with it and addressed by it. It used to leave such a table — a join
+        // table with a composite key, a log with no key at all — uneditable row by row.
+        if (key == null && usesRowid(table)) {
+            try {
+                rows = jdbc().queryForList(
+                        String.format(Constants.Rows.SELECT_PAGE_WITH_ROWID, table), pageSize, skip);
+                key = Constants.Rows.ROWID_ALIAS;
+            } catch (Exception e) {
+                log.debug("Could not read {} with its row id: {}", table, e.getMessage());
+            }
+        }
+        if (rows == null) {
+            try {
+                rows = jdbc().queryForList(String.format(Constants.Rows.SELECT_PAGE, table), pageSize, skip);
+            } catch (Exception e) {
+                log.debug("Could not read a page of {}: {}", table, e.getMessage());
+                rows = List.of();
+            }
         }
         long total;
         try {
@@ -725,7 +740,6 @@ public class DatabaseServiceImpl implements DatabaseService {
         result.put("total", total);
         result.put("limit", pageSize);
         result.put("offset", skip);
-        String key = keyColumnOf(columns);
         if (key != null) {
             result.put("keyColumn", key);
         }
@@ -750,13 +764,36 @@ public class DatabaseServiceImpl implements DatabaseService {
         return keys.size() == 1 ? keys.get(0).getName() : null;
     }
 
+    /**
+     * The column rows of this table are addressed by, or {@link Constants.Rows#ROWID_ALIAS} when
+     * it has no id or single-column key and SQLite's row id stands in.
+     */
     private String requireKeyColumn(String tableName) {
         String key = keyColumnOf(getColumnsForTable(tableName));
-        if (key == null) {
-            throw new IllegalArgumentException("\"" + tableName + "\" has no id column or "
-                    + "single-column primary key, so its rows cannot be addressed one at a time.");
+        if (key != null) {
+            return key;
         }
-        return key;
+        if (usesRowid(tableName)) {
+            return Constants.Rows.ROWID_ALIAS;
+        }
+        throw new IllegalArgumentException("\"" + tableName + "\" has no id column or "
+                + "single-column primary key, so its rows cannot be addressed one at a time.");
+    }
+
+    /**
+     * True for an ordinary SQLite table, which always has a row id. False on MySQL, for a view,
+     * and for a table declared WITHOUT ROWID.
+     */
+    private boolean usesRowid(String tableName) {
+        if (isMysql() || getViewNames().contains(tableName)) {
+            return false;
+        }
+        try {
+            jdbc().queryForList(String.format(Constants.Rows.PROBE_ROWID, tableName));
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     // ─── Add Column ───────────────────────────────────────────────────────────────
@@ -1079,7 +1116,11 @@ public class DatabaseServiceImpl implements DatabaseService {
         Set<String> singleColumnUnique = new HashSet<>();
         List<String> compositeUnique = new ArrayList<>();
         readUniqueConstraints(tableName, singleColumnUnique, compositeUnique);
-        List<String> checks = extractCheckConstraints(getCreateTableSql(tableName));
+        String createSql = getCreateTableSql(tableName);
+        List<String> checks = extractCheckConstraints(createSql);
+        // Collations are another thing PRAGMA table_info does not report, so a rebuild used to
+        // drop them — and a column declared COLLATE NOCASE quietly became case-sensitive.
+        Map<String, String> collations = extractCollations(createSql);
         List<String> indexes = readCreatedIndexes(tableName);
 
         boolean autoIncrement = hasAutoIncrement(tableName);
@@ -1103,6 +1144,10 @@ public class DatabaseServiceImpl implements DatabaseService {
             }
 
             StringBuilder def = new StringBuilder("\"" + name + "\" " + type);
+            String collation = collations.get(col.name());
+            if (collation != null) {
+                def.append(" COLLATE ").append(collation);
+            }
             boolean soleKey = pkCount == 1 && col.pkPosition() > 0;
             if (soleKey) {
                 def.append(" PRIMARY KEY");
@@ -1282,6 +1327,53 @@ public class DatabaseServiceImpl implements DatabaseService {
      * body can contain parentheses and the word itself can appear inside a string literal or a
      * quoted column name.
      */
+    private static final Pattern COLUMN_COLLATE =
+            Pattern.compile("(?i)\\bCOLLATE\\s+(\"[^\"]+\"|[A-Za-z_][A-Za-z0-9_]*)");
+
+    private static final Pattern TABLE_CONSTRAINT_START =
+            Pattern.compile("(?i)^(CONSTRAINT|PRIMARY|UNIQUE|CHECK|FOREIGN)\\b");
+
+    /** Each column's {@code COLLATE} clause in a stored CREATE TABLE, keyed by column name. */
+    private Map<String, String> extractCollations(String createSql) {
+        Map<String, String> collations = new HashMap<>();
+        if (createSql == null) {
+            return collations;
+        }
+        int open = createSql.indexOf('(');
+        int close = createSql.lastIndexOf(')');
+        if (open < 0 || close <= open) {
+            return collations;
+        }
+        for (String part : SqlDialectTranslator.splitTopLevel(createSql.substring(open + 1, close))) {
+            String item = part.trim();
+            if (item.isEmpty() || TABLE_CONSTRAINT_START.matcher(item).find()) {
+                continue;
+            }
+            String name = columnNameOf(item);
+            Matcher collate = COLUMN_COLLATE.matcher(item.replaceAll("'(?:[^']|'')*'", "''"));
+            if (name != null && collate.find()) {
+                collations.put(name, collate.group(1));
+            }
+        }
+        return collations;
+    }
+
+    /** The column name at the start of a column definition, without its quotes. */
+    private static String columnNameOf(String definition) {
+        String d = definition.trim();
+        if (d.isEmpty()) {
+            return null;
+        }
+        char first = d.charAt(0);
+        if (first == '"' || first == '`' || first == '[') {
+            char closing = first == '[' ? ']' : first;
+            int end = d.indexOf(closing, 1);
+            return end > 0 ? d.substring(1, end) : null;
+        }
+        int space = d.indexOf(' ');
+        return space > 0 ? d.substring(0, space) : d;
+    }
+
     private List<String> extractCheckConstraints(String createSql) {
         List<String> checks = new ArrayList<>();
         if (createSql == null) {
@@ -1450,7 +1542,9 @@ public class DatabaseServiceImpl implements DatabaseService {
         String tableName = requireExistingTable(req.getTableName());
         String colName = requireExistingColumn(tableName, req.getColumnName());
         String key = requireKeyColumn(tableName);
-        String sql = String.format(Constants.Rows.UPDATE_CELL_BY_KEY, tableName, colName, key);
+        String sql = Constants.Rows.ROWID_ALIAS.equals(key)
+                ? String.format(Constants.Rows.UPDATE_CELL_BY_ROWID, tableName, colName)
+                : String.format(Constants.Rows.UPDATE_CELL_BY_KEY, tableName, colName, key);
         jdbc().update(sql, req.getNewValue(), req.getRecordId());
     }
 
@@ -1500,7 +1594,10 @@ public class DatabaseServiceImpl implements DatabaseService {
     public void deleteRow(DeleteRowRequest req) {
         String tableName = requireExistingTable(req.getTableName());
         String key = requireKeyColumn(tableName);
-        jdbc().update(String.format(Constants.Rows.DELETE_BY_KEY, tableName, key), req.getRecordId());
+        jdbc().update(Constants.Rows.ROWID_ALIAS.equals(key)
+                        ? String.format(Constants.Rows.DELETE_BY_ROWID, tableName)
+                        : String.format(Constants.Rows.DELETE_BY_KEY, tableName, key),
+                req.getRecordId());
     }
 
     // ─── Clear Database ───────────────────────────────────────────────────────────

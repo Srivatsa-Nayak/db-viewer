@@ -129,9 +129,9 @@ export const SchemaChat = ({
             {/* Pinned to the open width so the contents hold their layout while the parent clips
                 them; otherwise the composer and the code blocks re-flow their way down to zero. */}
             <div className={`${PANEL_W_BASE} ${PANEL_W_LG} h-full flex flex-col`}>
-                <div className="h-14 flex items-center gap-2 px-3 sm:px-4 border-b border-line shrink-0">
-                    <Sparkles size={16} className="text-brand-600 shrink-0" />
-                    <span className="font-semibold text-ink-800 text-sm">Assistant</span>
+                <div className="h-11 flex items-center gap-2 pl-3 pr-2 border-b border-line shrink-0">
+                    <Sparkles size={15} className="text-brand-600 shrink-0" />
+                    <span className="font-semibold text-ink-800 text-[13px]">Assistant</span>
                     <button
                         type="button"
                         onClick={onManageKey}

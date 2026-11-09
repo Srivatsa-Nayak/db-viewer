@@ -42,7 +42,10 @@ git commit -m "chore(release): v$next [skip ci]"
 # Land on top of anything merged while this job was running, then tag the final commit.
 git pull --rebase --autostash origin "$branch"
 git tag -a "v$next" -m "Release $next"
-git push --follow-tags origin "HEAD:$branch"
+# --atomic: the commit and the tag land together or not at all. Without it a push refused by
+# the branch ruleset still published the tag (v1.0.9 on 2026-11-09), and every later run then
+# failed creating a tag that already existed.
+git push --atomic --follow-tags origin "HEAD:$branch"
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   echo "version=$next" >> "$GITHUB_OUTPUT"

@@ -33,14 +33,22 @@ export const ChatLauncher = ({ isOpen, onToggle, hasConversation }: ChatLauncher
                 ? 'Schema assistant, conversation in progress'
                 : 'Schema assistant'}
             aria-keyshortcuts="Control+I"
-            className={`relative h-9 w-9 flex items-center justify-center rounded-full border transition-all
-                        shadow-glow-md ${
+            // A labelled pill rather than an icon-only circle: "Ask" says what it is, where a
+            // sparkle on a gradient read as decoration and was easy to miss.
+            className={`relative flex items-center gap-1.5 h-9 px-2.5 sm:px-3 rounded-lg border bg-surface shadow-glow-sm
+                        text-[13px] font-medium transition-colors focus-visible:outline-none
+                        focus-visible:ring-2 focus-visible:ring-brand-500 ${
                 isOpen
-                    ? 'bg-surface border-brand-400 text-brand-600'
-                    : 'brand-gradient brand-gradient-hover border-transparent text-white'
+                    ? 'border-brand-400 text-brand-700'
+                    : 'border-line text-ink-700 hover:text-ink-900 hover:border-ink-300'
             }`}
         >
-            {isOpen ? <PanelRightClose size={15} /> : <Sparkles size={15} />}
+            {isOpen
+                ? <PanelRightClose size={15} />
+                : <Sparkles size={15} className="text-brand-600" />}
+            {/* The word goes on a phone, where the canvas toolbar needs the width; the
+                aria-label above still names it. */}
+            <span className="hidden sm:inline">{isOpen ? 'Close' : 'Ask'}</span>
             {hasConversation && !isOpen && (
                 <span aria-hidden="true"
                       className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-amber-400 ring-2 ring-surface" />

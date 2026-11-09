@@ -252,8 +252,10 @@ class AuthAndSharingTest {
     @Test
     @Order(11)
     void share_shouldCreateALinkAndReuseItForTheSameFile() throws Exception {
+        // Signed in from the start: a workspace now needs an identity to be touched at all.
         mockMvc.perform(post("/create-table")
                         .header("X-Workspace-Id", WORKSPACE)
+                        .header("Authorization", token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"tableName": "shared_table", "columns": [{"name": "id", "type": "INT", "isPk": true}]}

@@ -315,11 +315,11 @@ class DatabaseControllerIntegrationTest {
                 """;
 
         mockMvc.perform(post("/create-table")
-                        .header("X-Workspace-Id", "ctrltestws")
+                        .header("X-Workspace-Id", "ctrltestws").header("X-Client-Id", "ctrl-client")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk());
 
-        mockMvc.perform(get("/db-info").header("X-Workspace-Id", "ctrltestws"))
+        mockMvc.perform(get("/db-info").header("X-Workspace-Id", "ctrltestws").header("X-Client-Id", "ctrl-client"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.tables[*].name", hasItem("ctrl_scoped")));
 

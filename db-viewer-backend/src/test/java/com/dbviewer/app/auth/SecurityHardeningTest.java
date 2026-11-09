@@ -153,6 +153,26 @@ class SecurityHardeningTest {
                 .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
     }
 
+    /**
+     * SEC-6: a caller with neither a sign-in nor an X-Client-Id used to be let into any
+     * workspace nobody had claimed yet. Now naming a workspace requires an identity.
+     */
+    @Test
+    void aWorkspaceCannotBeUsedWithoutAnIdentity() throws Exception {
+        mockMvc.perform(get("/db-info").header("X-Workspace-Id", "noidentityws"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .jsonPath("$.identityRequired").value(true));
+
+        // With a client id it is claimed and usable; with none at all, the sandbox still works.
+        mockMvc.perform(get("/db-info").header("X-Workspace-Id", "noidentityws").header("X-Client-Id", "someone"))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/db-info")).andExpect(status().isOk());
+        // And the client who claimed it is the only anonymous caller who can use it.
+        mockMvc.perform(get("/db-info").header("X-Workspace-Id", "noidentityws").header("X-Client-Id", "someone-else"))
+                .andExpect(status().isForbidden());
+    }
+
     @Test
     void onlyTheHealthEndpointIsExposedAndItSaysNothingElse() throws Exception {
         mockMvc.perform(get("/actuator/health"))
@@ -170,6 +190,9 @@ class SecurityHardeningTest {
                 .andExpect(status().isBadRequest());
         // …and the generic 500 path carries a reference rather than internals. Exercised
         // directly, because a route that 500s on purpose would be a bug to keep.
+        var unreachable = com.dbviewer.app.controller.ErrorResponsesProbe.unreachableDatabase();
+        assertThat(unreachable.getStatusCode().value()).isEqualTo(500);
+        assertThat(String.valueOf(unreachable.getBody())).doesNotContain("C:/data");
         var response = com.dbviewer.app.controller.ErrorResponsesProbe.unexpected();
         assertThat(response.getStatusCode().value()).isEqualTo(500);
         assertThat(String.valueOf(response.getBody())).contains("Reference").doesNotContain("secret-path");

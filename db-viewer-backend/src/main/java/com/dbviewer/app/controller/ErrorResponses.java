@@ -34,8 +34,20 @@ final class ErrorResponses {
                 "reference", reference));
     }
 
-    /** True when the exception came from the database itself, anywhere down the cause chain. */
+    /**
+     * True when the exception is the database rejecting the caller's SQL or data, anywhere down
+     * the cause chain.
+     *
+     * <p>Not a failure to reach the database at all — a missing file, a refused connection, a
+     * full pool. Those are the server's fault, and their messages carry file paths and hosts, so
+     * they take the generic 500 instead.
+     */
     static boolean isDatabaseError(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof org.springframework.dao.DataAccessResourceFailureException) {
+                return false;
+            }
+        }
         for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause()) {
             if (t instanceof DataAccessException || t instanceof SQLException) {
                 return true;

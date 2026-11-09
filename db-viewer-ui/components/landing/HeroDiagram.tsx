@@ -1,7 +1,7 @@
 "use client";
 
 import React from 'react';
-import { Database, KeyRound } from 'lucide-react';
+import { Database, KeyRound, Link2 } from 'lucide-react';
 
 /**
  * A schema that builds itself.
@@ -54,26 +54,29 @@ const EDGES = [
 
 const TableCard = ({ table }: { table: TableSpec }) => (
     <div
-        className="hero-card absolute w-[168px] rounded-lg border border-brand-200 bg-surface shadow-xl shadow-brand-900/5"
+        className="hero-card absolute w-[168px]"
         style={{ ...table.style, animationDelay: `${table.delay}ms` }}
     >
-        {/* The float lives on an inner element so it does not fight the pop-in transform. */}
+        {/* The float lives on an inner element so it does not fight the pop-in transform, and
+            the card (with its binding stripe) on the float so the stripe moves with it. */}
         <div
-            className="hero-card-float"
+            className="hero-card-float schema-card relative rounded-lg border border-line bg-surface shadow-glow-sm"
             style={{ animationDelay: `${1200 + table.delay * 3}ms` }}
         >
-            <div className="flex items-center gap-1.5 rounded-t-lg bg-brand-600 px-2.5 py-1.5">
-                <Database size={10} className="shrink-0 text-white" />
-                <span className="truncate text-[11px] font-bold text-white">{table.name}</span>
+            <div className="flex items-center gap-1.5 border-b border-line py-1.5 pl-3 pr-2.5">
+                <Database size={11} className="shrink-0 text-ink-400" />
+                <span className="truncate font-mono text-[11px] font-semibold text-ink-900">{table.name}</span>
             </div>
-            <div className="rounded-b-lg bg-ink-50 py-1">
+            <div className="rounded-b-lg py-1">
                 {table.columns.map(([column, type]) => (
-                    <div key={column} className="flex h-[21px] items-center justify-between px-2.5">
+                    <div key={column} className="flex h-[21px] items-center justify-between pl-3 pr-2.5">
                         <span className="flex items-center gap-1 overflow-hidden">
-                            {(column === 'id' || column.endsWith('_id')) && (
-                                <KeyRound size={8} className="shrink-0 text-brand-500" />
-                            )}
-                            <span className="truncate font-mono text-[9px] font-medium text-ink-700">
+                            {column === 'id' && <KeyRound size={8} className="shrink-0 text-key-pk" />}
+                            {column.endsWith('_id') && <Link2 size={8} className="shrink-0 text-key-fk" />}
+                            <span className={`truncate font-mono text-[9px] ${
+                                column === 'id' ? 'font-bold text-key-pk'
+                                    : column.endsWith('_id') ? 'font-semibold text-key-fk' : 'font-medium text-ink-700'
+                            }`}>
                                 {column}
                             </span>
                         </span>
@@ -91,7 +94,7 @@ export const HeroDiagram = () => (
     <div aria-hidden className="relative mx-auto h-[340px] w-full max-w-[480px] select-none">
         {/* Dotted canvas, matching the editor's own backdrop. */}
         <div
-            className="absolute inset-0 rounded-2xl border border-ink-200 bg-canvas/70 shadow-sm backdrop-blur-sm"
+            className="absolute inset-0 rounded-2xl border border-line bg-canvas/70 shadow-sm backdrop-blur-sm"
             style={{
                 backgroundImage: 'radial-gradient(var(--color-canvas-dot) 1.1px, transparent 1.1px)',
                 backgroundSize: '20px 20px',
@@ -101,7 +104,7 @@ export const HeroDiagram = () => (
         <svg className="themed-art absolute inset-0 h-full w-full overflow-visible" fill="none">
             <defs>
                 <marker id="hero-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
-                    <path d="M0,0 L7,3.5 L0,7 Z" fill="var(--color-edge)" />
+                    <path d="M0,0 L7,3.5 L0,7 Z" style={{ fill: 'var(--color-edge)' }} />
                 </marker>
             </defs>
 
@@ -110,14 +113,15 @@ export const HeroDiagram = () => (
                     <path
                         className="hero-edge"
                         d={edge.d}
-                        stroke="var(--color-edge)"
-                        strokeWidth="1.6"
+                        strokeWidth="1.35"
                         markerEnd="url(#hero-arrow)"
-                        style={{ ['--dash' as string]: edge.dash, animationDelay: `${edge.delay}ms` }}
+                        // A CSS variable is not valid in a presentation attribute, so the theme
+                        // colour goes through `style`.
+                        style={{ stroke: 'var(--color-edge)', ['--dash' as string]: edge.dash, animationDelay: `${edge.delay}ms` }}
                     />
                     {/* A pulse travels the edge after it has drawn — the relationship reading as
                         live rather than painted on. SMIL keeps it off the main thread. */}
-                    <circle r="2.6" fill="var(--color-edge)" opacity="0.85">
+                    <circle r="2.6" style={{ fill: 'var(--color-edge)' }} opacity="0.85">
                         <animateMotion
                             dur="2.6s"
                             begin={`${(edge.delay + 900) / 1000}s; ${(edge.delay + 900) / 1000 + 5}s`}
@@ -144,7 +148,7 @@ export const HeroDiagram = () => (
 
         {/* Lands last, once the schema is complete. */}
         <div
-            className="hero-label absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-ink-200 bg-surface/90 px-3 py-1 text-[11px] font-medium text-ink-500 shadow-sm backdrop-blur-sm"
+            className="hero-label absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-surface/90 px-3 py-1 text-[11px] font-medium text-ink-500 shadow-sm backdrop-blur-sm"
             style={{ animationDelay: '1500ms' }}
         >
             <span className="relative flex h-1.5 w-1.5">

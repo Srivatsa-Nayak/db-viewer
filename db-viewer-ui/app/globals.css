@@ -91,9 +91,9 @@
   /* Canvas. The diagram has its own small palette because it has to stay legible
      at 25% zoom and in a PNG export, where the surrounding chrome is not there
      to give anything context. */
-  --color-canvas: #f1f5f9;
-  --color-canvas-dot: #94a3b8;
-  --color-edge: #2563eb;
+  --color-canvas: #f4f6f9;
+  --color-canvas-dot: #c5cedb;
+  --color-edge: #5b84e3; /* brand, a step quieter: lines connect the cards, they are not the subject */
   --color-edge-muted: #94a3b8;
 
   /* Keys are colour-coded by *kind*, not by emphasis: a primary key and a foreign
@@ -783,38 +783,18 @@ body[data-dialog-open="true"] {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
-   The app bar.
+   The app bar, in the editor and on a shared link.
 
-   A full-width blue gradient is the right amount of colour on a white page and
-   the wrong amount on a dark one — it becomes the brightest object on screen and
-   stays in peripheral vision for the whole session, which is exactly the eye
-   strain a dark mode is meant to remove. In dark it becomes a panel, and the
-   brand colour retreats to the logo and the primary button.
+   A plain surface with a hairline, so the canvas is the loudest thing on screen.
+   It used to be a full-width brand gradient, which put the strongest colour in
+   the product at the edge of vision for the whole session and competed with the
+   diagram it frames. The brand colour now lives in the logo mark and the one
+   primary button.
    ────────────────────────────────────────────────────────────────────────── */
 
-.app-header {
-  background-image: linear-gradient(135deg, var(--brand-600) 0%, var(--brand-violet) 100%);
-  border-bottom: 1px solid rgba(30, 64, 175, 0.4);
-}
-[data-theme="dark"] .app-header {
-  background-image: linear-gradient(180deg, #131c2c 0%, #0f1725 100%);
+.editor-bar {
+  background-color: var(--color-surface);
   border-bottom: 1px solid var(--color-line);
-}
-
-/* The one solid button on the app bar. White on the gradient, brand on the panel. */
-.header-cta {
-  background-color: #ffffff;
-  color: var(--brand-deep);
-}
-.header-cta:hover {
-  background-color: var(--color-brand-50);
-}
-[data-theme="dark"] .header-cta {
-  background-color: var(--brand-600);
-  color: #ffffff;
-}
-[data-theme="dark"] .header-cta:hover {
-  background-color: var(--color-brand-500);
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -874,20 +854,36 @@ body[data-dialog-open="true"] {
    minimap kept its white background while its nodes took the theme colour.
    ────────────────────────────────────────────────────────────────────────── */
 
+/* `clip`, not React Flow's `hidden`: a hidden box is still scrollable from script, and the
+   browser does exactly that when the canvas narrows under a focused control. Opening the
+   assistant from its launcher slid the whole canvas 74px left, putting the toolbar and zoom
+   buttons under the Explorer. Nodes off the right edge give it something to scroll to.
+   `!important` because React Flow writes `overflow: hidden` as an inline style. */
+.react-flow {
+  overflow: clip !important;
+}
+
+/* The zoom buttons, in the same dock style as the toolbar: hairline border, small shadow, the
+   8px radius every floating control on the canvas shares. */
 .react-flow .react-flow__controls {
-  box-shadow: var(--glow-md);
-  border-radius: 0.375rem;
+  box-shadow: var(--glow-sm);
+  border: 1px solid var(--color-line);
+  border-radius: 0.5rem;
   overflow: hidden;
 }
 .react-flow .react-flow__controls-button {
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-line);
-  color: var(--color-ink-700);
-  width: 26px;
-  height: 26px;
+  color: var(--color-ink-500);
+  width: 30px;
+  height: 30px;
+}
+.react-flow .react-flow__controls-button:last-child {
+  border-bottom: none;
 }
 .react-flow .react-flow__controls-button:hover {
   background: var(--color-ink-100);
+  color: var(--color-ink-900);
 }
 .react-flow .react-flow__controls-button svg {
   fill: currentColor;
@@ -900,17 +896,19 @@ body[data-dialog-open="true"] {
 }
 
 .react-flow .react-flow__minimap {
-  /* A hint of the brand in the ground, so the map reads as part of the canvas rather than a
-     white sticker on top of it. `overflow: hidden` matters: without it the node rectangles
-     square off the rounded corners. */
-  background-color: color-mix(in srgb, var(--color-surface) 93%, var(--color-brand-600));
+  /* The canvas's own paper colour, so the map reads as a small copy of the canvas rather than a
+     sticker on top of it. `overflow: hidden` matters: without it the node rectangles square off
+     the rounded corners. */
+  background-color: var(--color-canvas);
   border: 1px solid var(--color-line);
-  border-radius: 0.625rem;
-  box-shadow: var(--glow-lg);
+  border-radius: 0.5rem;
+  box-shadow: var(--glow-sm);
   overflow: hidden;
 }
+/* Tables in a neutral ink, so the only colour on the map is the "you are here" outline, a
+   tagged table's own colour, and the search hit. */
 .react-flow .react-flow__minimap-node {
-  fill: var(--color-brand-400);
+  fill: var(--color-ink-300);
   /* Drawn in the map's own ground colour rather than left unstroked: at this scale two adjacent
      tables share an edge and read as one wide block without a gap between them. */
   stroke: var(--color-surface);
@@ -922,7 +920,7 @@ body[data-dialog-open="true"] {
    the question a minimap exists to answer. */
 .react-flow .react-flow__minimap-mask {
   fill: var(--color-scrim);
-  fill-opacity: 0.28;
+  fill-opacity: 0.12;
   stroke: var(--color-brand-500);
   stroke-width: 2;
   stroke-opacity: 0.85;
@@ -1059,12 +1057,50 @@ body[data-dialog-open="true"] {
 .react-flow .react-flow__node.tag-amber { --tag: var(--color-tag-amber); }
 .react-flow .react-flow__node.tag-rose { --tag: var(--color-tag-rose); }
 
-.react-flow .react-flow__node[class*="tag-"] :where(.node-card) {
-  border-color: var(--tag);
+/* The binding stripe: 3px down the left edge of every table card, in the tag colour, or brand
+   blue for an untagged table and a quiet grey for a view. Drawn here rather than as an element
+   so the card's markup stays the same at every zoom tier.
+
+   `.schema-card` is the same card everywhere else a table is drawn — the landing page, the
+   template preview, the docs, the feature scenes — so a picture of the editor cannot drift from
+   the editor. The corners inherit, because those cards are smaller and rounder or squarer. */
+.react-flow .node-card::before,
+.schema-card::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: -1px;
+  bottom: -1px;
+  width: 3px;
+  border-top-left-radius: inherit;
+  border-bottom-left-radius: inherit;
+  background: var(--tag, var(--color-brand-500));
+  pointer-events: none;
 }
-.react-flow .react-flow__node[class*="tag-"] :where(.node-header) {
-  background: var(--tag);
-  background-image: none;
+/* A `.schema-card` needs a positioned box for the stripe: `relative`, or `absolute` where a
+   picture places its cards. Deliberately not set here — this file is unlayered, so a
+   `position` rule would beat Tailwind's `absolute` and pull every placed card into the flow. */
+.react-flow .node-card-view::before {
+  background: var(--tag, var(--color-ink-300));
+}
+.react-flow .react-flow__node[class*="tag-"] :where(.node-card),
+.schema-card[class*="tag-"] {
+  border-color: color-mix(in srgb, var(--tag) 40%, var(--color-line));
+}
+.schema-card.tag-slate { --tag: var(--color-tag-slate); }
+.schema-card.tag-brand { --tag: var(--color-tag-brand); }
+.schema-card.tag-violet { --tag: var(--color-tag-violet); }
+.schema-card.tag-teal { --tag: var(--color-tag-teal); }
+.schema-card.tag-amber { --tag: var(--color-tag-amber); }
+.schema-card.tag-rose { --tag: var(--color-tag-rose); }
+.react-flow .node-tag-dot {
+  background: var(--tag, var(--color-ink-400));
+}
+
+/* Selection is a ring, not a shadow: it has to read at 30% zoom, where a shadow is a blur. */
+.react-flow .react-flow__node.selected .node-card {
+  border-color: var(--color-brand-500);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand-500) 22%, transparent);
 }
 
 .react-flow .react-flow__edge-path {

@@ -336,7 +336,7 @@ Smoke test:
 
 ```bash
 curl localhost:8080/                                    # {"status":"Service is up and running"}
-curl localhost:8080/db-info -H 'X-Workspace-Id: demo'   # {"tables":[],"relationships":[]}
+curl localhost:8080/db-info -H 'X-Client-Id: me' -H 'X-Workspace-Id: demo'   # {"tables":[],"relationships":[]}
 ```
 
 ---
@@ -425,7 +425,7 @@ The image sets `DB_PATH=/data/visualizer.db` and `WORKSPACE_DIR=/data/workspaces
 ## Testing
 
 ```bash
-./mvnw test                                     # all 262 tests
+./mvnw test                                     # all 275 tests
 ./mvnw test -Dtest=WorkspaceIsolationTest       # one class
 ./mvnw test -Dtest=ColumnEditTest#renameColumn_shouldKeepTypeAndData
 ```
@@ -596,7 +596,7 @@ deployed API always reports the version that merge produced.
 4. **Route** — add a thin method to `DatabaseController` with `@Operation` for Swagger, returning
    `{"error": ...}` on failure.
 5. **Tests** — add both a service test and a MockMvc test.
-6. **Frontend** — add the call to `db-viewer-ui/services/api.ts`; nothing else should call the API
+6. **Frontend** — add the call to `db-viewer-ui/services/api/`; nothing else should call the API
    directly.
 
 ---

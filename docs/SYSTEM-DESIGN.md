@@ -149,7 +149,7 @@ would be stale the moment any other call changed it.
 
 ### 3.3 The API boundary
 
-`services/api.ts` is the single choke point for backend access. It owns:
+`services/api/` is the single choke point for backend access. It owns:
 
 - The Axios instance and base URL (`NEXT_PUBLIC_API_URL`, default `http://localhost:8080`).
 - The **active workspace id**, applied to every request through an interceptor.
@@ -239,7 +239,7 @@ the second import's `CREATE TABLE` to be silently skipped.
 sequenceDiagram
     participant U as User
     participant P as page.tsx
-    participant A as services/api.ts
+    participant A as services/api/
     participant F as WorkspaceFilter
     participant M as WorkspaceManager
     participant D as Database
@@ -448,19 +448,20 @@ discussion.
 |---|---|---|
 | ~~Accounts gate export/share but are not an authorisation model~~ | **Fixed** — `WorkspaceOwnershipFilter` checks ownership on every workspace-scoped route, and account-only routes are declared with `@RequiresAccount` (checked by `SecurityHardeningTest`, which walks the whole mapping table) | — |
 | ~~A request with no workspace header reached the application's own database~~ | **Fixed** — it used to fall back to the database holding `app_users`, so `/query`, `/table-data/app_users` and `DELETE /workspace` could read or wipe accounts. Header-less requests now use a reserved `__sandbox` workspace, and `__` ids are refused from clients | — |
+| ~~A workspace could be used with no identity at all~~ | **Fixed** — `WorkspaceOwnershipFilter` answers 401 (`identityRequired: true`) to a workspace request that carries neither `X-Client-Id` nor a token, instead of letting an unowned workspace be used by anyone who knew its id | — |
 | Workspace ids are guessable timestamps | Simplicity | UUIDv4 ids plus a server-side owner check |
 | ~~Workspaces are never garbage-collected unless closed in the UI~~ | **Fixed** — `WorkspaceJanitor` closes idle connections (`app.workspace.idle-close-minutes`, `max-open`) and deletes *anonymous* workspaces unused for `app.workspace.anonymous-retention-days` (default 30). A signed-in user's files are never swept | — |
 | SQLite files live on local disk | Zero-infrastructure default | Object storage or a managed MySQL/Postgres per tenant |
 | ~~Node positions are lost on reload~~ | **Fixed** — the open-file list and canvas layout are persisted to `localStorage` and reconciled against `GET /workspaces` on start | — |
 | ~~Dragging an edge on the canvas does not persist~~ | **Fixed** — `onConnect` creates a real foreign key through `POST /add-foreign-key`, which rebuilds the table on SQLite and validates uniqueness, types and orphan rows first | — |
-| Row addressing needs an `id` column or a single-column primary key | Simplifies update/delete | **Partly fixed** — `/table-data` now names a `keyColumn` (`id`, else the single-column primary key) and edits and deletes use it. A table with a composite key or none is still not editable row by row; `rowid` would cover it on SQLite |
+| ~~Row addressing needs an `id` column or a single-column primary key~~ | **Fixed on SQLite** — `/table-data` names a `keyColumn`: `id`, else the single-column primary key, else SQLite's `rowid` (returned as `__rowid`). Only a composite-key `WITHOUT ROWID` table, a view, or a MySQL table without a single key is still not editable row by row, and the UI says so | — |
 | ~~Dropping a table is immediate and unrecoverable~~ | **Fixed** — confirming leaves a ghost node on the canvas and `DELETE /table/{name}` is only sent when a 7-second countdown expires. Deferring rather than restoring needs no snapshot of rows, indexes or constraints, and fails safe: a closed tab means the drop never happened | — |
 | ~~Every node renders full detail at every zoom~~ | **Fixed** — three detail tiers driven by the canvas zoom, measured at 10,180 → 3,195 DOM elements on a 100-table file at fitted zoom. Off-viewport culling (`onlyRenderVisibleElements`) was measured and **not** adopted: frame rate was already at the 60fps cap, and it would break PNG export, which needs every node in the DOM | — |
-| A column type change rebuilds the whole SQLite table | SQLite has no `ALTER COLUMN` | Unavoidable on SQLite. The rebuild now carries indexes, `UNIQUE` and `CHECK` across — it used to drop all three silently — but a `COLLATE` clause is still lost |
+| A column type change rebuilds the whole SQLite table | SQLite has no `ALTER COLUMN` | Unavoidable on SQLite. The rebuild carries indexes, `UNIQUE`, `CHECK` and each column's `COLLATE` across — it used to drop all of them silently |
 | ~~Columns cannot be dropped from the UI~~ | **Fixed** — `POST /drop-column`, which is also what undo runs to reverse an added column | — |
 | Row previews on `/db-info` capped at 100 | Keeps `/db-info` cheap | `/table-data` now pages (`limit`, `offset`, up to 1,000 a page) and reports the real `total`; the row editor loads more on demand |
 | `.sql` import skips statements it cannot run | Best-effort import of MySQL dumps | Now reported to the UI via the upload report and `NoticeModal`; MySQL triggers/procedures still have no SQLite equivalent |
-| Indexes and `UNIQUE`/`CHECK` constraints in a dump are dropped | The translator folds only primary and foreign keys | Emit `CREATE INDEX` / table-level constraints during translation |
+| ~~Indexes and `UNIQUE`/`CHECK` constraints in a dump are dropped~~ | **Fixed** — `SqlDialectTranslator` folds `UNIQUE` and `CHECK` (inline, table-level and `ALTER TABLE ... ADD`) into the table and emits each secondary index as `CREATE INDEX IF NOT EXISTS "<table>_<name>"`. Expression indexes and a `CHECK` using engine-only functions are left out, since SQLite would refuse them | — |
 | The whole schema goes into every chat prompt | A schema is small and already structured, so retrieval over it would be slower and lossier than sending it — see §8b | Past the 60,000-character cap whole tables are left out and named (the model is told it cannot see them). Prompt caching (`cache_control` on Anthropic and on OpenRouter's Claude/Gemini models, automatic prefix caching elsewhere) makes the repetition cheap |
 | A chat answer holds a request thread for its duration | `StreamingResponseBody`, capped at 120s per provider call and 180s per request | Streams run on their own executor (`AsyncConfig`), at most two per user; a reactive client (`WebClient`) would free the thread while waiting |
 | Rate limits are per instance and in memory | One instance today; a restart is a deploy, not an attacker's tool | A shared store (Redis, a table) once there is more than one instance. The app key's *global* daily cap already reads the persisted `llm_usage` table |

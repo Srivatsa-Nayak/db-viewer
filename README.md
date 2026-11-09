@@ -126,11 +126,11 @@ db-viewer/
 │   │   ├── sql/                Script splitter + MySQL→SQLite translator
 │   │   └── workspace/          Per-file database isolation
 │   ├── src/main/resources/     application.properties + mysql/prod profiles
-│   └── src/test/java/          262 JUnit 5 / MockMvc / AssertJ tests
+│   └── src/test/java/          275 JUnit 5 / MockMvc / AssertJ tests
 ├── db-viewer-ui/               Next.js 16 frontend
 │   ├── app/                    App Router: / landing, /app editor, /share/[token]
 │   ├── components/             header, canvas, editor, tables, modal
-│   ├── services/api.ts         The only place that talks to the backend
+│   ├── services/api/           The only place that talks to the backend
 │   └── types/                  Shared response types
 ├── docs/
 │   ├── SYSTEM-DESIGN.md        Architecture, request flows, deployment
@@ -354,16 +354,21 @@ Errors return a non-2xx status with `{"error": "<message>"}`.
 
 **Example — two files, same table name, no collision:**
 
+A request that names a workspace must also say who is asking: an `X-Client-Id` (any stable
+string; the first caller to use a workspace owns it) or a signed-in `Authorization` header. Without
+either it is refused with 401 and `"identityRequired": true`. A request with no workspace header at
+all uses the shared `__sandbox` workspace.
+
 ```bash
 curl -X POST localhost:8080/create-table -H 'Content-Type: application/json' \
-  -H 'X-Workspace-Id: fileA' \
+  -H 'X-Client-Id: me' -H 'X-Workspace-Id: fileA' \
   -d '{"tableName":"users","columns":[{"name":"id","type":"INT","isPk":true}]}'
 
 curl -X POST localhost:8080/create-table -H 'Content-Type: application/json' \
-  -H 'X-Workspace-Id: fileB' \
+  -H 'X-Client-Id: me' -H 'X-Workspace-Id: fileB' \
   -d '{"tableName":"users","columns":[{"name":"id","type":"INT","isPk":true}]}'
 
-curl localhost:8080/db-info -H 'X-Workspace-Id: fileA'   # sees only fileA's users
+curl localhost:8080/db-info -H 'X-Client-Id: me' -H 'X-Workspace-Id: fileA'   # sees only fileA's users
 ```
 
 ---
@@ -371,7 +376,7 @@ curl localhost:8080/db-info -H 'X-Workspace-Id: fileA'   # sees only fileA's use
 ## ✅ Testing and quality gates
 
 ```bash
-# Backend — 262 tests, in-memory SQLite, no setup required
+# Backend — 275 tests, in-memory SQLite, no setup required
 cd db-viewer-backend && ./mvnw test
 
 # Single class

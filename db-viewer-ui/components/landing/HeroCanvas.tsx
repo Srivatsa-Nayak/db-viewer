@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { FileCode2, RotateCcw, MousePointer2 } from 'lucide-react';
+import { Database, FileCode2, RotateCcw, MousePointer2 } from 'lucide-react';
 import { DemoRelationship, DemoTable } from './DemoCanvas';
 import { HeroDiagram } from './HeroDiagram';
 
@@ -125,15 +125,18 @@ export const HeroCanvas = () => {
 
     return (
         <div className="relative">
-            {/* The frame. A tab bar and a status line are enough to say "this is the editor"
-                without drawing a fake editor around it. */}
+            {/* The frame. The editor's own bar — logo mark, then the open file as a breadcrumb —
+                and a status line are enough to say "this is the editor" without drawing a fake
+                editor around it. */}
             <div className="surface-card overflow-hidden rounded-2xl border shadow-glow-lg">
-                <div className="flex items-center gap-2 border-b border-[var(--surface-line)] bg-[var(--surface-tint)] px-3 py-2">
-                    <span className="flex items-center gap-1.5 rounded-md bg-surface px-2 py-1 text-[11px] font-medium text-ink-700 shadow-sm">
-                        <FileCode2 size={11} className="text-brand-600" />
-                        <span className="font-mono">example-store.sql</span>
+                <div className="flex h-10 items-center gap-1.5 border-b border-line bg-surface px-3">
+                    <span className="brand-gradient flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px]">
+                        <Database size={11} className="text-white" />
                     </span>
-                    <span className="ml-auto flex items-center gap-1.5 text-[10.5px] text-ink-500">
+                    <span className="select-none text-ink-300" aria-hidden="true">/</span>
+                    <FileCode2 size={12} className="shrink-0 text-ink-400" />
+                    <span className="truncate font-mono text-[11.5px] text-ink-800">example-store.sql</span>
+                    <span className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap pl-2 text-[10.5px] text-ink-500">
                         <span className="relative flex h-1.5 w-1.5">
                             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
                             <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />

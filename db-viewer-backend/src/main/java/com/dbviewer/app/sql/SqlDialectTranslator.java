@@ -77,6 +77,51 @@ public final class SqlDialectTranslator {
     private static final Pattern INLINE_FOREIGN_KEY = Pattern.compile(
             "^(?:CONSTRAINT\\s+\\S+\\s+)?" + FOREIGN_KEY_BODY, Pattern.CASE_INSENSITIVE);
 
+    /**
+     * A table-level unique constraint, in every vendor's spelling: {@code UNIQUE (a, b)},
+     * {@code CONSTRAINT x UNIQUE (a)}, MySQL's {@code UNIQUE KEY name (a)}, SQL Server's
+     * {@code UNIQUE NONCLUSTERED (a ASC)}. Ends at the opening parenthesis of the column list,
+     * which is read with {@link #bodyOf} so a prefix length such as {@code (name(20))} survives.
+     */
+    private static final String UNIQUE_HEAD =
+            "UNIQUE(?:\\s+(?:KEY|INDEX))?(?:\\s+(?!\\()[^\\s(]+)?\\s*\\(";
+
+    private static final Pattern TABLE_UNIQUE = Pattern.compile(
+            "^(?:CONSTRAINT\\s+\\S+\\s+)?" + UNIQUE_HEAD, Pattern.CASE_INSENSITIVE);
+
+    private static final Pattern ADD_UNIQUE = Pattern.compile(
+            "ADD\\s+(?:CONSTRAINT\\s+\\S+\\s+)?" + UNIQUE_HEAD, Pattern.CASE_INSENSITIVE);
+
+    /** MySQL's inline secondary index: {@code KEY idx_name (col)} inside a CREATE TABLE. */
+    private static final Pattern TABLE_INDEX = Pattern.compile(
+            "^(?:KEY|INDEX)\\s+([^\\s(]+)\\s*(?:USING\\s+\\w+\\s*)?\\(", Pattern.CASE_INSENSITIVE);
+
+    /** The same, added afterwards: phpMyAdmin's {@code ALTER TABLE t ADD KEY idx (col)}. */
+    private static final Pattern ADD_INDEX = Pattern.compile(
+            "ADD\\s+(UNIQUE\\s+)?(?:KEY|INDEX)\\s+([^\\s(]+)\\s*(?:USING\\s+\\w+\\s*)?\\(",
+            Pattern.CASE_INSENSITIVE);
+
+    private static final Pattern TABLE_CHECK = Pattern.compile(
+            "^(?:CONSTRAINT\\s+\\S+\\s+)?CHECK\\s*\\(", Pattern.CASE_INSENSITIVE);
+
+    private static final Pattern ADD_CHECK = Pattern.compile(
+            "ADD\\s+(?:CONSTRAINT\\s+\\S+\\s+)?CHECK\\s*\\(", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Functions a CHECK may call and still mean the same thing in SQLite. Anything else —
+     * {@code char_length}, {@code len}, a regex operator — is engine-specific, and one unknown
+     * function makes SQLite reject the whole CREATE TABLE, losing the table rather than the check.
+     */
+    private static final Set<String> PORTABLE_CALLS = Set.of(
+            "IN", "AND", "OR", "NOT", "LENGTH", "LOWER", "UPPER", "ABS", "TRIM", "LTRIM", "RTRIM",
+            "COALESCE", "IFNULL", "NULLIF", "SUBSTR", "ROUND");
+
+    private static final Pattern CALL = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\(");
+
+    private static final Pattern NON_PORTABLE_CHECK = Pattern.compile(
+            "~|@|#|\\$|::|\\bREGEXP\\b|\\bRLIKE\\b|\\bSIMILAR\\b|\\bILIKE\\b",
+            Pattern.CASE_INSENSITIVE);
+
     /** MySQL's after-the-fact auto-increment: {@code ALTER TABLE t MODIFY id int AUTO_INCREMENT}. */
     private static final Pattern MODIFY_AUTO_INCREMENT = Pattern.compile(
             "(?:MODIFY|CHANGE)\\s+(?:COLUMN\\s+)?(\\S+)[^,]*?AUTO_INCREMENT",
@@ -270,7 +315,7 @@ public final class SqlDialectTranslator {
                     continue;
                 }
                 String tableName = normaliseTableName(create.group(1));
-                out.add(rewriteCreateTable(tableName, body, extras.get(tableName), source,
+                out.addAll(rewriteCreateTable(tableName, body, extras.get(tableName), source,
                         overrides, notes));
                 rewritten.add(tableName);
             } else {
@@ -326,6 +371,39 @@ public final class SqlDialectTranslator {
             recognised = true;
         }
 
+        // Unique constraints, indexes and checks declared after the table: phpMyAdmin's
+        // `ADD UNIQUE KEY` / `ADD KEY`, pg_dump's `ADD CONSTRAINT x UNIQUE (...)`, SQL Server's
+        // `WITH CHECK ADD CONSTRAINT x CHECK (...)`. They used to be dropped with the rest of the
+        // ALTER, which is why imported dumps arrived without their indexes.
+        Matcher unique = ADD_UNIQUE.matcher(body);
+        while (unique.find()) {
+            List<String> columns = indexColumns(bodyOf(body, unique.end() - 1));
+            if (columns != null) ex.uniques.add(columns);
+            else notes.add("Ignored a unique constraint on `" + table + "` over an expression.");
+            recognised = true;
+        }
+
+        Matcher index = ADD_INDEX.matcher(body);
+        while (index.find()) {
+            recognised = true;
+            if (index.group(1) != null) {
+                continue; // ADD UNIQUE KEY: already taken as a unique constraint above.
+            }
+            List<String> columns = indexColumns(bodyOf(body, index.end() - 1));
+            if (columns != null) ex.indexes.add(new IndexSpec(unquote(index.group(2)), columns));
+            else notes.add("Ignored an expression index on `" + table + "`.");
+        }
+
+        Matcher check = ADD_CHECK.matcher(body);
+        while (check.find()) {
+            String expression = bodyOf(body, check.end() - 1);
+            String portable = expression == null ? null : portableCheck(expression);
+            if (portable != null) ex.checks.add(portable);
+            else notes.add("Ignored a CHECK on `" + table + "` that SQLite cannot evaluate: "
+                    + summarize(expression == null ? body : expression));
+            recognised = true;
+        }
+
         if (!recognised) {
             // Enabling a constraint SQL Server had disabled is a no-op for us, not a warning
             // worth showing: the constraint itself was already folded in above.
@@ -338,9 +416,16 @@ public final class SqlDialectTranslator {
 
     /* ── CREATE TABLE rewriting ──────────────────────────────────────────────── */
 
-    private static String rewriteCreateTable(String tableName, String body, TableExtras alterExtras,
-                                             SqlDialect source, Map<String, String> overrides,
-                                             List<String> notes) {
+    /**
+     * Rewrites one CREATE TABLE for SQLite.
+     *
+     * @return the CREATE TABLE, followed by a CREATE INDEX for each secondary index the source
+     *         declared on the table — SQLite has no inline index syntax, so they become separate
+     *         statements
+     */
+    private static List<String> rewriteCreateTable(String tableName, String body, TableExtras alterExtras,
+                                                   SqlDialect source, Map<String, String> overrides,
+                                                   List<String> notes) {
         TableExtras extras = alterExtras == null ? new TableExtras() : alterExtras;
         List<String> columnDefs = new ArrayList<>();
         List<String> columnNames = new ArrayList<>();
@@ -348,6 +433,9 @@ public final class SqlDialectTranslator {
         List<String> foreignKeys = new ArrayList<>(extras.foreignKeys);
         Set<String> autoIncrement = new LinkedHashSet<>(extras.autoIncrement);
         Set<String> inlinePrimaryKeys = new LinkedHashSet<>();
+        List<List<String>> uniques = new ArrayList<>(extras.uniques);
+        List<String> checks = new ArrayList<>(extras.checks);
+        List<IndexSpec> indexes = new ArrayList<>(extras.indexes);
 
         for (String item : splitTopLevel(body)) {
             String trimmed = item.trim();
@@ -365,6 +453,33 @@ public final class SqlDialectTranslator {
             if (inlineFk.find()) {
                 foreignKeys.add(renderForeignKey(
                         inlineFk.group(1), inlineFk.group(2), inlineFk.group(3), inlineFk.group(4)));
+                continue;
+            }
+
+            Matcher unique = TABLE_UNIQUE.matcher(trimmed);
+            if (unique.find()) {
+                List<String> columns = indexColumns(bodyOf(trimmed, unique.end() - 1));
+                if (columns != null) uniques.add(columns);
+                else notes.add("Ignored a unique constraint on `" + tableName + "` over an expression: "
+                        + summarize(trimmed));
+                continue;
+            }
+
+            Matcher index = TABLE_INDEX.matcher(trimmed);
+            if (index.find()) {
+                List<String> columns = indexColumns(bodyOf(trimmed, index.end() - 1));
+                if (columns != null) indexes.add(new IndexSpec(unquote(index.group(1)), columns));
+                else notes.add("Ignored an expression index on `" + tableName + "`: " + summarize(trimmed));
+                continue;
+            }
+
+            Matcher check = TABLE_CHECK.matcher(trimmed);
+            if (check.find()) {
+                String expression = bodyOf(trimmed, check.end() - 1);
+                String portable = expression == null ? null : portableCheck(expression);
+                if (portable != null) checks.add(portable);
+                else notes.add("Ignored a CHECK on `" + tableName + "` that SQLite cannot evaluate: "
+                        + summarize(trimmed));
                 continue;
             }
 
@@ -426,12 +541,102 @@ public final class SqlDialectTranslator {
         }
         definitions.addAll(foreignKeys);
 
-        if (definitions.isEmpty()) {
-            notes.add("Skipped `" + tableName + "`: no column definitions could be read from it.");
-            return "SELECT 1";
+        // A constraint naming a column the table does not have would fail the whole CREATE
+        // TABLE, so each is checked against the columns that were actually read.
+        for (List<String> columns : uniques) {
+            if (allPresent(columns, columnNames)) {
+                definitions.add("UNIQUE (" + String.join(", ", columns) + ")");
+            } else {
+                notes.add("Ignored a unique constraint on `" + tableName + "` naming a column it does not have.");
+            }
+        }
+        for (String expression : checks) {
+            definitions.add("CHECK (" + expression + ")");
         }
 
-        return "CREATE TABLE \"" + tableName + "\" (\n  " + String.join(",\n  ", definitions) + "\n)";
+        if (definitions.isEmpty()) {
+            notes.add("Skipped `" + tableName + "`: no column definitions could be read from it.");
+            return List.of("SELECT 1");
+        }
+
+        List<String> statements = new ArrayList<>();
+        statements.add("CREATE TABLE \"" + tableName + "\" (\n  " + String.join(",\n  ", definitions) + "\n)");
+        for (IndexSpec index : indexes) {
+            if (!allPresent(index.columns(), columnNames)) {
+                notes.add("Ignored index `" + index.name() + "` on `" + tableName
+                        + "`: it names a column the table does not have.");
+                continue;
+            }
+            // Prefixed with the table: MySQL scopes index names to their table, SQLite to the
+            // whole database, and `IF NOT EXISTS` would otherwise silently skip the second
+            // `idx_name` in a dump rather than create it.
+            statements.add("CREATE INDEX IF NOT EXISTS \"" + tableName + "_" + index.name() + "\" ON \""
+                    + tableName + "\" (" + String.join(", ", index.columns()) + ")");
+        }
+        return statements;
+    }
+
+    /**
+     * An index's column list, quoted for SQLite, or null when it indexes an expression.
+     *
+     * <p>Keeps a sort direction and drops MySQL's prefix length ({@code name(20)}), which SQLite
+     * has no use for: it indexes the whole value.
+     */
+    static List<String> indexColumns(String list) {
+        if (list == null || list.isBlank()) {
+            return null;
+        }
+        List<String> columns = new ArrayList<>();
+        for (String part : splitTopLevel(list)) {
+            String item = part.trim();
+            String direction = "";
+            Matcher dir = Pattern.compile("(?i)\\s+(ASC|DESC)$").matcher(item);
+            if (dir.find()) {
+                direction = " " + dir.group(1).toUpperCase(Locale.ROOT);
+                item = item.substring(0, dir.start()).trim();
+            }
+            item = item.replaceAll("\\s*\\(\\d+\\)$", "").trim();
+            boolean quoted = item.length() >= 2 && "`\"[".indexOf(item.charAt(0)) >= 0;
+            String name = unquote(item);
+            if (name.isEmpty() || (!quoted && !name.matches("[A-Za-z_][A-Za-z0-9_$]*"))) {
+                return null;
+            }
+            columns.add("\"" + name + "\"" + direction);
+        }
+        return columns.isEmpty() ? null : columns;
+    }
+
+    private static boolean allPresent(List<String> quotedColumns, List<String> columnNames) {
+        return quotedColumns.stream()
+                .map(c -> c.replaceAll("(?i)\\s+(ASC|DESC)$", ""))
+                .map(c -> c.substring(1, c.length() - 1))
+                .allMatch(columnNames::contains);
+    }
+
+    /**
+     * A CHECK expression rewritten for SQLite, or null when it would not mean the same thing
+     * there (or would not parse at all).
+     *
+     * <p>Casts are dropped ({@code (0)::numeric}, pg_dump's habit), backtick and bracket
+     * identifiers become double-quoted, and then the expression is kept only if it uses
+     * operators and functions SQLite shares. A check that is dropped is reported; one that is
+     * kept but wrong would fail the CREATE TABLE and lose the table.
+     */
+    static String portableCheck(String expression) {
+        String e = POSTGRES_CAST.matcher(expression).replaceAll("");
+        e = e.replaceAll("`([^`]+)`", "\"$1\"").replaceAll("\\[([^\\]]+)]", "\"$1\"");
+        String withoutStrings = e.replaceAll("'(?:[^']|'')*'", "''");
+        if (NON_PORTABLE_CHECK.matcher(withoutStrings).find()) {
+            return null;
+        }
+        Matcher call = CALL.matcher(withoutStrings);
+        while (call.find()) {
+            if (!PORTABLE_CALLS.contains(call.group(1).toUpperCase(Locale.ROOT))) {
+                return null;
+            }
+        }
+        String result = e.trim();
+        return result.isEmpty() ? null : result;
     }
 
     /** Table-level items that are neither a column nor a key we can keep. */
@@ -842,15 +1047,23 @@ public final class SqlDialectTranslator {
     }
 
     /** Key metadata declared outside the CREATE TABLE it belongs to. */
+    /** A secondary index: its name in the source, and its columns already quoted for SQLite. */
+    private record IndexSpec(String name, List<String> columns) {
+    }
+
     private static final class TableExtras {
         private final List<String> primaryKey = new ArrayList<>();
         private final List<String> foreignKeys = new ArrayList<>();
         private final Set<String> autoIncrement = new LinkedHashSet<>();
         private final Set<String> notNull = new LinkedHashSet<>();
+        private final List<List<String>> uniques = new ArrayList<>();
+        private final List<String> checks = new ArrayList<>();
+        private final List<IndexSpec> indexes = new ArrayList<>();
 
         boolean hasAnything() {
             return !primaryKey.isEmpty() || !foreignKeys.isEmpty()
-                    || !autoIncrement.isEmpty() || !notNull.isEmpty();
+                    || !autoIncrement.isEmpty() || !notNull.isEmpty()
+                    || !uniques.isEmpty() || !checks.isEmpty() || !indexes.isEmpty();
         }
     }
 }

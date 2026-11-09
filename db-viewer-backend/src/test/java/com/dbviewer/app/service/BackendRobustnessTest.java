@@ -126,16 +126,103 @@ class BackendRobustnessTest {
     }
 
     @Test
-    void aTableWithoutAnAddressableKeySaysSo() {
-        service.executeQuery("CREATE TABLE pair (a INT, b INT, PRIMARY KEY (a, b))");
+    @SuppressWarnings("unchecked")
+    void aCompositeKeyTableIsEditedThroughItsRowId() {
+        service.executeQuery("CREATE TABLE pair (a INT, b INT, note TEXT, PRIMARY KEY (a, b))");
+        service.executeQuery("INSERT INTO pair VALUES (1, 1, 'keep'), (1, 2, 'change'), (2, 1, 'drop')");
+
+        Map<String, Object> page = service.getTableData("pair", 10, 0);
+        assertThat(page.get("keyColumn")).isEqualTo("__rowid");
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) page.get("rows");
+        String changeId = String.valueOf(rows.stream().filter(r -> "change".equals(r.get("note")))
+                .findFirst().orElseThrow().get("__rowid"));
+        String dropId = String.valueOf(rows.stream().filter(r -> "drop".equals(r.get("note")))
+                .findFirst().orElseThrow().get("__rowid"));
+
+        UpdateCellRequest update = new UpdateCellRequest();
+        update.setTableName("pair");
+        update.setColumnName("note");
+        update.setNewValue("changed");
+        update.setRecordId(changeId);
+        service.updateCell(update);
         DeleteRowRequest delete = new DeleteRowRequest();
         delete.setTableName("pair");
+        delete.setRecordId(dropId);
+        service.deleteRow(delete);
+
+        assertThat(service.executeQuery("SELECT note FROM pair ORDER BY a, b"))
+                .extracting(row -> row.get("note")).containsExactly("keep", "changed");
+    }
+
+    /** A WITHOUT ROWID table has no row id to fall back on, so it still cannot be edited by row. */
+    @Test
+    void aWithoutRowidTableWithACompositeKeySaysSo() {
+        service.executeQuery("CREATE TABLE pairs (a INT, b INT, PRIMARY KEY (a, b)) WITHOUT ROWID");
+        DeleteRowRequest delete = new DeleteRowRequest();
+        delete.setTableName("pairs");
         delete.setRecordId("1");
 
-        assertThat(service.getTableData("pair", 10, 0)).doesNotContainKey("keyColumn");
+        assertThat(service.getTableData("pairs", 10, 0)).doesNotContainKey("keyColumn");
         assertThatThrownBy(() -> service.deleteRow(delete))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("single-column primary key");
+    }
+
+    /** PRAGMA table_info does not report a collation, so the rebuild used to drop it. */
+    @Test
+    void aColumnKeepsItsCollationThroughARebuild() {
+        service.executeQuery("CREATE TABLE people (id INTEGER PRIMARY KEY, email TEXT COLLATE NOCASE, age TEXT)");
+        service.executeQuery("INSERT INTO people (email, age) VALUES ('Ada@Example.com', '36')");
+
+        // Retyping another column forces SQLite's table rebuild.
+        com.dbviewer.app.dto.UpdateColumnRequest retype = new com.dbviewer.app.dto.UpdateColumnRequest();
+        retype.setTableName("people");
+        retype.setColumnName("age");
+        retype.setColumnType("INTEGER");
+        service.updateColumn(retype);
+
+        String ddl = String.valueOf(service.executeQuery(
+                "SELECT sql FROM sqlite_master WHERE name = 'people'").get(0).get("sql"));
+        assertThat(ddl).containsIgnoringCase("COLLATE NOCASE");
+        // And it still behaves case-insensitively.
+        assertThat(service.executeQuery("SELECT id FROM people WHERE email = 'ada@example.com'")).hasSize(1);
+    }
+
+    /** A dump's indexes, unique constraints and checks now survive the import. */
+    @Test
+    void anImportedDumpKeepsItsIndexesUniquesAndChecks() throws Exception {
+        service.handleFileUpload(sql("shop.sql", """
+                CREATE TABLE `customers` (
+                  `id` int(11) NOT NULL,
+                  `email` varchar(255) NOT NULL,
+                  `region` varchar(20) DEFAULT NULL,
+                  `age` int(11) DEFAULT NULL,
+                  UNIQUE KEY `email` (`email`),
+                  KEY `region` (`region`(10)),
+                  CONSTRAINT `age_ok` CHECK (`age` >= 0)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                CREATE TABLE `orders` (
+                  `id` int(11) NOT NULL,
+                  `customer_id` int(11) NOT NULL,
+                  `placed_on` date NOT NULL
+                ) ENGINE=InnoDB;
+                ALTER TABLE `orders`
+                  ADD PRIMARY KEY (`id`),
+                  ADD KEY `region` (`customer_id`, `placed_on`);
+                """));
+
+        List<String> indexes = service.executeQuery(
+                        "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL").stream()
+                .map(row -> String.valueOf(row.get("name"))).toList();
+        // Both tables had an index called `region`; prefixed, neither is lost to the other.
+        assertThat(indexes).contains("customers_region", "orders_region");
+
+        assertThatThrownBy(() -> service.executeQuery(
+                "INSERT INTO customers (id, email, age) VALUES (1, 'a@b.c', 1), (2, 'a@b.c', 2)"))
+                .hasMessageContaining("UNIQUE");
+        assertThatThrownBy(() -> service.executeQuery(
+                "INSERT INTO customers (id, email, age) VALUES (3, 'x@y.z', -1)"))
+                .hasMessageContaining("CHECK");
     }
 
     /** A script with its own transaction control is run as written, not nested inside ours. */
