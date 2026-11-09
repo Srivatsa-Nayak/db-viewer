@@ -325,6 +325,50 @@ class LlmClientTest {
         assertThat(received).hasSize(1);
     }
 
+    private static final String CANNOT_AFFORD = "{\"error\":{\"message\":\"This request requires more credits, "
+            + "or fewer max_tokens. You requested up to 8192 tokens, but can only afford 2025. To increase, "
+            + "visit https://openrouter.ai/workspaces/default/keys/abc and adjust the key's total limit\",\"code\":402}}";
+
+    /**
+     * The failure that hit a real OpenRouter key: credit for ~2,000 tokens, a request for 8,192.
+     * It is refused before the model runs, so asking again for what it can afford is the fix —
+     * a new API key on the same account changes nothing.
+     */
+    @Test
+    void aKeyThatCannotAffordTheFullBudgetIsAskedAgainForWhatItCan() throws Exception {
+        List<String> received = serve(List.of(
+                new Reply(402, CANNOT_AFFORD, null),
+                new Reply(200, OPENROUTER_ANSWER, null)));
+        List<String> fragments = new ArrayList<>();
+
+        client.stream(openRouter("openai/gpt-4o"), SYSTEM, ONE_QUESTION, fragments::add);
+
+        assertThat(received).hasSize(2);
+        assertThat(json.readTree(received.get(0)).path("max_tokens").asInt()).isEqualTo(8192);
+        assertThat(json.readTree(received.get(1)).path("max_tokens").asInt()).isEqualTo(2025);
+        assertThat(String.join("", fragments)).isEqualTo("Hello there");
+    }
+
+    @Test
+    void tooLittleCreditForAUsefulAnswerIsReportedNotRetried() throws Exception {
+        List<String> received = serve(List.of(new Reply(402,
+                "{\"error\":{\"message\":\"You requested up to 8192 tokens, but can only afford 40.\"}}", null)));
+
+        assertThatThrownBy(() -> client.stream(openRouter("openai/gpt-4o"), SYSTEM, ONE_QUESTION, f -> { }))
+                .isInstanceOf(LlmException.class)
+                .hasMessageContaining("can only afford 40");
+        assertThat(received).hasSize(1);
+    }
+
+    @Test
+    void onlyAPaymentRefusalNamingAUsefulBudgetQualifies() {
+        assertThat(LlmClient.affordableTokens(new LlmException("but can only afford 2025.", 402), 8192))
+                .isEqualTo(2025);
+        assertThat(LlmClient.affordableTokens(new LlmException("but can only afford 2025.", 400), 8192)).isNull();
+        assertThat(LlmClient.affordableTokens(new LlmException("Insufficient credits", 402), 8192)).isNull();
+        assertThat(LlmClient.affordableTokens(new LlmException("can only afford 9000", 402), 8192)).isNull();
+    }
+
     @Test
     void retryAfterIsHonouredButCapped() {
         assertThat(LlmClient.backoffMillis(0, "3")).isEqualTo(3000);

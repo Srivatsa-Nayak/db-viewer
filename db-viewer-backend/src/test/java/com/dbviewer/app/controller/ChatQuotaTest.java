@@ -120,6 +120,24 @@ class ChatQuotaTest {
         assertThat(finish(ask())).contains("event: done");
     }
 
+    /**
+     * "Out of credit" was the wrong message for this 402: the account had credit, just not
+     * enough for the requested max_tokens, and the user kept creating new keys. The provider's
+     * reason is shown instead, minus the link to the app key's settings page.
+     */
+    @Test
+    void aPaymentRefusalShowsTheProvidersReasonWithoutTheAppKeysLink() throws Exception {
+        when(llmClient.stream(any(), any(), any(), any())).thenThrow(new LlmException(
+                "This request requires more credits, or fewer max_tokens. You requested up to 8192 "
+                        + "tokens, but can only afford 300. To increase, visit "
+                        + "https://openrouter.ai/workspaces/default/keys/abc123 and adjust the limit", 402));
+
+        String stream = finish(ask());
+
+        assertThat(stream).contains("event: error").contains("can only afford 300")
+                .contains("Add your own key").doesNotContain("openrouter.ai/workspaces");
+    }
+
     @Test
     void usageIsRecordedPerUserAndModel() throws Exception {
         providerAnswers("Logged.");

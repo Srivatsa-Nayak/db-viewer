@@ -64,6 +64,20 @@ public class LlmClient {
     /** Attempts after the first. Two keeps a user waiting at most a few seconds before an error. */
     private static final int MAX_RETRIES = 2;
 
+    /**
+     * OpenRouter's refusal when a key's credit cannot cover the requested {@code max_tokens}:
+     * "This request requires more credits, or fewer max_tokens. You requested up to 8192 tokens,
+     * but can only afford 2025." The number is what to ask for instead.
+     */
+    private static final java.util.regex.Pattern CAN_ONLY_AFFORD =
+            java.util.regex.Pattern.compile("can only afford (\\d+)", java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Below this, retrying with what the account can afford is not worth it: the answer would be
+     * cut off almost at once, especially by a model that thinks before it writes.
+     */
+    static final int MIN_AFFORDABLE_TOKENS = 512;
+
     /** The longest a {@code Retry-After} is honoured. Anything longer is better reported than waited on. */
     private static final long MAX_RETRY_WAIT_MS = 10_000;
 
@@ -172,8 +186,24 @@ public class LlmClient {
      */
     public StreamResult stream(LlmCredentials credentials, SystemPrompt system,
                                List<ChatTurn> messages, Consumer<String> onFragment) {
-        HttpRequest request = buildRequest(credentials, system, messages);
-        HttpResponse<InputStream> response = sendWithRetry(request, credentials.provider());
+        HttpResponse<InputStream> response;
+        try {
+            response = sendWithRetry(buildRequest(credentials, system, messages, maxTokens),
+                    credentials.provider());
+        } catch (LlmException e) {
+            // A key whose remaining credit (or per-key limit) cannot cover the full max_tokens is
+            // refused before the model runs, even though it could pay for a shorter answer. Ask
+            // again for what it can afford: a shorter answer beats none, and if it does run out
+            // the stop reason says so and the UI shows the answer was cut off.
+            Integer affordable = affordableTokens(e, maxTokens);
+            if (affordable == null) {
+                throw e;
+            }
+            log.info("{} can only afford {} of {} max tokens; asking for {}",
+                    credentials.provider().label(), affordable, maxTokens, affordable);
+            response = sendWithRetry(buildRequest(credentials, system, messages, affordable),
+                    credentials.provider());
+        }
 
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
@@ -253,8 +283,30 @@ public class LlmClient {
      * Requests
      * ------------------------------------------------------------------ */
 
+    /**
+     * The token budget an account says it can pay for, when a refusal names one worth using.
+     *
+     * @return null unless this is a 402 naming a number between {@link #MIN_AFFORDABLE_TOKENS}
+     *         and what was asked for
+     */
+    static Integer affordableTokens(LlmException e, int requested) {
+        if (e.getStatus() != 402 || e.getMessage() == null) {
+            return null;
+        }
+        java.util.regex.Matcher m = CAN_ONLY_AFFORD.matcher(e.getMessage());
+        if (!m.find()) {
+            return null;
+        }
+        try {
+            int affordable = Integer.parseInt(m.group(1));
+            return affordable >= MIN_AFFORDABLE_TOKENS && affordable < requested ? affordable : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
     private HttpRequest buildRequest(LlmCredentials credentials, SystemPrompt system,
-                                     List<ChatTurn> messages) {
+                                     List<ChatTurn> messages, int tokens) {
         boolean anthropic = credentials.provider() == LlmProvider.ANTHROPIC;
         String endpoint = switch (credentials.provider()) {
             case OPENROUTER -> trimSlash(openRouterBase) + "/chat/completions";
@@ -270,8 +322,8 @@ public class LlmClient {
                 .timeout(Duration.ofSeconds(120))
                 .POST(HttpRequest.BodyPublishers.ofString(
                         anthropic
-                                ? anthropicBody(credentials, system, messages)
-                                : openAiBody(credentials, system, messages),
+                                ? anthropicBody(credentials, system, messages, tokens)
+                                : openAiBody(credentials, system, messages, tokens),
                         StandardCharsets.UTF_8));
 
         if (anthropic) {
@@ -293,6 +345,11 @@ public class LlmClient {
     }
 
     String openAiBody(LlmCredentials credentials, SystemPrompt system, List<ChatTurn> messages) {
+        return openAiBody(credentials, system, messages, maxTokens);
+    }
+
+    String openAiBody(LlmCredentials credentials, SystemPrompt system, List<ChatTurn> messages,
+                      int tokens) {
         ObjectNode body = json.createObjectNode();
         body.put("model", credentials.model());
         body.put("stream", true);
@@ -302,7 +359,7 @@ public class LlmClient {
         boolean openRouter = credentials.provider() == LlmProvider.OPENROUTER;
         // OpenAI renamed the field, and its reasoning models reject the old name outright.
         // OpenRouter still documents max_tokens and translates it per backend.
-        body.put(openRouter ? "max_tokens" : "max_completion_tokens", maxTokens);
+        body.put(openRouter ? "max_tokens" : "max_completion_tokens", tokens);
 
         // Ask for the token counts. Neither API sends them on a stream unless told to; OpenRouter
         // adds the price of the call, which is what the usage log is for.
@@ -338,6 +395,11 @@ public class LlmClient {
     }
 
     String anthropicBody(LlmCredentials credentials, SystemPrompt system, List<ChatTurn> messages) {
+        return anthropicBody(credentials, system, messages, maxTokens);
+    }
+
+    String anthropicBody(LlmCredentials credentials, SystemPrompt system, List<ChatTurn> messages,
+                         int tokens) {
         ObjectNode body = json.createObjectNode();
         body.put("model", credentials.model());
         body.put("stream", true);
@@ -347,7 +409,7 @@ public class LlmClient {
             body.put("temperature", temperature);
         }
         // Required by the Messages API, unlike the OpenAI one where it is optional.
-        body.put("max_tokens", maxTokens);
+        body.put("max_tokens", tokens);
         if (anthropicEffort != null && !anthropicEffort.isBlank()) {
             body.putObject("output_config").put("effort", anthropicEffort.trim());
         }

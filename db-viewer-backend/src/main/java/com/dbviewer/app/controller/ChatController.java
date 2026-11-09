@@ -396,10 +396,13 @@ public class ChatController {
             case 401, 403 -> own
                     ? provider + " rejected your API key. Re-enter it in your profile."
                     : "The app's model key was rejected. This is a server configuration problem.";
+            // The provider's own words, because "out of credit" was often wrong: OpenRouter also
+            // answers 402 when the key's credit or per-key limit cannot cover max_tokens, which a
+            // top-up or a higher key limit fixes but a new key does not.
             case 402 -> own
-                    ? "Your " + provider + " account is out of credit."
-                    : "The app's model account is out of credit. Add your own key in your profile "
-                            + "to keep going.";
+                    ? provider + " would not run this on your key: " + paymentReason(e, true)
+                    : "The app's model key cannot pay for this request (" + paymentReason(e, false)
+                            + "). Add your own key in your profile to keep going.";
             case 404 -> "The model \"" + prompt.credentials().model() + "\" is not available on "
                     + (own ? "your " : "the app's ") + provider + " account.";
             case 429 -> "Rate limited by " + provider + ". Try again in a moment.";
@@ -407,6 +410,26 @@ public class ChatController {
                     ? provider + " is having trouble (" + e.getStatus() + "). Try again."
                     : e.getMessage();
         };
+    }
+
+    /**
+     * The provider's explanation of a 402, for showing to the user.
+     *
+     * <p>On the app's key the "To increase, visit …" sentence is dropped: it links to that key's
+     * settings page, which is the operator's business and identifies the key.
+     */
+    static String paymentReason(LlmException e, boolean ownKey) {
+        String message = e.getMessage() == null ? "" : e.getMessage().strip();
+        if (!ownKey) {
+            int link = message.toLowerCase().indexOf("to increase, visit");
+            if (link >= 0) {
+                message = message.substring(0, link).strip();
+            }
+        }
+        if (message.isEmpty() || message.startsWith("HTTP ")) {
+            return "the account is out of credit";
+        }
+        return message.endsWith(".") ? message.substring(0, message.length() - 1) : message;
     }
 
     private List<ChatTurn> toTurns(List<HistoryTurn> history) {

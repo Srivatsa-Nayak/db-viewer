@@ -158,7 +158,7 @@ export const AuthModal = ({ isOpen, reason, initialMode, onClose, onSignedIn }: 
                                 className={FIELD}
                                 value={displayName}
                                 onChange={e => setDisplayName(e.target.value)}
-                                placeholder="Ada Lovelace"
+                                placeholder="Your name"
                             />
                         </div>
                     </div>
