@@ -17,6 +17,13 @@ public final class ErrorResponsesProbe {
                 LoggerFactory.getLogger(ErrorResponsesProbe.class), "Probe");
     }
 
+    /** What a missing SQLite file looks like: not the caller's fault, and the message has a path. */
+    public static ResponseEntity<Map<String, Object>> unreachableDatabase() {
+        return ErrorResponses.failure(new org.springframework.jdbc.CannotGetJdbcConnectionException(
+                        "path to 'C:/data/app.db' does not exist", new java.sql.SQLException("no file")),
+                LoggerFactory.getLogger(ErrorResponsesProbe.class), "Probe");
+    }
+
     public static ResponseEntity<Map<String, Object>> database() {
         return ErrorResponses.failure(new DataIntegrityViolationException("UNIQUE constraint failed: users.email"),
                 LoggerFactory.getLogger(ErrorResponsesProbe.class), "Probe");

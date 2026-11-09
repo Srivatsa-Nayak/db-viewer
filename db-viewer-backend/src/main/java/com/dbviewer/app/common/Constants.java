@@ -574,6 +574,25 @@ public final class Constants {
         /** %s: table, key column. ?: key value. */
         public static final String DELETE_BY_KEY = "DELETE FROM \"%s\" WHERE \"%s\" = ?";
 
+        /**
+         * SQLite's implicit row id, for a table with no id column and no single-column key.
+         * Returned under a name no real column uses, so it cannot be mistaken for data.
+         */
+        public static final String ROWID_ALIAS = "__rowid";
+
+        /** One page with the row id alongside. %s: table. ?: limit, offset. */
+        public static final String SELECT_PAGE_WITH_ROWID =
+                "SELECT rowid AS \"__rowid\", * FROM \"%s\" LIMIT ? OFFSET ?";
+
+        /** Succeeds only when the table has a row id (it is not WITHOUT ROWID). %s: table. */
+        public static final String PROBE_ROWID = "SELECT rowid FROM \"%s\" LIMIT 0";
+
+        /** %s: table, column. ?: new value, row id. */
+        public static final String UPDATE_CELL_BY_ROWID = "UPDATE \"%s\" SET \"%s\" = ? WHERE rowid = ?";
+
+        /** %s: table. ?: row id. */
+        public static final String DELETE_BY_ROWID = "DELETE FROM \"%s\" WHERE rowid = ?";
+
         /** %s: table. %s: column. ?: new value. ?: record id. */
         public static final String UPDATE_CELL_BY_ID =
                 "UPDATE \"%s\" SET \"%s\" = ? WHERE id = ?";

@@ -45,6 +45,19 @@ public class WorkspaceOwnershipFilter extends OncePerRequestFilter {
         String workspaceId = WorkspaceContext.get();
 
         if (workspaceId != null && !workspaceId.isBlank()) {
+            // A workspace is always someone's. A caller with neither a sign-in nor an
+            // X-Client-Id used to be let into any workspace nobody had claimed yet, without
+            // claiming it — so whoever learned a fresh id first could read and write it. Now an
+            // identity is required to touch a workspace at all; a request with no workspace
+            // header still works, against the shared __sandbox.
+            if (OwnerKey.current() == null) {
+                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                response.getWriter().write("{\"error\":\"Send an X-Client-Id header (any stable "
+                        + "string that identifies you) or sign in to use a workspace.\","
+                        + "\"identityRequired\":true}");
+                return;
+            }
             try {
                 ownershipService.claimOrVerify(workspaceId);
             } catch (WorkspaceForbiddenException e) {
