@@ -17,23 +17,22 @@
  * <h2>Why a module singleton</h2>
  *
  * The same reason `services/history.ts` is one. It cannot live in `app/app/page.tsx`: a streaming
- * answer changes state on every token, and putting that in the page would re-render a 1,700-line
+ * answer changes state on every token, and putting that in the page would re-render a 1,900-line
  * component tens of times a second. It cannot live in the chat component either, because that is
  * keyed by workspace and unmounts on the very switch this is meant to survive. So the component
  * keeps the live turns in local state — fast, and nothing else re-renders — and mirrors them here,
  * where the next mount can pick them up.
  *
- * Unlike `history.ts` there is no `useSyncExternalStore`: nothing outside the chat panel reads a
- * conversation while it is being written, so a subscription would buy nothing and cost a render
- * per token.
+ * The only subscriber is the launcher's "has a conversation" dot, and it is told when a
+ * conversation starts or ends — never per token.
  *
  * <h2>Scope</h2>
  *
- * Memory only, and deliberately. These are not written to `localStorage`: a conversation is far
- * larger than the layout data that lives there, it can quote the user's schema back at them, and
- * `sessionStorage.ts` is explicitly layout-only. A reload starts fresh, which is what every chat
- * of this shape does. Switching files — the thing people actually do dozens of times an hour — is
- * what had to stop losing work, and does.
+ * Memory only by default. A transcript can quote the user's schema back at them and is far
+ * larger than the layout data in `localStorage`, so nothing is written anywhere unless the user
+ * turns on **Keep conversations in this tab**. Then conversations go to `sessionStorage`: they
+ * survive a reload, and die with the tab. The choice itself is a per-browser preference in
+ * `localStorage`. Signing out clears both.
  */
 
 /** One message, stored flat so the panel can rebuild itself without interpreting anything. */
@@ -45,6 +44,8 @@ export interface StoredTurn {
     error?: string;
     /** A caveat that is not a failure, e.g. the answer was cut off at the length limit. */
     notice?: string;
+    /** Said once per answer when the schema was too big to send whole. */
+    schemaNote?: string;
 }
 
 export interface StoredConversation {
@@ -56,27 +57,99 @@ export interface StoredConversation {
 
 const EMPTY: StoredConversation = { turns: [], model: null, usingOwnKey: false };
 
+const PREFERENCE_KEY = 'sql-visualizer.chat.keep';
+const SESSION_KEY = 'sql-visualizer.chat.conversations';
+
 const conversations = new Map<string, StoredConversation>();
+const listeners = new Set<() => void>();
+let hydrated = false;
+
+const readPreference = (): boolean => {
+    try {
+        return typeof window !== 'undefined' && window.localStorage.getItem(PREFERENCE_KEY) === '1';
+    } catch {
+        return false;
+    }
+};
+
+/** Loads persisted conversations the first time anything asks — never during server rendering. */
+const hydrate = () => {
+    if (hydrated || typeof window === 'undefined') return;
+    hydrated = true;
+    if (!readPreference()) return;
+    try {
+        const raw = window.sessionStorage.getItem(SESSION_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as Record<string, StoredConversation>;
+        for (const [id, conversation] of Object.entries(parsed)) {
+            if (conversation && Array.isArray(conversation.turns)) conversations.set(id, conversation);
+        }
+    } catch {
+        // Unreadable or blocked storage: start empty, which is the default behaviour anyway.
+    }
+};
+
+const persist = () => {
+    if (typeof window === 'undefined' || !readPreference()) return;
+    try {
+        window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(Object.fromEntries(conversations)));
+    } catch {
+        // Full or blocked. The conversation is still in memory for this page's life.
+    }
+};
+
+const notify = () => listeners.forEach(listener => listener());
 
 export const chatStore = {
     /** The conversation for a file, or an empty one. Never null, so callers need no branch. */
     load(workspaceId: string): StoredConversation {
+        hydrate();
         return conversations.get(workspaceId) ?? EMPTY;
     },
 
     save(workspaceId: string, conversation: StoredConversation) {
+        hydrate();
+        const had = conversations.has(workspaceId);
         if (conversation.turns.length === 0) {
             // Nothing worth remembering, and keeping an empty record would make `has` lie to the
             // launcher badge.
             conversations.delete(workspaceId);
-            return;
+        } else {
+            conversations.set(workspaceId, conversation);
         }
-        conversations.set(workspaceId, conversation);
+        persist();
+        if (had !== conversations.has(workspaceId)) notify();
     },
 
     /** True when this file has a conversation to come back to — what the badge is drawn from. */
     has(workspaceId: string | null | undefined): boolean {
+        hydrate();
         return !!workspaceId && (conversations.get(workspaceId)?.turns.length ?? 0) > 0;
+    },
+
+    /** For `useSyncExternalStore`: told only when a conversation starts or ends. */
+    subscribe(listener: () => void): () => void {
+        listeners.add(listener);
+        return () => { listeners.delete(listener); };
+    },
+
+    /** Whether conversations survive a reload of this tab. */
+    keepsConversations(): boolean {
+        return readPreference();
+    },
+
+    setKeepConversations(keep: boolean) {
+        try {
+            if (keep) {
+                window.localStorage.setItem(PREFERENCE_KEY, '1');
+                persist();
+            } else {
+                window.localStorage.removeItem(PREFERENCE_KEY);
+                window.sessionStorage.removeItem(SESSION_KEY);
+            }
+        } catch {
+            // Storage unavailable: the preference simply does not stick.
+        }
     },
 
     /**
@@ -84,7 +157,10 @@ export const chatStore = {
      * no longer exists, so neither should the talk about it.
      */
     forget(workspaceId: string) {
-        conversations.delete(workspaceId);
+        if (conversations.delete(workspaceId)) {
+            persist();
+            notify();
+        }
     },
 
     /**
@@ -94,5 +170,11 @@ export const chatStore = {
      */
     forgetAll() {
         conversations.clear();
+        try {
+            window.sessionStorage.removeItem(SESSION_KEY);
+        } catch {
+            // Nothing stored, or nothing reachable.
+        }
+        notify();
     },
 };

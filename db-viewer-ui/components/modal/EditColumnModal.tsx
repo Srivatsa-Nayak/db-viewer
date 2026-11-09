@@ -6,6 +6,7 @@ import { dbService } from '@/services/api';
 import { history } from '@/services/history';
 import { ColumnInfo } from '@/types';
 import { Callout, GhostButton, Modal, ModalActions, PrimaryButton } from '@/components/ui/Modal';
+import { errorMessage } from '@/services/errors';
 
 const COLUMN_TYPES = ["VARCHAR", "INT", "DECIMAL", "BOOLEAN", "TEXT", "DATE", "TIME", "DATETIME"];
 const VARCHAR_LENGTHS = [64, 128, 256];
@@ -145,9 +146,7 @@ export const EditColumnModal = ({
             onSuccess();
             onClose();
         } catch (err: unknown) {
-            const message = err && typeof err === "object" && "response" in err
-                ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
-                : undefined;
+            const message = errorMessage(err);
             setError(message || "Failed to update the column. Please try again.");
         } finally {
             setIsSaving(false);

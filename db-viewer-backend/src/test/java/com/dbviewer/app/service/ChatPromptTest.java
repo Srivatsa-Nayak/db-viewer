@@ -83,7 +83,7 @@ class ChatPromptTest {
     }
 
     private String systemPromptFor(String question) {
-        return chatService.prepare(question, List.of()).system();
+        return chatService.prepare(question, List.of()).system().full();
     }
 
     /* ------------------------------------------------------------------ *
@@ -133,6 +133,45 @@ class ChatPromptTest {
         // AUTOINCREMENT, SERIAL, IDENTITY(1,1) and AUTO_INCREMENT are four spellings of one
         // idea and no engine takes another's, so DDL written for the wrong one is not runnable.
         assertThat(systemPromptFor("Add a comments table.")).contains("ENGINE: SQLite");
+    }
+
+    /**
+     * The prompt asks the model to find indexing problems; without the indexes in the schema it
+     * would recommend ones that already exist.
+     */
+    @Test
+    void existingIndexesAndViewDefinitionsAreInThePrompt() {
+        databaseService.executeQuery("CREATE INDEX idx_posts_title ON posts (title)");
+        databaseService.executeQuery("CREATE VIEW post_titles AS SELECT id, title FROM posts");
+
+        String prompt = systemPromptFor("Which columns should be indexed?");
+
+        assertThat(prompt).contains("INDEX idx_posts_title (title)");
+        assertThat(prompt).contains("VIEW post_titles").contains("definition: CREATE VIEW post_titles");
+        // A table with nothing beyond its key says so, rather than leaving the model to guess.
+        assertThat(prompt).contains("no indexes beyond the primary key");
+    }
+
+    @Test
+    void theInstructionsCarryTheEnginesDdlLimits() {
+        // SQLite cannot ALTER a column's type; proposing it hands the user a scratchpad error.
+        assertThat(systemPromptFor("Make title longer."))
+                .contains("ENGINE NOTES")
+                .contains("no ALTER COLUMN");
+    }
+
+    /**
+     * The instructions are the cacheable half of the prompt. Anything per-request in them — a
+     * timestamp, the question — and the provider's prompt cache would never hit.
+     */
+    @Test
+    void theInstructionsAreIdenticalOnEveryCall() {
+        String first = chatService.prepare("one", List.of()).system().instructions();
+        String second = chatService.prepare("a completely different question", List.of())
+                .system().instructions();
+
+        assertThat(first).isEqualTo(second);
+        assertThat(first).doesNotContain("one").doesNotContain("completely different");
     }
 
     @Test
@@ -237,7 +276,7 @@ class ChatPromptTest {
         ChatService.ChatPrompt prompt = chatService.prepare("What can you do?", List.of());
 
         assertThat(prompt.tableCount()).isZero();
-        assertThat(prompt.system()).contains("no tables in the file");
-        assertThat(prompt.system()).contains("THE APP");
+        assertThat(prompt.system().full()).contains("no tables in the file");
+        assertThat(prompt.system().full()).contains("THE APP");
     }
 }

@@ -7,7 +7,9 @@ import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.stereotype.Component;
 
 import javax.sql.DataSource;
@@ -15,6 +17,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -65,6 +69,9 @@ public class WorkspaceManager {
     private final JdbcTemplate defaultJdbcTemplate;
     private final Map<String, Workspace> workspaces = new ConcurrentHashMap<>();
 
+    /** When each open workspace was last used, for {@link #evictIdle}. */
+    private final Map<String, Long> lastUsed = new ConcurrentHashMap<>();
+
     private final String baseUrl;
     private final String driverClassName;
     private final String username;
@@ -97,10 +104,25 @@ public class WorkspaceManager {
      */
     public JdbcTemplate current() {
         String id = WorkspaceContext.get();
+        return currentWorkspace().jdbcTemplate();
+    }
+
+    /**
+     * A transaction on the current workspace's database, for a change made of several
+     * statements that must land together — a table rebuild, a whole import. Runs on the same
+     * connection {@link #current()} uses, so statements issued through it take part.
+     */
+    public TransactionTemplate currentTransaction() {
+        return currentWorkspace().transactions();
+    }
+
+    private Workspace currentWorkspace() {
+        String id = WorkspaceContext.get();
         if (id == null || id.isBlank()) {
-            return workspaces.computeIfAbsent(SANDBOX_ID, this::createWorkspace).jdbcTemplate();
+            lastUsed.put(SANDBOX_ID, System.currentTimeMillis());
+            return workspaces.computeIfAbsent(SANDBOX_ID, this::createWorkspace);
         }
-        return forWorkspace(id).jdbcTemplate();
+        return forWorkspace(id);
     }
 
     /** True when the current request is scoped to a workspace rather than the default database. */
@@ -111,7 +133,63 @@ public class WorkspaceManager {
 
     public Workspace forWorkspace(String workspaceId) {
         String safeId = sanitize(workspaceId);
+        lastUsed.put(safeId, System.currentTimeMillis());
         return workspaces.computeIfAbsent(safeId, this::createWorkspace);
+    }
+
+    /**
+     * Closes the connections of workspaces nobody has used for {@code idle}, and then the least
+     * recently used ones beyond {@code maxOpen}.
+     *
+     * <p>The cache used to only ever grow. Every id a browser invents opens a connection (a
+     * pool of five on MySQL), so a long-running instance — or a caller inventing ids on
+     * purpose — accumulated them without limit. Closing one loses nothing: the data is in its
+     * file or schema, and the next request for it reopens it. In-memory SQLite is the exception,
+     * where the connection <em>is</em> the database, so it is never evicted.
+     *
+     * @return how many were closed
+     */
+    public int evictIdle(Duration idle, int maxOpen) {
+        if (isInMemory()) {
+            return 0;
+        }
+        long now = System.currentTimeMillis();
+        int closed = 0;
+        for (String id : List.copyOf(workspaces.keySet())) {
+            long used = lastUsed.getOrDefault(id, 0L);
+            if (now - used >= idle.toMillis() && closeOne(id)) {
+                closed++;
+            }
+        }
+        if (maxOpen > 0 && workspaces.size() > maxOpen) {
+            List<String> oldestFirst = workspaces.keySet().stream()
+                    .sorted(Comparator.comparingLong(id -> lastUsed.getOrDefault(id, 0L)))
+                    .toList();
+            for (String id : oldestFirst.subList(0, workspaces.size() - maxOpen)) {
+                if (closeOne(id)) {
+                    closed++;
+                }
+            }
+        }
+        if (closed > 0) {
+            log.info("Closed {} idle workspace connection(s); {} open", closed, workspaces.size());
+        }
+        return closed;
+    }
+
+    private boolean closeOne(String id) {
+        Workspace workspace = workspaces.remove(id);
+        lastUsed.remove(id);
+        if (workspace == null) {
+            return false;
+        }
+        close(workspace.dataSource());
+        return true;
+    }
+
+    /** How many workspaces have an open connection right now. */
+    public int openCount() {
+        return workspaces.size();
     }
 
     /**
@@ -121,6 +199,7 @@ public class WorkspaceManager {
     public void dropWorkspace(String workspaceId) {
         String safeId = sanitize(workspaceId);
         Workspace workspace = workspaces.remove(safeId);
+        lastUsed.remove(safeId);
 
         if (isMysql()) {
             try {
@@ -203,7 +282,8 @@ public class WorkspaceManager {
     private Workspace createWorkspace(String safeId) {
         DataSource dataSource = isMysql() ? createMysqlDataSource(safeId) : createSqliteDataSource(safeId);
         log.info("Opened workspace {} ({})", safeId, isMysql() ? "mysql" : "sqlite");
-        return new Workspace(dataSource, new JdbcTemplate(dataSource));
+        return new Workspace(dataSource, new JdbcTemplate(dataSource),
+                new TransactionTemplate(new DataSourceTransactionManager(dataSource)));
     }
 
     private DataSource createSqliteDataSource(String safeId) {
@@ -330,7 +410,8 @@ public class WorkspaceManager {
         workspaces.clear();
     }
 
-    /** A workspace's datasource plus the JdbcTemplate bound to it. */
-    public record Workspace(DataSource dataSource, JdbcTemplate jdbcTemplate) {
+    /** A workspace's datasource, the JdbcTemplate bound to it, and transactions on it. */
+    public record Workspace(DataSource dataSource, JdbcTemplate jdbcTemplate,
+                            TransactionTemplate transactions) {
     }
 }

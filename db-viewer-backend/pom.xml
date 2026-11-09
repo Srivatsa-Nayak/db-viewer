@@ -80,6 +80,12 @@
 
         <!-- Validation -->
         <dependency>
+            <!-- /actuator/health only (see application.properties): for Azure's health check -->
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>

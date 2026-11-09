@@ -46,13 +46,32 @@ interface SchemaChatProps {
     onSendToScratchpad: (sql: string) => void;
     /** Opens the profile dialog, where the API key lives. */
     onManageKey: () => void;
+    /**
+     * Changes whenever what `/chat/config` would say may have changed: a different user signed
+     * in, or the profile dialog (where the key is managed) was closed. The config is fetched once
+     * per value, so a key added while the panel said "unavailable" is picked up straight away —
+     * it used to stay unavailable until the page was reloaded.
+     */
+    configKey: string;
 }
+
+/** Where focus goes back to when the panel closes. */
+export const CHAT_LAUNCHER_ID = 'schema-assistant-launcher';
 
 export const SchemaChat = ({
     isOpen, onClose, workspaceKey, tableNames, hasAccount,
-    onNeedsAccount, onSendToScratchpad, onManageKey,
+    onNeedsAccount, onSendToScratchpad, onManageKey, configKey,
 }: SchemaChatProps) => {
-    const [config, setConfig] = useState<ChatConfig | null>(null);
+    // Kept with the key it was fetched for, and derived from that, rather than reset by an effect
+    // when the key changes: the lint config rejects setting state synchronously in an effect.
+    const [loaded, setLoaded] = useState<{ key: string; config: ChatConfig } | null>(null);
+    const config = loaded && loaded.key === configKey ? loaded.config : null;
+
+    const close = () => {
+        onClose();
+        // Back to the control that opened it, so keyboard users are not dropped at the top.
+        document.getElementById(CHAT_LAUNCHER_ID)?.focus();
+    };
 
     /**
      * Checked the first time the panel is opened, never on mount.
@@ -67,23 +86,27 @@ export const SchemaChat = ({
      * development double-invoke will fire two requests here, which is harmless for an idempotent
      * read — unlike `POST /share`, where the same double-invoke needed fixing server-side.
      */
+    const loadedKey = loaded?.key;
     useEffect(() => {
-        if (!isOpen || !hasAccount || config !== null) return;
+        if (!isOpen || !hasAccount || loadedKey === configKey) return;
 
         let cancelled = false;
         chatService.config()
-            .then(result => { if (!cancelled) setConfig(result); })
+            .then(result => { if (!cancelled) setLoaded({ key: configKey, config: result }); })
             .catch(() => {
                 if (cancelled) return;
-                setConfig({
-                    requiresAccount: true,
-                    signedIn: true,
-                    available: false,
-                    error: 'Could not reach the server. Is the backend running?',
+                setLoaded({
+                    key: configKey,
+                    config: {
+                        requiresAccount: true,
+                        signedIn: true,
+                        available: false,
+                        error: 'Could not reach the server. Is the backend running?',
+                    },
                 });
             });
         return () => { cancelled = true; };
-    }, [isOpen, hasAccount, config]);
+    }, [isOpen, hasAccount, configKey, loadedKey]);
 
     return (
         <aside
@@ -120,7 +143,7 @@ export const SchemaChat = ({
                     </button>
                     <button
                         type="button"
-                        onClick={onClose}
+                        onClick={close}
                         aria-label="Close the assistant"
                         className="shrink-0 p-1 rounded text-ink-400 hover:text-ink-800
                                    hover:bg-ink-100 transition-colors"
@@ -171,7 +194,10 @@ export const SchemaChat = ({
                         key={workspaceKey}
                         workspaceId={workspaceKey}
                         tableNames={tableNames}
+                        isOpen={isOpen}
+                        config={config}
                         onSendToScratchpad={onSendToScratchpad}
+                        onUnauthorized={onNeedsAccount}
                     />
                 )}
             </div>

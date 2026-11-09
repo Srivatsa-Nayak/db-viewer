@@ -425,7 +425,7 @@ The image sets `DB_PATH=/data/visualizer.db` and `WORKSPACE_DIR=/data/workspaces
 ## Testing
 
 ```bash
-./mvnw test                                     # all 203 tests
+./mvnw test                                     # all 262 tests
 ./mvnw test -Dtest=WorkspaceIsolationTest       # one class
 ./mvnw test -Dtest=ColumnEditTest#renameColumn_shouldKeepTypeAndData
 ```

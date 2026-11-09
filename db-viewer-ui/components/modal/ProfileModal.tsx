@@ -6,6 +6,7 @@ import { authService, AuthUser } from '@/services/api';
 import { Callout, GhostButton, Modal, ModalActions, PrimaryButton } from '@/components/ui/Modal';
 import { PasswordField } from '@/components/ui/PasswordField';
 import { ApiKeySection } from './ApiKeySection';
+import { errorMessage } from '@/services/errors';
 
 interface ProfileModalProps {
     isOpen: boolean;
@@ -66,9 +67,7 @@ export const ProfileModal = ({ isOpen, user, onClose, onUpdated }: ProfileModalP
             setSaved(true);
             setTimeout(() => setSaved(false), 2500);
         } catch (err: unknown) {
-            const message = err && typeof err === 'object' && 'response' in err
-                ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
-                : undefined;
+            const message = errorMessage(err);
             setError(message || 'Could not save your changes.');
         } finally {
             setBusy(false);

@@ -5,6 +5,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.TestPropertySource;
 
+import javax.crypto.Cipher;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Base64;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -27,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SecretCipherTest {
 
     private static final String API_KEY = "sk-ant-api03-ZG9udC1sb29rLWF0LW1lLXBsZWFzZQ";
+    private static final String SECRET = "test-secret-for-the-cipher-suite-0123456789";
 
     @Autowired
     private SecretCipher cipher;
@@ -66,6 +74,52 @@ class SecretCipherTest {
         assertThat(cipher.decrypt(null)).isNull();
         // Valid base64, but too short to hold a nonce and a tag.
         assertThat(cipher.decrypt("AAAA")).isNull();
+    }
+
+    @Test
+    void newCiphertextsAreVersioned() {
+        assertThat(cipher.encrypt(API_KEY, "a@example.com")).startsWith("v1:");
+        assertThat(cipher.isLegacy(cipher.encrypt(API_KEY))).isFalse();
+    }
+
+    /**
+     * A ciphertext is bound to its owner. Without that, anyone able to write to the database
+     * could copy one user's key into another user's row and spend it as them.
+     */
+    @Test
+    void aCiphertextMovedToAnotherOwnerDoesNotDecrypt() {
+        String sealed = cipher.encrypt(API_KEY, "alice@example.com");
+
+        assertThat(cipher.decrypt(sealed, "alice@example.com")).isEqualTo(API_KEY);
+        // Case does not matter: an email is one address however it was typed.
+        assertThat(cipher.decrypt(sealed, "Alice@Example.com")).isEqualTo(API_KEY);
+        assertThat(cipher.decrypt(sealed, "mallory@example.com")).isNull();
+    }
+
+    /** Keys saved before the v1 format was introduced must still be readable. */
+    @Test
+    void theFirstFormatIsStillRead() throws Exception {
+        byte[] key = MessageDigest.getInstance("SHA-256")
+                .digest(SECRET.getBytes(StandardCharsets.UTF_8));
+        byte[] nonce = new byte[12];
+        Cipher aes = Cipher.getInstance("AES/GCM/NoPadding");
+        aes.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, nonce));
+        byte[] sealed = aes.doFinal(API_KEY.getBytes(StandardCharsets.UTF_8));
+        byte[] combined = new byte[nonce.length + sealed.length];
+        System.arraycopy(sealed, 0, combined, nonce.length, sealed.length);
+        String legacy = Base64.getEncoder().encodeToString(combined);
+
+        assertThat(cipher.isLegacy(legacy)).isTrue();
+        assertThat(cipher.decrypt(legacy, "anyone@example.com")).isEqualTo(API_KEY);
+    }
+
+    @Test
+    void theDerivedKeyIsNotTheSessionSigningSecretsHash() throws Exception {
+        byte[] plainHash = MessageDigest.getInstance("SHA-256")
+                .digest(SECRET.getBytes(StandardCharsets.UTF_8));
+        assertThat(SecretCipher.hkdfSha256(SECRET.getBytes(StandardCharsets.UTF_8)))
+                .hasSize(32)
+                .isNotEqualTo(plainHash);
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.dbviewer.app.controller;
 
+import com.dbviewer.app.auth.RequiresAccount;
 import com.dbviewer.app.service.ShareService;
 import com.dbviewer.app.exception.UnauthorizedException;
 import io.swagger.v3.oas.annotations.Operation;
@@ -23,6 +24,7 @@ public class ShareController {
     public record ShareRequest(String fileName) {
     }
 
+    @RequiresAccount
     @PostMapping("/share")
     @Operation(summary = "Create a share link",
             description = "Creates a read-only link for the workspace named by X-Workspace-Id. "
@@ -57,6 +59,7 @@ public class ShareController {
         }
     }
 
+    @RequiresAccount
     @GetMapping("/shares")
     @Operation(summary = "List my share links")
     public ResponseEntity<?> listMine() {
@@ -65,11 +68,11 @@ public class ShareController {
         } catch (UnauthorizedException e) {
             return ResponseEntity.status(401).body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("List shares failed", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "List shares failed");
         }
     }
 
+    @RequiresAccount
     @DeleteMapping("/share/{token}")
     @Operation(summary = "Revoke a share link")
     public ResponseEntity<?> revoke(@PathVariable String token) {
@@ -81,8 +84,7 @@ public class ShareController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(404).body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Revoke share failed", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "Revoke share failed");
         }
     }
 }

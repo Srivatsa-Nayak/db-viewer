@@ -3,6 +3,7 @@ package com.dbviewer.app.service;
 import com.dbviewer.app.llm.ChatTurn;
 import com.dbviewer.app.llm.LlmCredentials;
 import com.dbviewer.app.llm.StreamResult;
+import com.dbviewer.app.llm.SystemPrompt;
 
 import java.util.List;
 import java.util.function.Consumer;
@@ -23,14 +24,22 @@ public interface ChatService {
     /**
      * Everything one model call needs, resolved while the request context still exists.
      *
-     * @param credentials whose key pays for the call
-     * @param system      the system prompt, including the schema of the open file
-     * @param messages    the trimmed conversation, ending with the new question
-     * @param tableCount  how many tables the assistant was shown, for the UI's context badge
-     * @param truncated   true when the schema was too large to send in full
+     * @param credentials   whose key pays for the call
+     * @param system        the system prompt: the instructions, then the open file's schema
+     * @param messages      the trimmed conversation, ending with the new question
+     * @param tableCount    how many tables and views the open file has
+     * @param omittedTables tables left out because the schema was too large to send in full;
+     *                      empty when everything fitted
+     * @param userEmail     who asked, for the usage log — captured here because the streaming
+     *                      thread cannot read it
      */
-    record ChatPrompt(LlmCredentials credentials, String system, List<ChatTurn> messages,
-                      int tableCount, boolean truncated) {
+    record ChatPrompt(LlmCredentials credentials, SystemPrompt system, List<ChatTurn> messages,
+                      int tableCount, List<String> omittedTables, String userEmail) {
+
+        /** True when the schema was too large to send in full. */
+        public boolean truncated() {
+            return !omittedTables.isEmpty();
+        }
     }
 
     /**
@@ -44,9 +53,10 @@ public interface ChatService {
      * Streams the answer, handing each fragment to {@code onFragment}. Safe to call off the
      * request thread.
      *
-     * @return how much was streamed and why it stopped. Zero characters means the model answered
-     *         with nothing, which is a failure the user has to be told about rather than an empty
-     *         bubble; a truncated or refused result has to be said out loud for the same reason
+     * @return how much was streamed, why it stopped and what it cost. Zero characters means the
+     *         model answered with nothing, which is a failure the user has to be told about rather
+     *         than an empty bubble; a truncated or refused result has to be said out loud for the
+     *         same reason
      */
     StreamResult stream(ChatPrompt prompt, Consumer<String> onFragment);
 }

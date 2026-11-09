@@ -5,6 +5,16 @@ import { AlertCircle, CheckCircle2, KeyRound, Loader2, Sparkles, Trash2 } from '
 import { ApiKeyStatus, apiKeyService } from '@/services/api';
 import { Callout } from '@/components/ui/Modal';
 import { PasswordField } from '@/components/ui/PasswordField';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { errorText } from '@/services/errors';
+
+/** What a key from each provider starts with, as the placeholder for the key field. */
+const KEY_PLACEHOLDER: Record<string, string> = {
+    ANTHROPIC: 'sk-ant-…',
+    OPENROUTER: 'sk-or-…',
+    OPENAI: 'sk-…',
+};
+
 
 /**
  * The bring-your-own-API-key panel inside the profile dialog.
@@ -40,6 +50,9 @@ export const ApiKeySection = ({ onChanged }: ApiKeySectionProps) => {
     const [isBusy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [saved, setSaved] = useState<string | null>(null);
+    const [confirmRemove, setConfirmRemove] = useState(false);
+    /** The model field for an already-saved key, edited on its own. Null until touched. */
+    const [savedModelDraft, setSavedModelDraft] = useState<string | null>(null);
 
     // Loaded on mount, following the ShareModal pattern: the dialog is only mounted while it is
     // open, so mounting is the fetch and there is nothing to re-run or reset.
@@ -75,16 +88,33 @@ export const ApiKeySection = ({ onChanged }: ApiKeySectionProps) => {
                 apiKey.trim(), provider || undefined, model.trim() || undefined);
             apply(next, 'Key saved. The assistant will use it from now on.');
         } catch (err: unknown) {
-            const message = err && typeof err === 'object' && 'response' in err
-                ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
-                : undefined;
-            setError(message || 'Could not save that key.');
+            setError(errorText(err, 'Could not save that key.'));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    /**
+     * Changes the model for the saved key without asking for the key again. The key is never
+     * shown back, so requiring it to change a model id meant finding it again somewhere else.
+     */
+    const saveModel = async () => {
+        if (savedModelDraft === null) return;
+        setError(null);
+        setBusy(true);
+        try {
+            const next = await apiKeyService.updateModel(savedModelDraft.trim());
+            setSavedModelDraft(null);
+            apply(next, `The assistant will use ${next.model} from now on.`);
+        } catch (err: unknown) {
+            setError(errorText(err, 'Could not change the model.'));
         } finally {
             setBusy(false);
         }
     };
 
     const remove = async () => {
+        setConfirmRemove(false);
         setError(null);
         setBusy(true);
         try {
@@ -119,6 +149,11 @@ export const ApiKeySection = ({ onChanged }: ApiKeySectionProps) => {
     // Blank means "work it out from the key". Once a provider is picked, its default model
     // becomes the placeholder, so the field says what leaving it empty will do.
     const chosen = status.providers.find(p => p.id === provider);
+    const storedProvider = status.providers.find(p => p.id === status.provider);
+    // Suggestions only: the field still takes any id, because providers add models faster than
+    // this list could be kept current.
+    const suggestions = Array.from(new Set(
+        chosen ? [chosen.defaultModel] : status.providers.map(p => p.defaultModel)));
 
     return (
         <div className="pt-5 border-t border-ink-200 space-y-4">
@@ -173,12 +208,12 @@ export const ApiKeySection = ({ onChanged }: ApiKeySectionProps) => {
                         </div>
                         <button
                             type="button"
-                            onClick={() => void remove()}
+                            onClick={() => setConfirmRemove(true)}
                             disabled={isBusy}
-                            className="ml-auto shrink-0 flex items-center gap-1 text-[11px] font-semibold
+                            className="ml-auto shrink-0 inline-flex items-center gap-1 h-6 px-1.5 text-xs font-semibold
                                        text-tone-error-ink hover:underline disabled:opacity-50"
                         >
-                            <Trash2 size={10} />
+                            <Trash2 size={11} />
                             Remove
                         </button>
                     </div>
@@ -193,6 +228,45 @@ export const ApiKeySection = ({ onChanged }: ApiKeySectionProps) => {
                     </p>
                 )}
             </div>
+
+            {status.usingOwnKey && (
+                <div>
+                    <label htmlFor="api-key-saved-model"
+                           className="block text-xs font-bold text-ink-500 uppercase mb-2">
+                        Model for your saved key
+                    </label>
+                    <div className="flex gap-2">
+                        <input
+                            id="api-key-saved-model"
+                            list="api-key-saved-model-suggestions"
+                            value={savedModelDraft ?? status.model ?? ''}
+                            onChange={e => { setSavedModelDraft(e.target.value); setError(null); }}
+                            placeholder={storedProvider?.defaultModel ?? 'Provider default'}
+                            className="flex-1 min-w-0 bg-surface border border-ink-300 rounded-md py-2 px-3
+                                       font-mono text-sm text-ink-900 placeholder:text-ink-400
+                                       placeholder:font-sans focus:outline-none focus:border-brand-500
+                                       focus:ring-1 focus:ring-brand-500"
+                        />
+                        <datalist id="api-key-saved-model-suggestions">
+                            {storedProvider && <option value={storedProvider.defaultModel} />}
+                        </datalist>
+                        <button
+                            type="button"
+                            onClick={() => void saveModel()}
+                            disabled={isBusy || savedModelDraft === null
+                                || savedModelDraft.trim() === (status.model ?? '')}
+                            className="shrink-0 px-3 py-2 rounded-md border border-ink-300 text-sm font-semibold
+                                       text-ink-700 hover:border-brand-400 hover:text-brand-700
+                                       disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        >
+                            Use this model
+                        </button>
+                    </div>
+                    <p className="text-[11px] text-ink-400 mt-1">
+                        No need to paste the key again. Leave it empty for the provider&rsquo;s default.
+                    </p>
+                </div>
+            )}
 
             {!status.keysSurviveRestart && (
                 <Callout tone="warning" icon={<AlertCircle size={14} />}>
@@ -225,7 +299,7 @@ export const ApiKeySection = ({ onChanged }: ApiKeySectionProps) => {
                 id="api-key-value"
                 label={status.usingOwnKey ? 'Replace your key' : 'API key'}
                 autoComplete="off"
-                placeholder="sk-ant-…"
+                placeholder={KEY_PLACEHOLDER[provider] ?? 'sk-ant-…, sk-or-… or sk-…'}
                 value={apiKey}
                 onChange={value => { setApiKey(value); setError(null); }}
                 hint="Stored encrypted, and never shown again. It is not checked here — saving
@@ -240,6 +314,7 @@ export const ApiKeySection = ({ onChanged }: ApiKeySectionProps) => {
                 </label>
                 <input
                     id="api-key-model"
+                    list="api-key-model-suggestions"
                     value={model}
                     onChange={e => { setModel(e.target.value); setError(null); }}
                     placeholder={chosen ? chosen.defaultModel : 'Uses the provider default'}
@@ -262,9 +337,27 @@ export const ApiKeySection = ({ onChanged }: ApiKeySectionProps) => {
                 {status.usingOwnKey ? 'Replace key' : 'Save key'}
             </button>
 
+            <datalist id="api-key-model-suggestions">
+                {suggestions.map(id => <option key={id} value={id} />)}
+            </datalist>
+
             {saved && (
                 <Callout tone="info" icon={<CheckCircle2 size={14} />}>{saved}</Callout>
             )}
+
+            <ConfirmDialog
+                isOpen={confirmRemove}
+                title="Remove your API key?"
+                message={status.defaultAvailable
+                    ? 'The assistant goes back to the app’s own key, with its daily limit.'
+                    : 'This server has no key of its own, so the assistant stops answering until you add one again.'}
+                detail="The key is deleted from this account and is not shown anywhere, so keep a copy if you will need it again."
+                confirmLabel="Remove key"
+                tone="danger"
+                isBusy={isBusy}
+                onConfirm={() => void remove()}
+                onClose={() => setConfirmRemove(false)}
+            />
             {error && <Callout tone="error" icon={<AlertCircle size={14} />}>{error}</Callout>}
         </div>
     );

@@ -57,8 +57,8 @@ File** to start from an empty database.
 | `npm run lint` | ESLint (flat config in `eslint.config.mjs`) |
 | `npx tsc --noEmit` | Type-only check |
 
-There is **no test suite**. `npx tsc --noEmit`, `npm run lint` and `npm run build` are the gates —
-run all three before pushing.
+`npm test` runs the Vitest unit tests in `tests/` (pure logic: parsers, the chat stream reader, the schema-to-graph transform, exporters). Together with `npx tsc --noEmit`, `npm run lint` and `npm run build` they are the gates —
+run all four before pushing.
 
 ---
 

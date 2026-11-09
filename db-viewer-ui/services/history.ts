@@ -20,6 +20,8 @@
  * - **Anything arbitrary SQL did.** See {@link HistoryStore.pushBarrier}.
  */
 
+import { errorText } from './errors';
+
 export interface HistoryEntry {
     /** Shown in the toast: "Undid: add column orders.status". */
     label: string;
@@ -181,11 +183,6 @@ class HistoryStore {
     }
 }
 
-const describe = (e: unknown): string => {
-    const message = e && typeof e === 'object' && 'response' in e
-        ? (e as { response?: { data?: { error?: string } } }).response?.data?.error
-        : undefined;
-    return message || 'That could not be reversed.';
-};
+const describe = (e: unknown): string => errorText(e, 'That could not be reversed.');
 
 export const history = new HistoryStore();

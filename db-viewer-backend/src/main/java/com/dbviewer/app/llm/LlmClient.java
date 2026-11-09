@@ -19,6 +19,8 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Consumer;
 
 /**
@@ -51,6 +53,26 @@ public class LlmClient {
 
     /** The Messages API is versioned by header, and the header is not optional. */
     private static final String ANTHROPIC_VERSION = "2023-06-01";
+
+    /**
+     * Statuses worth one more try. Rate limits, an overloaded or restarting backend (529 is
+     * Anthropic's "overloaded"), and gateway timeouts all clear by themselves within seconds;
+     * a 400 or a 401 will be exactly as wrong the second time.
+     */
+    private static final Set<Integer> RETRYABLE = Set.of(408, 429, 500, 502, 503, 504, 529);
+
+    /** Attempts after the first. Two keeps a user waiting at most a few seconds before an error. */
+    private static final int MAX_RETRIES = 2;
+
+    /** The longest a {@code Retry-After} is honoured. Anything longer is better reported than waited on. */
+    private static final long MAX_RETRY_WAIT_MS = 10_000;
+
+    /**
+     * OpenRouter models that need an explicit {@code cache_control} breakpoint to cache a prompt.
+     * OpenAI, DeepSeek and most others behind OpenRouter cache a repeated prefix automatically;
+     * Anthropic and Gemini models only cache what is marked.
+     */
+    private static final List<String> EXPLICIT_CACHE_PREFIXES = List.of("anthropic/", "google/");
 
     /**
      * The output-token ceiling for one answer.
@@ -87,13 +109,16 @@ public class LlmClient {
      * may name any model.
      */
     @Value("${app.llm.anthropic-effort:}")
-    private String anthropicEffort;
+    private String anthropicEffort = "";
 
     private final ObjectMapper json = new ObjectMapper();
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(15))
             .build();
+
+    /** How a retry waits. A field so tests can count the waits instead of sitting through them. */
+    private Sleeper sleeper = Thread::sleep;
 
     /**
      * Base URLs, overridable per provider.
@@ -105,46 +130,50 @@ public class LlmClient {
      * use this feature at all.
      */
     @Value("${app.llm.openrouter-base-url:" + OPENROUTER_BASE + "}")
-    private String openRouterBase;
+    private String openRouterBase = OPENROUTER_BASE;
 
     @Value("${app.llm.openai-base-url:" + OPENAI_BASE + "}")
-    private String openAiBase;
+    private String openAiBase = OPENAI_BASE;
 
     @Value("${app.llm.anthropic-base-url:" + ANTHROPIC_BASE + "}")
-    private String anthropicBase;
+    private String anthropicBase = ANTHROPIC_BASE;
 
     @Value("${app.llm.site-url:http://localhost:3000}")
-    private String siteUrl;
+    private String siteUrl = "http://localhost:3000";
 
     @Value("${app.llm.site-name:DB Viewer}")
-    private String siteName;
+    private String siteName = "DB Viewer";
+
+    @FunctionalInterface
+    interface Sleeper {
+        void sleep(long millis) throws InterruptedException;
+    }
+
+    /** Points every provider at one base URL, and replaces the retry wait. For tests only. */
+    void useForTests(String baseUrl, Sleeper testSleeper) {
+        this.openRouterBase = baseUrl;
+        this.openAiBase = baseUrl;
+        this.anthropicBase = baseUrl;
+        this.sleeper = testSleeper;
+    }
 
     /**
      * Streams an answer, handing each text fragment to {@code onFragment} as it arrives.
      *
-     * @return how much was streamed and why it stopped, so the caller can tell an empty, a
-     *         truncated or a refused answer from a finished one; all four arrive as a perfectly
-     *         successful HTTP response
+     * <p>A temporary failure <em>before</em> the stream starts — a rate limit, an overloaded
+     * backend, a dropped connection — is retried up to {@value #MAX_RETRIES} times with
+     * jittered backoff, honouring {@code Retry-After}. Nothing is ever retried once a fragment has
+     * been handed on: the user would see the start of the answer twice.
+     *
+     * @return how much was streamed, why it stopped, and what it cost, so the caller can tell an
+     *         empty, a truncated or a refused answer from a finished one; all four arrive as a
+     *         perfectly successful HTTP response
      * @throws LlmException when the provider refuses, times out, or the stream carries an error
      */
-    public StreamResult stream(LlmCredentials credentials, String system, List<ChatTurn> messages,
-                               Consumer<String> onFragment) {
+    public StreamResult stream(LlmCredentials credentials, SystemPrompt system,
+                               List<ChatTurn> messages, Consumer<String> onFragment) {
         HttpRequest request = buildRequest(credentials, system, messages);
-
-        HttpResponse<InputStream> response;
-        try {
-            response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
-        } catch (IOException e) {
-            throw new LlmException("Could not reach " + credentials.provider().label()
-                    + ". Check the server's network connection.", 0, e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new LlmException("The request was interrupted.", 0, e);
-        }
-
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new LlmException(describeFailure(response), response.statusCode());
-        }
+        HttpResponse<InputStream> response = sendWithRetry(request, credentials.provider());
 
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
@@ -155,11 +184,76 @@ public class LlmClient {
         }
     }
 
+    private HttpResponse<InputStream> sendWithRetry(HttpRequest request, LlmProvider provider) {
+        for (int attempt = 0; ; attempt++) {
+            boolean lastAttempt = attempt >= MAX_RETRIES;
+            HttpResponse<InputStream> response;
+            try {
+                response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            } catch (IOException e) {
+                if (lastAttempt) {
+                    throw new LlmException("Could not reach " + provider.label()
+                            + ". Check the server's network connection.", 0, e);
+                }
+                log.debug("{} unreachable (attempt {}), retrying: {}",
+                        provider.label(), attempt + 1, e.getMessage());
+                pause(backoffMillis(attempt, null));
+                continue;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new LlmException("The request was interrupted.", 0, e);
+            }
+
+            int status = response.statusCode();
+            if (status >= 200 && status < 300) {
+                return response;
+            }
+            if (lastAttempt || !RETRYABLE.contains(status)) {
+                throw new LlmException(describeFailure(response), status);
+            }
+            String retryAfter = response.headers().firstValue("retry-after").orElse(null);
+            closeQuietly(response);
+            log.info("{} answered {} (attempt {}), retrying", provider.label(), status, attempt + 1);
+            pause(backoffMillis(attempt, retryAfter));
+        }
+    }
+
+    /** 0.5s, then 1.5s, each with up to 250ms of jitter — or what the provider asked for, capped. */
+    static long backoffMillis(int attempt, String retryAfter) {
+        if (retryAfter != null) {
+            try {
+                long seconds = Long.parseLong(retryAfter.trim());
+                return Math.min(Math.max(seconds, 0) * 1000, MAX_RETRY_WAIT_MS);
+            } catch (NumberFormatException ignored) {
+                // An HTTP date. Rare from these APIs; the default backoff is a fine stand-in.
+            }
+        }
+        long base = attempt == 0 ? 500 : 1500;
+        return base + ThreadLocalRandom.current().nextLong(250);
+    }
+
+    private void pause(long millis) {
+        try {
+            sleeper.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new LlmException("The request was interrupted.", 0, e);
+        }
+    }
+
+    private void closeQuietly(HttpResponse<InputStream> response) {
+        try (InputStream ignored = response.body()) {
+            // Closing releases the connection back to the client's pool before the retry.
+        } catch (IOException ignored) {
+            // Already gone, which is what was wanted.
+        }
+    }
+
     /* ------------------------------------------------------------------ *
      * Requests
      * ------------------------------------------------------------------ */
 
-    private HttpRequest buildRequest(LlmCredentials credentials, String system,
+    private HttpRequest buildRequest(LlmCredentials credentials, SystemPrompt system,
                                      List<ChatTurn> messages) {
         boolean anthropic = credentials.provider() == LlmProvider.ANTHROPIC;
         String endpoint = switch (credentials.provider()) {
@@ -198,27 +292,52 @@ public class LlmClient {
         return base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
     }
 
-    String openAiBody(LlmCredentials credentials, String system, List<ChatTurn> messages) {
+    String openAiBody(LlmCredentials credentials, SystemPrompt system, List<ChatTurn> messages) {
         ObjectNode body = json.createObjectNode();
         body.put("model", credentials.model());
         body.put("stream", true);
         if (temperature != null) {
             body.put("temperature", temperature);
         }
+        boolean openRouter = credentials.provider() == LlmProvider.OPENROUTER;
         // OpenAI renamed the field, and its reasoning models reject the old name outright.
         // OpenRouter still documents max_tokens and translates it per backend.
-        body.put(credentials.provider() == LlmProvider.OPENAI ? "max_completion_tokens" : "max_tokens",
-                maxTokens);
+        body.put(openRouter ? "max_tokens" : "max_completion_tokens", maxTokens);
+
+        // Ask for the token counts. Neither API sends them on a stream unless told to; OpenRouter
+        // adds the price of the call, which is what the usage log is for.
+        if (openRouter) {
+            body.putObject("usage").put("include", true);
+        } else {
+            body.putObject("stream_options").put("include_usage", true);
+        }
 
         ArrayNode array = body.putArray("messages");
-        array.addObject().put("role", "system").put("content", system);
+        ObjectNode systemMessage = array.addObject().put("role", "system");
+        if (openRouter && needsExplicitCacheBreakpoint(credentials.model())) {
+            // Two content parts with the breakpoint on the schema, so everything up to the end of
+            // the schema is cached. A plain string cannot carry a breakpoint at all.
+            ArrayNode parts = systemMessage.putArray("content");
+            parts.addObject().put("type", "text").put("text", system.instructions());
+            ObjectNode schemaPart = parts.addObject().put("type", "text").put("text", system.schema());
+            schemaPart.putObject("cache_control").put("type", "ephemeral");
+        } else {
+            // Static instructions first, then the schema: a stable prefix is all that automatic
+            // caching needs.
+            systemMessage.put("content", system.full());
+        }
         for (ChatTurn turn : messages) {
             array.addObject().put("role", turn.role()).put("content", turn.content());
         }
         return body.toString();
     }
 
-    String anthropicBody(LlmCredentials credentials, String system, List<ChatTurn> messages) {
+    static boolean needsExplicitCacheBreakpoint(String model) {
+        String id = model == null ? "" : model.toLowerCase();
+        return EXPLICIT_CACHE_PREFIXES.stream().anyMatch(id::startsWith);
+    }
+
+    String anthropicBody(LlmCredentials credentials, SystemPrompt system, List<ChatTurn> messages) {
         ObjectNode body = json.createObjectNode();
         body.put("model", credentials.model());
         body.put("stream", true);
@@ -233,8 +352,13 @@ public class LlmClient {
             body.putObject("output_config").put("effort", anthropicEffort.trim());
         }
         // A top-level field rather than a message with role "system", which the Messages API
-        // rejects outright.
-        body.put("system", system);
+        // rejects outright. Two blocks, with the cache breakpoint on the schema: the instructions
+        // and the schema are the same on every turn about one file, so turn two reads them from
+        // the prompt cache at a tenth of the price.
+        ArrayNode systemBlocks = body.putArray("system");
+        systemBlocks.addObject().put("type", "text").put("text", system.instructions());
+        ObjectNode schemaBlock = systemBlocks.addObject().put("type", "text").put("text", system.schema());
+        schemaBlock.putObject("cache_control").put("type", "ephemeral");
 
         ArrayNode array = body.putArray("messages");
         for (ChatTurn turn : messages) {
@@ -251,6 +375,7 @@ public class LlmClient {
             throws IOException {
         int streamed = 0;
         String stopReason = null;
+        UsageTally usage = new UsageTally();
         String rawLine;
         while ((rawLine = reader.readLine()) != null) {
             String line = rawLine.trim();
@@ -283,6 +408,7 @@ public class LlmClient {
             if (reason != null) {
                 stopReason = reason;
             }
+            usage.read(frame, provider);
 
             String fragment = provider.isOpenAiCompatible()
                     ? frame.path("choices").path(0).path("delta").path("content").asText(null)
@@ -293,7 +419,7 @@ public class LlmClient {
                 onFragment.accept(fragment);
             }
         }
-        return new StreamResult(streamed, stopReason);
+        return new StreamResult(streamed, stopReason, usage.toUsage());
     }
 
     /**
@@ -317,6 +443,52 @@ public class LlmClient {
         }
         String text = reason.asText();
         return text.isBlank() ? null : text;
+    }
+
+    /**
+     * Accumulates token counts across the frames that carry them.
+     *
+     * <p>Anthropic spreads them out: input and cache counts on {@code message_start}, the running
+     * output count on {@code message_delta}. Its {@code input_tokens} excludes cached tokens, so
+     * the total prompt is the sum of the three. OpenAI-compatible providers send one
+     * {@code usage} object on a final chunk whose {@code choices} is empty.
+     */
+    private static final class UsageTally {
+        long input;
+        long output;
+        long cached;
+        Double cost;
+
+        void read(JsonNode frame, LlmProvider provider) {
+            if (provider.isOpenAiCompatible()) {
+                JsonNode usage = frame.path("usage");
+                if (!usage.isObject()) {
+                    return;
+                }
+                input = usage.path("prompt_tokens").asLong(input);
+                output = usage.path("completion_tokens").asLong(output);
+                cached = usage.path("prompt_tokens_details").path("cached_tokens").asLong(cached);
+                if (usage.path("cost").isNumber()) {
+                    cost = usage.path("cost").asDouble();
+                }
+                return;
+            }
+            String type = frame.path("type").asText();
+            if ("message_start".equals(type)) {
+                JsonNode usage = frame.path("message").path("usage");
+                long cacheRead = usage.path("cache_read_input_tokens").asLong(0);
+                long cacheWrite = usage.path("cache_creation_input_tokens").asLong(0);
+                input = usage.path("input_tokens").asLong(0) + cacheRead + cacheWrite;
+                cached = cacheRead;
+                output = usage.path("output_tokens").asLong(output);
+            } else if ("message_delta".equals(type)) {
+                output = frame.path("usage").path("output_tokens").asLong(output);
+            }
+        }
+
+        Usage toUsage() {
+            return new Usage(input, output, cached, cost);
+        }
     }
 
     /**

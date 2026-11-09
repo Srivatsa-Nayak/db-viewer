@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, Plus, Trash2, StickyNote, AlertCircle } from 'lucide-react';
 import { dbService, TableNote } from '@/services/api';
 import { Callout, Modal } from '@/components/ui/Modal';
+import { errorMessage } from '@/services/errors';
 
 interface TableNotesModalProps {
     isOpen: boolean;
@@ -49,9 +50,7 @@ export const TableNotesModal = ({ isOpen, tableName, onClose, onChanged }: Table
             onChanged?.();
             setError(null);
         } catch (err: unknown) {
-            const message = err && typeof err === 'object' && 'response' in err
-                ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
-                : undefined;
+            const message = errorMessage(err);
             setError(message || 'That did not work. Please try again.');
         } finally {
             setSaving(false);

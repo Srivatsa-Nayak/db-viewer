@@ -5,6 +5,7 @@ import { Plus, Trash2, Table2, Loader2, AlertCircle } from 'lucide-react';
 import { dbService, NewTableColumn } from '@/services/api';
 import { history } from '@/services/history';
 import { Callout, GhostButton, Modal, ModalActions, PrimaryButton } from '@/components/ui/Modal';
+import { errorMessage } from '@/services/errors';
 
 interface Props {
     isOpen: boolean;
@@ -107,9 +108,7 @@ export const CreateTableModal = ({ isOpen, onClose, onSuccess, existingTables }:
             onSuccess();
             onClose();
         } catch (err: unknown) {
-            const message = err && typeof err === "object" && "response" in err
-                ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
-                : undefined;
+            const message = errorMessage(err);
             setError(message || "Failed to create the table.");
         } finally {
             setIsSaving(false);

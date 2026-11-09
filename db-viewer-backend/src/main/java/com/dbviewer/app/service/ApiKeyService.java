@@ -38,6 +38,15 @@ public interface ApiKeyService {
      */
     Map<String, Object> save(String provider, String apiKey, String model);
 
+    /**
+     * Changes the model used with the stored key, without the key being pasted again — the key
+     * is never shown back, so asking for it to change a model id would mean finding it again.
+     *
+     * @param model a model id, or blank for the provider's default
+     * @throws IllegalArgumentException when no key is stored, or the id is not one
+     */
+    Map<String, Object> updateModel(String model);
+
     /** Forgets the stored key, so the user falls back to the application's own. */
     Map<String, Object> clear();
 

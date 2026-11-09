@@ -3,6 +3,7 @@
 import React from 'react';
 import { PanelRightClose, Sparkles } from 'lucide-react';
 import { Tooltip } from '@/components/ui/Tooltip';
+import { CHAT_LAUNCHER_ID } from './SchemaChat';
 
 /**
  * The round button in the canvas's top-right corner that opens the assistant.
@@ -17,16 +18,22 @@ import { Tooltip } from '@/components/ui/Tooltip';
 interface ChatLauncherProps {
     isOpen: boolean;
     onToggle: () => void;
+    /** This file already has a conversation — drawn as a dot, so it is findable when closed. */
+    hasConversation?: boolean;
 }
 
-export const ChatLauncher = ({ isOpen, onToggle }: ChatLauncherProps) => (
-    <Tooltip content={isOpen ? 'Hide the assistant' : 'Ask the schema assistant'}>
+export const ChatLauncher = ({ isOpen, onToggle, hasConversation }: ChatLauncherProps) => (
+    <Tooltip content={isOpen ? 'Hide the assistant (Ctrl+I)' : 'Ask the schema assistant (Ctrl+I)'}>
         <button
+            id={CHAT_LAUNCHER_ID}
             type="button"
             onClick={onToggle}
             aria-expanded={isOpen}
-            aria-label="Schema assistant"
-            className={`h-9 w-9 flex items-center justify-center rounded-full border transition-all
+            aria-label={hasConversation && !isOpen
+                ? 'Schema assistant, conversation in progress'
+                : 'Schema assistant'}
+            aria-keyshortcuts="Control+I"
+            className={`relative h-9 w-9 flex items-center justify-center rounded-full border transition-all
                         shadow-glow-md ${
                 isOpen
                     ? 'bg-surface border-brand-400 text-brand-600'
@@ -34,6 +41,10 @@ export const ChatLauncher = ({ isOpen, onToggle }: ChatLauncherProps) => (
             }`}
         >
             {isOpen ? <PanelRightClose size={15} /> : <Sparkles size={15} />}
+            {hasConversation && !isOpen && (
+                <span aria-hidden="true"
+                      className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-amber-400 ring-2 ring-surface" />
+            )}
         </button>
     </Tooltip>
 );

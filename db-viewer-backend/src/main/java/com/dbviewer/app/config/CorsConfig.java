@@ -1,5 +1,6 @@
 package com.dbviewer.app.config;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -8,13 +9,24 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.web.filter.CorsFilter;
 
+import java.util.Arrays;
 import java.util.List;
 
 /**
- * CORS Configuration - mirrors gin-contrib/cors default settings
+ * Which browser origins may call the API.
+ *
+ * <p>It used to be every origin ({@code *}). Credentials are off and auth is a bearer token, so
+ * that was not an open door, but it let any page on the web drive the API from a visitor's
+ * browser with whatever {@code X-Client-Id} it read or guessed. Now it is a list: the local dev
+ * server and the deployed UI by default, overridable with {@code CORS_ALLOWED_ORIGINS}
+ * (comma-separated; patterns such as {@code https://*.example.com} are allowed). Swagger UI is
+ * served from the API's own origin and needs no entry.
  */
 @Configuration
 public class CorsConfig {
+
+    @Value("${app.cors.allowed-origins:http://localhost:3000,http://127.0.0.1:3000}")
+    private String allowedOrigins;
 
     /**
      * Registered first in the chain, ahead of every application filter.
@@ -29,7 +41,10 @@ public class CorsConfig {
     @Bean
     public FilterRegistrationBean<CorsFilter> corsFilter() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOriginPatterns(List.of("*"));
+        config.setAllowedOriginPatterns(Arrays.stream(allowedOrigins.split(","))
+                .map(String::trim)
+                .filter(origin -> !origin.isEmpty())
+                .toList());
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(false);

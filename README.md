@@ -126,7 +126,7 @@ db-viewer/
 │   │   ├── sql/                Script splitter + MySQL→SQLite translator
 │   │   └── workspace/          Per-file database isolation
 │   ├── src/main/resources/     application.properties + mysql/prod profiles
-│   └── src/test/java/          81 JUnit 5 / MockMvc / AssertJ tests
+│   └── src/test/java/          262 JUnit 5 / MockMvc / AssertJ tests
 ├── db-viewer-ui/               Next.js 16 frontend
 │   ├── app/                    App Router: / landing, /app editor, /share/[token]
 │   ├── components/             header, canvas, editor, tables, modal
@@ -262,11 +262,21 @@ java -jar db-viewer-backend/target/db-viewer-*.jar \
 | `MYSQL_DB` | `dbviewer` | Default schema for no-workspace requests |
 | `MYSQL_USER` / `MYSQL_PASSWORD` | `root` / `root` | MySQL credentials |
 | `AUTH_SECRET` | *(none)* | Signing key for session tokens. **Set this (32+ chars) in any real deployment** — when blank a random key is generated at startup and everyone is signed out on every restart |
+| `CORS_ALLOWED_ORIGINS` | localhost:3000 + the deployed UI | Comma-separated browser origins allowed to call the API (patterns like `https://*.example.com` work). **A UI served from anywhere else gets CORS errors until it is listed** |
+| `RATE_LIMIT_ENABLED` / `RATE_LIMIT_TRUST_FORWARDED_FOR` | `true` / `true` | Per-address request limits (sign-in, sign-up, imports, raw SQL, everything). Behind a proxy the address is the last `X-Forwarded-For` hop; set the second to `false` if the app is reachable directly |
+| `MAX_UPLOAD_SIZE` / `IMPORT_MAX_STATEMENTS` / `IMPORT_MAX_CSV_ROWS` | `50MB` / `20000` / `200000` | Import limits, so one file cannot occupy the instance |
+| `WORKSPACE_ANONYMOUS_RETENTION_DAYS` | `30` | Anonymous (signed-out) files unused this long are deleted; `0` keeps them. Signed-in users' files are never swept |
+| `WORKSPACE_IDLE_CLOSE_MINUTES` / `WORKSPACE_MAX_OPEN` | `30` / `200` | Idle workspace connections are closed; the data stays on disk and reopens on the next request |
+| `SWAGGER_ENABLED` | `true` | Set `false` to turn off Swagger UI and `/v3/api-docs` |
+| `LOG_SQL` | `WARN` | `DEBUG` logs every SQL statement — local debugging only |
 | `LLM_API_KEY` | *(none)* | The app's own model key, used by the chat assistant for any signed-in user who has not supplied their own. Blank is a working deployment — the assistant reports itself unavailable until a user brings a key |
 | `LLM_PROVIDER` | `OPENROUTER` | `OPENROUTER`, `ANTHROPIC` or `OPENAI`. Picks the wire format as well as the endpoint |
 | `LLM_MODEL` | *(provider default)* | Model id for the app's key — e.g. `openai/gpt-4o`, `claude-sonnet-5` |
 | `LLM_MAX_TOKENS` | `8192` | Output-token ceiling per answer. Thinking models spend part of it before they start writing |
 | `LLM_ANTHROPIC_EFFORT` | *(none)* | Anthropic only: `low`, `medium` or `high`. Unset sends nothing, because older models reject it. `low` is plenty for schema questions on current models |
+| `LLM_QUOTA_PER_HOUR` / `LLM_QUOTA_PER_DAY` | `20` / `100` | Questions per user on the **app's** key. `0` = unlimited. A user's own key is limited only by `LLM_QUOTA_OWN_KEY_PER_HOUR` (`120`) |
+| `LLM_QUOTA_GLOBAL_PER_DAY` | `1000` | Questions on the app's key across everyone per day. Counted from the `llm_usage` table, so it survives restarts |
+| `LLM_KEY_SECRET` | *(none)* | Optional separate secret for encrypting saved API keys. Unset, a key derived from `AUTH_SECRET` is used; set, rotating `AUTH_SECRET` no longer makes saved keys unreadable |
 | `LLM_SITE_URL` | `http://localhost:3000` | Sent to OpenRouter for usage attribution; ignored by the others |
 
 `AUTH_SECRET` does double duty: it signs session tokens **and** derives the key that encrypts
@@ -305,7 +315,7 @@ set headers.
 | `GET` | `/templates/{id}` | One template, including its SQL body |
 | `POST` | `/templates/{id}/apply` | Create a template's tables in the current workspace |
 | `POST` | `/demo` | Shortcut for applying the Online Store template |
-| `GET` `PUT` `DELETE` | `/auth/api-key` | Read (masked), store or forget the caller's own model API key. The key itself is never returned |
+| `GET` `PUT` `PATCH` `DELETE` | `/auth/api-key` | Read (masked), store, change the model of, or forget the caller's own model API key. The key itself is never returned |
 | `POST` | `/chat` | Ask the schema assistant. Streams server-sent events: `meta`, then `delta` per fragment, then `done` — or `error`. Requires an account |
 | `GET` | `/chat/config` | Whether the assistant can answer, and whose key it would spend |
 | `DELETE` | `/table/{name}` | Drop a table (409 when still referenced) |
@@ -317,7 +327,8 @@ set headers.
 | `POST` | `/upload` | Import a `.csv` or `.sql` file (multipart, field `file`; optional `columnTypes` JSON of corrected types) |
 | `POST` | `/query` | Execute one raw SQL statement in the current workspace **(account required)** |
 | `GET` | `/db-info` | All tables, columns, row previews (max 100) and relationships |
-| `GET` | `/table-data/{table}` | Columns + rows (max 100) for one table |
+| `GET` | `/table-data/{table}?limit=&offset=` | Columns, one page of rows (default 100, at most 1,000), the real `total`, and the `keyColumn` rows are edited by (`id`, else a single-column primary key) |
+| `GET` | `/actuator/health` | `{"status":"UP"}` for the host's health check. Nothing else under `/actuator` is exposed |
 | `POST` | `/create-table` | Create a table with PK / `NOT NULL` / foreign keys |
 | `POST` | `/alter-table` | Add a column to an existing table |
 | `POST` | `/update-column` | Rename a column, or change its type or nullability |
@@ -360,14 +371,15 @@ curl localhost:8080/db-info -H 'X-Workspace-Id: fileA'   # sees only fileA's use
 ## ✅ Testing and quality gates
 
 ```bash
-# Backend — 203 tests, in-memory SQLite, no setup required
+# Backend — 262 tests, in-memory SQLite, no setup required
 cd db-viewer-backend && ./mvnw test
 
 # Single class
 ./mvnw test -Dtest=WorkspaceIsolationTest
 
-# Frontend — no test suite; these are the gates
+# Frontend — 20 Vitest unit tests (parsers, the chat stream reader, schema→graph, exports)
 cd db-viewer-ui
+npm test             # vitest run
 npx tsc --noEmit     # type check
 npm run lint         # eslint
 npm run build        # production build
@@ -393,6 +405,12 @@ failure worth catching — and the suite is deliberately one layer deep per beha
 | `ShareDuplicateLinkTest` | Repeated and concurrent sharing returning one link, and pre-existing duplicates neither breaking the route nor being silently revoked |
 | `SecretCipherTest` | Round-tripping a stored API key, a fresh nonce per encryption, a tampered ciphertext failing closed, and an unreadable one answering null rather than throwing |
 | `ApiKeyStorageTest` | Bring-your-own keys: encrypted at rest, never returned to the caller, masked to a hint, a user's key taking precedence over the app's — and that saving one makes **no** provider call, so pasting a key never costs anything |
+| `LlmClientTest` | Request bodies per provider (no `temperature`, cache breakpoints, usage requested), stream parsing for Anthropic and OpenRouter, retry before the first byte against a local stub server |
+| `ChatQuotaTest` | The app key's hourly and daily limits, failed answers not counted, usage written to `llm_usage`, `truncated` on the done frame |
+| `ChatSchemaRenderTest` | An oversized schema drops whole tables, names them, and keeps its relationships |
+| `SecurityHardeningTest` | Every `@RequiresAccount` route refuses an anonymous caller (walks the mapping table), per-address and per-account limits, CORS allowlist, health endpoint only |
+| `BackendRobustnessTest` | Paging and real totals, editing by primary key, transactional imports, import limits, idle-connection eviction, abandoned-workspace sweep |
+| `RateLimiterTest` | The fixed-window counter behind every limit |
 | `ChatPromptTest` | What the assistant is told — tables, columns, keys, foreign keys, the engine, open table notes — and what it is not: **no row values**, no forged `system` turn smuggled in through the history |
 
 ---
@@ -472,6 +490,8 @@ keep.
 | Port 8080 already in use | `./mvnw spring-boot:run -Dspring-boot.run.arguments=--server.port=8090` and set `NEXT_PUBLIC_API_URL` to match. |
 | Workspace files piling up in `data/workspaces` | Nothing prunes them automatically. Use **File → Delete file** in the UI, or delete the directory while the app is stopped. |
 | The assistant says no model key is configured | The server has no `LLM_API_KEY`. Either set one, or add your own in **Your profile → Assistant API key** — the assistant works fine on a user's own key alone. |
+| `429 Too many requests` | A limit was reached: sign-in or sign-up attempts from one address, imports, raw SQL, or the assistant's quota on the app's key. The response says how long to wait (`Retry-After`). Limits are listed in the configuration table |
+| The deployed UI shows CORS errors on every request | Its origin is not in `CORS_ALLOWED_ORIGINS`. Add it (comma-separated) and restart the backend |
 | Your saved API key disappeared after a restart | `AUTH_SECRET` is unset, so the encryption key is regenerated at boot and the stored ciphertext can no longer be read. The profile dialog warns about this. Set `AUTH_SECRET` and enter the key once more. |
 | The assistant answers "I can only see the schema" when asked about data | Working as intended. Row values are never sent to the model — only table names, columns, types, keys, relationships and your table notes. Use **Edit data** on the node for the rows themselves. |
 | The assistant's answer arrives all at once after a long pause | Something between the browser and the server is buffering the stream. The response sets `X-Accel-Buffering: no` for nginx; other proxies need their own buffering turned off for `/chat`. |

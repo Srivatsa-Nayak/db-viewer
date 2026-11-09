@@ -1431,6 +1431,8 @@ export default function DocsPage() {
                                 { action: "Ctrl + Z  /  Ctrl + Shift + Z", effect: <>Undo and redo — see <a href="#undo" className="text-brand-700 underline underline-offset-2">Undoing a change</a>. Ignored while you are typing, so text fields keep their own undo.</> },
                                 { action: "Ctrl + F", effect: <>Search the canvas for a table or column. The browser&apos;s own find cannot see inside the diagram, which is why this one replaces it.</> },
                                 { action: "Ctrl + Enter", effect: <>Run whatever is in the SQL panel.</> },
+                                { action: "Ctrl + I", effect: <>Open or close the schema assistant. Works from inside its message box too. <Key>Cmd</Key> on a Mac.</> },
+                                { action: "Enter  /  Shift + Enter", effect: <>In the assistant&apos;s message box, sends the question, or starts a new line.</> },
                                 { action: "Shift + drag", effect: <>Drag a selection box across the canvas. With two or more tables selected you can <a href="#grouping" className="text-brand-700 underline underline-offset-2">group them</a>.</> },
                                 { action: "Ctrl + click", effect: <>Add a table to the selection. <Key>Cmd</Key> on a Mac.</> },
                                 { action: "Double-click", effect: <>On a cell in a table node&apos;s <a href="#inline-data" className="text-brand-700 underline underline-offset-2">Data strip</a>, edits that value. A single click is left to the canvas, which uses it to select and drag.</> },

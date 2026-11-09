@@ -53,10 +53,36 @@ public interface DatabaseService {
     Map<String, Object> getDbInfo();
 
     /**
+     * The schema and nothing else: tables and views with their columns, relationships, indexes
+     * and view definitions. No rows.
+     *
+     * <p>For readers that only want structure — the chat assistant first. {@link #getDbInfo()}
+     * reads up to 100 rows per table, which such a reader would only throw away; this never
+     * reads one, so no row value can reach whoever asked.
+     *
+     * @return {@code tables} (List of TableInfo, rows empty), {@code relationships},
+     *         {@code indexes} (table name to rendered index lines, such as
+     *         {@code INDEX idx_posts_author (author_id)}), and {@code views} (view name to its
+     *         {@code CREATE VIEW} text)
+     */
+    Map<String, Object> getSchemaInfo();
+
+    /**
      * Gets column metadata and rows for a specific table.
      * Mirrors HandleGetTableData in Go.
      */
     Map<String, Object> getTableData(String tableName);
+
+    /**
+     * One page of a table's rows, with the total and the column rows are addressed by.
+     *
+     * @param limit  rows per page, 1 to 1,000
+     * @param offset rows to skip
+     * @return {@code columns}, {@code rows}, {@code total}, {@code limit}, {@code offset}, and
+     *         {@code keyColumn} — the column an edit or delete addresses a row by, or absent when
+     *         the table has neither an {@code id} column nor a single-column primary key
+     */
+    Map<String, Object> getTableData(String tableName, int limit, int offset);
 
     /**
      * Adds a column to an existing table.

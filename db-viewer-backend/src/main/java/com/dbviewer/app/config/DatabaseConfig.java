@@ -48,6 +48,10 @@ public class DatabaseConfig {
 
         jdbcTemplate.execute(Constants.Ddl.CREATE_SHARED_LINKS_TABLE);
 
+        // The assistant's daily usage aggregate. Also what the app key's global daily cap is
+        // counted from, so that cap survives a restart where the in-memory limits do not.
+        jdbcTemplate.execute(Constants.Usage.CREATE_TABLE);
+
         for (String alter : Constants.Ddl.ADD_APP_USERS_LLM_COLUMNS) {
             try {
                 jdbcTemplate.execute(alter);
@@ -68,6 +72,13 @@ public class DatabaseConfig {
             // SQLite nor MySQL offers a portable ADD COLUMN IF NOT EXISTS, so the attempt is
             // the check.
             log.debug("workspace_owners.file_name already present: {}", e.getMessage());
+        }
+        try {
+            jdbcTemplate.execute(Constants.Ownership.ADD_LAST_ACCESS);
+            log.info("Added last_access to workspace_owners");
+        } catch (Exception e) {
+            // Already there. Same "the attempt is the check" as the columns above.
+            log.debug("workspace_owners.last_access already present: {}", e.getMessage());
         }
         try {
             jdbcTemplate.execute(Constants.Ddl.CREATE_WORKSPACE_OWNERS_INDEX);

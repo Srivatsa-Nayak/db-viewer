@@ -37,13 +37,19 @@ public class WorkspaceFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
+        // The query-string forms exist for the download links documented in the README, which
+        // a browser cannot attach headers to. Only GET may use them: an identity carried in the
+        // URL ends up in proxy logs and browser history, and a state-changing request has no
+        // reason to need one there.
+        boolean queryFallback = "GET".equalsIgnoreCase(request.getMethod());
+
         String workspaceId = request.getHeader(HEADER);
-        if (workspaceId == null || workspaceId.isBlank()) {
+        if ((workspaceId == null || workspaceId.isBlank()) && queryFallback) {
             workspaceId = request.getParameter(QUERY_PARAM);
         }
 
         String clientId = request.getHeader(CLIENT_HEADER);
-        if (clientId == null || clientId.isBlank()) {
+        if ((clientId == null || clientId.isBlank()) && queryFallback) {
             clientId = request.getParameter(CLIENT_QUERY_PARAM);
         }
         ClientContext.set(clientId);

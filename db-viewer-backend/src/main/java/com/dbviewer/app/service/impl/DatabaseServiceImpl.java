@@ -97,6 +97,31 @@ public class DatabaseServiceImpl implements DatabaseService {
      * <p>Deliberately free of side effects — it never touches the workspace database — so the
      * dialog it feeds can be cancelled with nothing to undo.
      */
+    /**
+     * The most statements one {@code .sql} import may run, and the most rows one CSV may load.
+     * An import runs on a request thread against a single free-tier instance; without a cap, one
+     * file can occupy it for minutes. Both are far above any schema dump a person uploads.
+     */
+    @org.springframework.beans.factory.annotation.Value("${app.import.max-statements:20000}")
+    private int maxImportStatements = 20_000;
+
+    @org.springframework.beans.factory.annotation.Value("${app.import.max-csv-rows:200000}")
+    private int maxCsvRows = 200_000;
+
+    private void checkStatementCount(int count) {
+        if (count > maxImportStatements) {
+            throw new IllegalArgumentException("That script has " + count + " statements; an import "
+                    + "can run at most " + maxImportStatements + ". Split it into smaller files.");
+        }
+    }
+
+    private void checkCsvRowCount(long rows) {
+        if (rows > maxCsvRows) {
+            throw new IllegalArgumentException("That CSV has about " + rows + " rows; an import can "
+                    + "load at most " + maxCsvRows + ". Split it into smaller files.");
+        }
+    }
+
     @Override
     public ImportPlan analyzeUpload(MultipartFile file) throws Exception {
         String filename = file.getOriginalFilename() == null ? "" : file.getOriginalFilename();
@@ -104,7 +129,14 @@ public class DatabaseServiceImpl implements DatabaseService {
         if (!lower.endsWith(".sql") && !lower.endsWith(".csv")) {
             throw new IllegalArgumentException("Only .csv and .sql files are supported");
         }
-        return ImportAnalyzer.analyze(filename, new String(file.getBytes(), StandardCharsets.UTF_8));
+        String content = new String(file.getBytes(), StandardCharsets.UTF_8);
+        // Checked here as well as on upload, so the preview refuses a file the upload would.
+        if (lower.endsWith(".sql")) {
+            checkStatementCount(SqlScriptSplitter.split(content).size());
+        } else {
+            checkCsvRowCount(content.lines().count() - 1);
+        }
+        return ImportAnalyzer.analyze(filename, content);
     }
 
     /**
@@ -120,6 +152,7 @@ public class DatabaseServiceImpl implements DatabaseService {
         String content = new String(file.getBytes(), StandardCharsets.UTF_8);
 
         List<String> statements = SqlScriptSplitter.split(content);
+        checkStatementCount(statements.size());
         List<String> warnings = new ArrayList<>();
         SqlDialect dialect = SqlDialectDetector.detect(content);
 
@@ -130,18 +163,30 @@ public class DatabaseServiceImpl implements DatabaseService {
             warnings.addAll(translated.notes());
         }
 
-        int executed = 0;
         List<String> failures = new ArrayList<>();
-        for (String statement : statements) {
-            try {
-                jdbc().execute(statement);
-                executed++;
-            } catch (Exception e) {
-                String reason = rootCauseMessage(e);
-                failures.add(summarizeStatement(statement) + " - " + reason);
-                log.warn("Skipping statement ({}): {}", reason, summarizeStatement(statement));
+        List<String> toRun = statements;
+        java.util.function.IntSupplier runAll = () -> {
+            int count = 0;
+            for (String statement : toRun) {
+                try {
+                    jdbc().execute(statement);
+                    count++;
+                } catch (Exception e) {
+                    String reason = rootCauseMessage(e);
+                    failures.add(summarizeStatement(statement) + " - " + reason);
+                    log.warn("Skipping statement ({}): {}", reason, summarizeStatement(statement));
+                }
             }
-        }
+            return count;
+        };
+        // On SQLite the whole import is one transaction: a crash halfway leaves the file as it
+        // was rather than with half its tables, and thousands of INSERTs commit once instead of
+        // once each. A statement that fails still only undoes itself, so skipping one and
+        // carrying on works exactly as before. A script with its own BEGIN/COMMIT is run as
+        // written, since a transaction cannot be nested inside another.
+        int executed = isSqlite() && !managesItsOwnTransactions(toRun)
+                ? workspaceManager.currentTransaction().execute(status -> runAll.getAsInt())
+                : runAll.getAsInt();
 
         warnings.addAll(failures);
 
@@ -161,6 +206,19 @@ public class DatabaseServiceImpl implements DatabaseService {
         result.put("warnings", warnings.size() > 25 ? warnings.subList(0, 25) : warnings);
         result.put("warningCount", warnings.size());
         return result;
+    }
+
+    private static final Pattern TRANSACTION_CONTROL = Pattern.compile(
+            "^\\s*(BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|START\\s+TRANSACTION)\\b",
+            Pattern.CASE_INSENSITIVE);
+
+    private static boolean managesItsOwnTransactions(List<String> statements) {
+        return statements.stream().anyMatch(sql -> TRANSACTION_CONTROL.matcher(sql).find());
+    }
+
+    /** Runs {@code work} in one transaction on the current workspace's database. */
+    private void inTransaction(Runnable work) {
+        workspaceManager.currentTransaction().executeWithoutResult(status -> work.run());
     }
 
     private String summarizeStatement(String statement) {
@@ -195,6 +253,7 @@ public class DatabaseServiceImpl implements DatabaseService {
         if (csv.isEmpty()) {
             throw new IllegalArgumentException("CSV is empty");
         }
+        checkCsvRowCount(csv.rows().size());
 
         List<String> headers = csv.headers();
         List<ColumnTypeInference.Proposal> proposals = ColumnTypeInference.propose(csv);
@@ -355,6 +414,109 @@ public class DatabaseServiceImpl implements DatabaseService {
         }
 
         return Map.of("tables", tables, "relationships", relationships);
+    }
+
+    @Override
+    public Map<String, Object> getSchemaInfo() {
+        List<TableInfo> tables = new ArrayList<>();
+        List<Relationship> relationships = new ArrayList<>();
+        Map<String, List<String>> indexes = new LinkedHashMap<>();
+        Map<String, String> views = new LinkedHashMap<>();
+
+        for (String tbl : getTableNames()) {
+            tables.add(TableInfo.builder().name(tbl).columns(getColumnsForTable(tbl))
+                    .rows(List.of()).build());
+            relationships.addAll(getForeignKeys(tbl));
+            List<String> described = describeIndexes(tbl);
+            if (!described.isEmpty()) {
+                indexes.put(tbl, described);
+            }
+        }
+        for (String viewName : getViewNames()) {
+            tables.add(TableInfo.builder().name(viewName).columns(getColumnsForTable(viewName))
+                    .rows(List.of()).view(true).build());
+            String definition = viewDefinition(viewName);
+            if (definition != null && !definition.isBlank()) {
+                views.put(viewName, definition.strip());
+            }
+        }
+        return Map.of("tables", tables, "relationships", relationships,
+                "indexes", indexes, "views", views);
+    }
+
+    /**
+     * A table's indexes as one line each, for a reader that cannot run {@code PRAGMA}.
+     *
+     * <p>Leaves out what the column lines already say: the primary key, and a UNIQUE on a single
+     * column (rendered on the column itself). What remains is exactly what a question about
+     * indexing needs and the column list does not show — every {@code CREATE INDEX}, and each
+     * composite UNIQUE.
+     */
+    private List<String> describeIndexes(String tableName) {
+        List<String> lines = new ArrayList<>();
+        try {
+            if (isMysql()) {
+                Map<String, List<String>> columns = new LinkedHashMap<>();
+                Map<String, Boolean> unique = new HashMap<>();
+                jdbc().query(Constants.Introspection.MYSQL_INDEX_COLUMNS, rs -> {
+                    String index = rs.getString("INDEX_NAME");
+                    columns.computeIfAbsent(index, k -> new ArrayList<>()).add(rs.getString("COLUMN_NAME"));
+                    unique.put(index, rs.getInt("NON_UNIQUE") == 0);
+                }, tableName);
+                columns.forEach((index, cols) -> {
+                    if ("PRIMARY".equalsIgnoreCase(index)) return;
+                    boolean isUnique = unique.getOrDefault(index, false);
+                    if (isUnique && cols.size() == 1) return;
+                    lines.add((isUnique ? "UNIQUE INDEX " : "INDEX ") + index
+                            + " (" + String.join(", ", cols) + ")");
+                });
+                return lines;
+            }
+
+            record SqliteIndex(String name, boolean unique, String origin) { }
+            List<SqliteIndex> found = new ArrayList<>();
+            jdbc().query(String.format(Constants.Introspection.SQLITE_INDEX_LIST,
+                    escapeQuoted(tableName)), rs -> {
+                found.add(new SqliteIndex(rs.getString("name"), rs.getInt("unique") == 1,
+                        rs.getString("origin")));
+            });
+            for (SqliteIndex index : found) {
+                if ("pk".equalsIgnoreCase(index.origin())) continue;
+                List<String> cols = new ArrayList<>();
+                jdbc().query(String.format(Constants.Introspection.SQLITE_INDEX_INFO,
+                        escapeQuoted(index.name())), rs -> { cols.add(rs.getString("name")); });
+                if (cols.isEmpty()) continue;
+                if ("u".equalsIgnoreCase(index.origin())) {
+                    // A UNIQUE in the table definition. One column is already on the column line.
+                    if (cols.size() > 1) lines.add("UNIQUE (" + String.join(", ", cols) + ")");
+                    continue;
+                }
+                lines.add((index.unique() ? "UNIQUE INDEX " : "INDEX ") + index.name()
+                        + " (" + String.join(", ", cols) + ")");
+            }
+        } catch (Exception e) {
+            // The schema without its indexes is still the schema; refusing the read over it
+            // would not be an improvement.
+            log.debug("Could not describe indexes for {}: {}", tableName, e.getMessage());
+        }
+        return lines;
+    }
+
+    private String viewDefinition(String viewName) {
+        try {
+            List<String> sql = jdbc().queryForList(isMysql()
+                    ? Constants.Introspection.MYSQL_VIEW_DDL
+                    : Constants.Introspection.SQLITE_VIEW_DDL, String.class, viewName);
+            return sql.isEmpty() ? null : sql.get(0);
+        } catch (Exception e) {
+            log.debug("Could not read the definition of view {}: {}", viewName, e.getMessage());
+            return null;
+        }
+    }
+
+    /** For a name going inside a double-quoted identifier in a PRAGMA: a quote is doubled. */
+    private static String escapeQuoted(String name) {
+        return name == null ? "" : name.replace("\"", "\"\"");
     }
 
     /**
@@ -525,12 +687,76 @@ public class DatabaseServiceImpl implements DatabaseService {
      */
     @Override
     public Map<String, Object> getTableData(String tableName) {
+        return getTableData(tableName, 100, 0);
+    }
+
+    /** The largest page a caller may ask for. The data editor is a grid, not an export. */
+    private static final int MAX_PAGE_SIZE = 1_000;
+
+    @Override
+    public Map<String, Object> getTableData(String tableName, int limit, int offset) {
         // The name comes straight from the URL and is formatted into SQL below. Checking it
         // against what the database reports is what keeps a quote in it from being an injection.
-        tableName = requireExistingTableOrView(tableName);
-        List<ColumnInfo> columns = getColumnsForTable(tableName);
-        List<Map<String, Object>> rows = safeQueryRows(String.format(Constants.Rows.SELECT_ALL_LIMITED, tableName));
-        return Map.of("columns", columns, "rows", rows);
+        String table = requireExistingTableOrView(tableName);
+        int pageSize = Math.max(1, Math.min(limit, MAX_PAGE_SIZE));
+        int skip = Math.max(0, offset);
+
+        List<ColumnInfo> columns = getColumnsForTable(table);
+        List<Map<String, Object>> rows;
+        try {
+            rows = jdbc().queryForList(String.format(Constants.Rows.SELECT_PAGE, table), pageSize, skip);
+        } catch (Exception e) {
+            log.debug("Could not read a page of {}: {}", table, e.getMessage());
+            rows = List.of();
+        }
+        long total;
+        try {
+            Long count = jdbc().queryForObject(String.format(Constants.Rows.COUNT_ROWS, table), Long.class);
+            total = count == null ? rows.size() : count;
+        } catch (Exception e) {
+            total = rows.size();
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("columns", columns);
+        result.put("rows", rows);
+        // The real row count, so the editor can say "100 of 2,431" instead of implying the
+        // first page is the whole table.
+        result.put("total", total);
+        result.put("limit", pageSize);
+        result.put("offset", skip);
+        String key = keyColumnOf(columns);
+        if (key != null) {
+            result.put("keyColumn", key);
+        }
+        return result;
+    }
+
+    /**
+     * The column that identifies a row for an edit or a delete.
+     *
+     * <p>An {@code id} column if there is one, which keeps every existing table addressed as
+     * before. Otherwise the table's primary key, when it is a single column — the case that used
+     * to make a table uneditable just because its key was called {@code customer_code}. A
+     * composite or missing key still leaves rows unaddressable, and the UI says so.
+     */
+    private static String keyColumnOf(List<ColumnInfo> columns) {
+        for (ColumnInfo column : columns) {
+            if ("id".equalsIgnoreCase(column.getName())) {
+                return column.getName();
+            }
+        }
+        List<ColumnInfo> keys = columns.stream().filter(ColumnInfo::isPk).toList();
+        return keys.size() == 1 ? keys.get(0).getName() : null;
+    }
+
+    private String requireKeyColumn(String tableName) {
+        String key = keyColumnOf(getColumnsForTable(tableName));
+        if (key == null) {
+            throw new IllegalArgumentException("\"" + tableName + "\" has no id column or "
+                    + "single-column primary key, so its rows cannot be addressed one at a time.");
+        }
+        return key;
     }
 
     // ─── Add Column ───────────────────────────────────────────────────────────────
@@ -918,6 +1144,11 @@ public class DatabaseServiceImpl implements DatabaseService {
         boolean foreignKeysWereOn = sqliteForeignKeysEnabled();
         jdbc().execute(Constants.Session.SQLITE_FOREIGN_KEYS_OFF);
         try {
+            // One transaction for the whole rebuild. Without it, a crash or a failure between
+            // DROP TABLE and RENAME left the data only in the temporary copy — the table the
+            // user was editing simply gone. PRAGMA foreign_keys is set outside, as SQLite
+            // ignores it inside a transaction.
+            inTransaction(() -> {
             jdbc().execute(String.format(Constants.Tables.DROP_TABLE_IF_EXISTS_QUOTED, temp));
             jdbc().execute(String.format(Constants.Tables.CREATE_TABLE,
                     quote(temp), String.join(", ", definitions)));
@@ -943,6 +1174,7 @@ public class DatabaseServiceImpl implements DatabaseService {
                     log.warn("Could not recreate index on {}: {}", tableName, indexError.getMessage());
                 }
             }
+            });
         } catch (RuntimeException e) {
             // Leave the original table untouched rather than half-migrated.
             try {
@@ -1217,7 +1449,8 @@ public class DatabaseServiceImpl implements DatabaseService {
         // Both names go straight into the statement, so both are checked against the schema.
         String tableName = requireExistingTable(req.getTableName());
         String colName = requireExistingColumn(tableName, req.getColumnName());
-        String sql = String.format(Constants.Rows.UPDATE_CELL_BY_ID, tableName, colName);
+        String key = requireKeyColumn(tableName);
+        String sql = String.format(Constants.Rows.UPDATE_CELL_BY_KEY, tableName, colName, key);
         jdbc().update(sql, req.getNewValue(), req.getRecordId());
     }
 
@@ -1266,7 +1499,8 @@ public class DatabaseServiceImpl implements DatabaseService {
     @Override
     public void deleteRow(DeleteRowRequest req) {
         String tableName = requireExistingTable(req.getTableName());
-        jdbc().update(String.format(Constants.Rows.DELETE_BY_ID, tableName), req.getRecordId());
+        String key = requireKeyColumn(tableName);
+        jdbc().update(String.format(Constants.Rows.DELETE_BY_KEY, tableName, key), req.getRecordId());
     }
 
     // ─── Clear Database ───────────────────────────────────────────────────────────

@@ -212,6 +212,57 @@ class ApiKeyStorageTest {
     }
 
     @Test
+    void theStoredKeyIsBoundToItsOwner() {
+        apiKeyService.save("ANTHROPIC", ANTHROPIC_KEY, null);
+        String sealed = storedCipher();
+
+        // Copied into somebody else's row, it does not open for them.
+        jdbcTemplate.update("DELETE FROM app_users WHERE email = ?", "thief@example.com");
+        jdbcTemplate.update(Constants.Auth.INSERT_USER,
+                "thief@example.com", "T", "not-a-real-hash", Instant.now().toString());
+        jdbcTemplate.update("UPDATE app_users SET llm_provider = 'ANTHROPIC', llm_key_cipher = ? "
+                + "WHERE email = ?", sealed, "thief@example.com");
+        AuthContext.set("thief@example.com");
+        try {
+            assertThatThrownBy(() -> apiKeyService.resolve())
+                    .hasMessageContaining("can no longer be read");
+        } finally {
+            AuthContext.set(EMAIL);
+            jdbcTemplate.update("DELETE FROM app_users WHERE email = ?", "thief@example.com");
+        }
+    }
+
+    @Test
+    void theModelCanBeChangedWithoutPastingTheKeyAgain() {
+        apiKeyService.save("ANTHROPIC", ANTHROPIC_KEY, null);
+
+        Map<String, Object> after = apiKeyService.updateModel("claude-haiku-5-5");
+
+        assertThat(after.get("model")).isEqualTo("claude-haiku-5-5");
+        assertThat(apiKeyService.resolve().apiKey()).isEqualTo(ANTHROPIC_KEY);
+        // Blank goes back to the provider's default.
+        assertThat(apiKeyService.updateModel(" ").get("model"))
+                .isEqualTo(LlmProvider.ANTHROPIC.defaultModel());
+    }
+
+    @Test
+    void aModelIdOfTheWrongShapeIsRefused() {
+        assertThatThrownBy(() -> apiKeyService.save("ANTHROPIC", ANTHROPIC_KEY, "claude; DROP TABLE"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("model id");
+        // OpenRouter ids with slashes, dots and colons are fine.
+        apiKeyService.save("OPENROUTER", "sk-or-v1-abcdefghijklmnop", "anthropic/claude-sonnet-4.5:beta");
+        assertThat(apiKeyService.resolve().model()).isEqualTo("anthropic/claude-sonnet-4.5:beta");
+    }
+
+    @Test
+    void changingTheModelWithNoKeySavedIsRefused() {
+        assertThatThrownBy(() -> apiKeyService.updateModel("gpt-4o"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Save an API key first");
+    }
+
+    @Test
     void clearingRevertsToTheApplicationsKeyWithoutDeletingTheAccount() {
         apiKeyService.save(null, ANTHROPIC_KEY, null);
 

@@ -48,8 +48,42 @@ export const normaliseSchema = (raw: RawSchemaResponse | undefined): SchemaRespo
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
+/**
+ * Every request gives up after this long. There was no timeout at all, so a backend that
+ * accepted a connection and then stalled left spinners turning for ever. Imports pass their own,
+ * longer one: a 50MB dump on a slow link legitimately takes minutes.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
+const IMPORT_TIMEOUT_MS = 5 * 60_000;
+
 const api = axios.create({
     baseURL: API_URL,
+    timeout: REQUEST_TIMEOUT_MS,
+});
+
+/**
+ * Gives a failure with no response — a timeout, the backend down, the network gone — the same
+ * `{error}` body a refusal from the backend has.
+ *
+ * Every call site reads `errorMessage(err)` and falls back to its own generic text, which for
+ * these cases was all anyone ever saw ("Could not save the column") with no hint that the
+ * problem was the connection rather than the column. A real response is passed through
+ * untouched, so `isAuthRequired` and `isForeignWorkspace` see exactly what they did before.
+ */
+api.interceptors.response.use(undefined, (error) => {
+    if (axios.isAxiosError(error) && !error.response && !axios.isCancel(error)) {
+        const message = error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT'
+            ? 'The server took too long to answer. Try again in a moment.'
+            : 'Could not reach the server. Check your connection, or whether the backend is running.';
+        error.response = {
+            status: 0,
+            statusText: '',
+            headers: {},
+            config: error.config!,
+            data: { error: message },
+        };
+    }
+    return Promise.reject(error);
 });
 
 /**
@@ -259,7 +293,7 @@ export const dbService = {
     analyzeUpload: async (file: File): Promise<ImportPlan> => {
         const formData = new FormData();
         formData.append('file', file);
-        const res = await api.post<ImportPlan>('/import/analyze', formData);
+        const res = await api.post<ImportPlan>('/import/analyze', formData, { timeout: IMPORT_TIMEOUT_MS });
         return res.data;
     },
 
@@ -275,7 +309,7 @@ export const dbService = {
         if (columnTypes && Object.keys(columnTypes).length > 0) {
             formData.append('columnTypes', JSON.stringify(columnTypes));
         }
-        const res = await api.post<UploadReport>('/upload', formData);
+        const res = await api.post<UploadReport>('/upload', formData, { timeout: IMPORT_TIMEOUT_MS });
         return res.data ?? {};
     },
 
@@ -490,9 +524,16 @@ export const dbService = {
     },
 
     // Get fresh data for a single table
-    getTableData: async (tableName: string): Promise<TableDataResponse | RowData[]> => {
-        const res = await api.get<{ columns?: (RawColumnInfo | string)[]; rows?: RowData[] } | RowData[]>(
-            `/table-data/${encodeURIComponent(tableName)}?_t=${new Date().getTime()}`);
+    getTableData: async (
+        tableName: string,
+        page: { limit?: number; offset?: number } = {},
+    ): Promise<TableDataResponse | RowData[]> => {
+        const params = new URLSearchParams({ _t: String(Date.now()) });
+        if (page.limit !== undefined) params.set('limit', String(page.limit));
+        if (page.offset !== undefined) params.set('offset', String(page.offset));
+        const res = await api.get<
+            { columns?: (RawColumnInfo | string)[]; rows?: RowData[]; total?: number; keyColumn?: string }
+            | RowData[]>(`/table-data/${encodeURIComponent(tableName)}?${params}`);
         const body = res.data;
         if (Array.isArray(body)) return body;
         const rawCols = body?.columns ?? [];
@@ -501,6 +542,8 @@ export const dbService = {
                 ? rawCols
                 : (rawCols as RawColumnInfo[]).map(normaliseColumn),
             rows: body?.rows ?? [],
+            total: typeof body?.total === 'number' ? body.total : undefined,
+            keyColumn: typeof body?.keyColumn === 'string' ? body.keyColumn : undefined,
         };
     },
 
@@ -712,6 +755,12 @@ export const apiKeyService = {
         return res.data;
     },
 
+    /** Changes the model for the saved key, without sending the key again. Blank = default. */
+    updateModel: async (model: string): Promise<ApiKeyStatus> => {
+        const res = await api.patch<ApiKeyStatus>('/auth/api-key', { model });
+        return res.data;
+    },
+
     clear: async (): Promise<ApiKeyStatus> => {
         const res = await api.delete<ApiKeyStatus>('/auth/api-key');
         return res.data;
@@ -727,6 +776,8 @@ export interface ChatConfig {
     providerLabel?: string;
     model?: string;
     error?: string;
+    /** Questions left today on the app's own key; absent when the user's own key is in use. */
+    quota?: { limit: number; remaining: number };
 }
 
 /** The first frame of an answer: what is about to write it, and what it was shown. */
@@ -736,6 +787,8 @@ export interface ChatMeta {
     usingOwnKey: boolean;
     tables: number;
     schemaTruncated: boolean;
+    /** How many tables were left out of the prompt because the schema was too large. */
+    omittedTables?: number;
 }
 
 export interface ChatTurnPayload {
@@ -754,6 +807,11 @@ interface ChatHandlers {
      * there, especially when it ends inside a SQL block.
      */
     onTruncated?: () => void;
+    /**
+     * The session is no longer signed in (an expired token). Called in addition to `onError`,
+     * so the caller can open the same sign-in prompt the rest of the app uses.
+     */
+    onUnauthorized?: () => void;
 }
 
 export const chatService = {
@@ -808,12 +866,16 @@ export const chatService = {
                 // Not JSON either. The status is all there is.
             }
             handlers.onError(detail);
+            if (response.status === 401) handlers.onUnauthorized?.();
             return;
         }
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+        // Whether `done` or `error` arrived. A stream that just stops — a proxy timeout, the
+        // server restarting — would otherwise look exactly like a finished answer.
+        let finished = false;
 
         for (;;) {
             const { value, done } = await reader.read();
@@ -845,12 +907,16 @@ export const chatService = {
                 } else if (event === 'meta') {
                     handlers.onMeta?.(parsed as unknown as ChatMeta);
                 } else if (event === 'done') {
+                    finished = true;
                     if (parsed.truncated === true) handlers.onTruncated?.();
                 } else if (event === 'error') {
                     handlers.onError(String(parsed.message ?? 'The assistant failed.'));
                     return;
                 }
             }
+        }
+        if (!finished && !signal?.aborted) {
+            handlers.onError('The connection ended before the answer finished. Ask again to retry.');
         }
     },
 };

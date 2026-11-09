@@ -80,7 +80,8 @@ public class ApiKeyServiceImpl implements ApiKeyService {
         // Decrypted, not just looked for. A ciphertext that is there but cannot be read (the
         // secret was rotated, or the server restarted without one) is not a working key, and
         // the profile used to say "Using your key" about it while the chat could not use it.
-        boolean unreadable = hasStored && cipher.decrypt(text(row, "llm_key_cipher")) == null;
+        boolean unreadable = hasStored
+                && cipher.decrypt(text(row, "llm_key_cipher"), email) == null;
 
         result.put("usingOwnKey", hasStored && !unreadable);
         result.put("keyUnreadable", unreadable);
@@ -131,9 +132,7 @@ public class ApiKeyServiceImpl implements ApiKeyService {
                             + "Pick the provider explicitly if you are sure it is right.");
         }
 
-        String chosenModel = model == null || model.isBlank()
-                ? provider.defaultModel()
-                : model.trim();
+        String chosenModel = chooseModel(provider, model);
 
         // Deliberately stored without asking the provider whether it works. Verifying would be
         // one model call per save — small, but real money on the user's own account, and it is
@@ -141,10 +140,35 @@ public class ApiKeyServiceImpl implements ApiKeyService {
         // question instead, and the chat's error path names the provider and says to re-enter
         // it in the profile, which is the same advice a failed check here would have given.
         jdbcTemplate.update(Constants.Auth.UPDATE_LLM_KEY,
-                provider.name(), cipher.encrypt(key), chosenModel, mask(key), email);
+                provider.name(), cipher.encrypt(key, email), chosenModel, mask(key), email);
         log.info("Stored an own-key {} credential for {}", provider.label(), email);
 
         return describe();
+    }
+
+    @Override
+    public Map<String, Object> updateModel(String model) {
+        String email = AuthContext.require();
+        LlmProvider stored = LlmProvider.parse(text(findUser(email), "llm_provider"));
+        if (stored == null) {
+            throw new IllegalArgumentException("Save an API key first, then choose its model.");
+        }
+        jdbcTemplate.update(Constants.Auth.UPDATE_LLM_MODEL, chooseModel(stored, model), email);
+        return describe();
+    }
+
+    /** The provider's default for a blank id; otherwise the id, if it is shaped like one. */
+    private String chooseModel(LlmProvider provider, String model) {
+        if (model == null || model.isBlank()) {
+            return provider.defaultModel();
+        }
+        String trimmed = model.trim();
+        if (!LlmProvider.isValidModelId(trimmed)) {
+            throw new IllegalArgumentException("That does not look like a model id. Use the id "
+                    + "exactly as " + provider.label() + " lists it, for example "
+                    + provider.defaultModel() + ".");
+        }
+        return trimmed;
     }
 
     @Override
@@ -182,7 +206,8 @@ public class ApiKeyServiceImpl implements ApiKeyService {
         if (provider == null) {
             return null;
         }
-        String key = cipher.decrypt(text(row, "llm_key_cipher"));
+        String stored = text(row, "llm_key_cipher");
+        String key = cipher.decrypt(stored, email);
         if (key == null) {
             // The secret was rotated, or the server restarted without one configured. This used
             // to fall back to the application's key silently, which billed the operator for a
@@ -194,6 +219,16 @@ public class ApiKeyServiceImpl implements ApiKeyService {
                     "Your saved " + provider.label() + " API key can no longer be read - the "
                             + "server's secret has changed. Paste it again in your profile, or "
                             + "remove it to use the app's key.");
+        }
+        if (cipher.isLegacy(stored)) {
+            // Saved before the cipher bound keys to their owner. Re-saved now that it has been
+            // read, so the old format does not have to be supported for ever.
+            try {
+                jdbcTemplate.update(Constants.Auth.UPDATE_LLM_KEY_CIPHER,
+                        cipher.encrypt(key, email), email);
+            } catch (Exception e) {
+                log.debug("Could not upgrade the stored key for {}: {}", email, e.getMessage());
+            }
         }
         return new LlmCredentials(provider, key, modelOf(row, provider), true);
     }

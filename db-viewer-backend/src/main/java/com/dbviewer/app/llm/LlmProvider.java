@@ -13,8 +13,8 @@ public enum LlmProvider {
     /** The application's own default. One account, many models, one key to fund. */
     OPENROUTER("OpenRouter", "openai/gpt-4o"),
 
-    /** A user's own Anthropic key. */
-    ANTHROPIC("Anthropic", "claude-sonnet-5"),
+    /** A user's own Anthropic key. The current Sonnet: capable, and well priced for chat. */
+    ANTHROPIC("Anthropic", "claude-sonnet-5-5"),
 
     /** A user's own OpenAI key. */
     OPENAI("OpenAI", "gpt-4o");
@@ -38,6 +38,19 @@ public enum LlmProvider {
     /** True when this provider speaks the OpenAI chat-completions wire format. */
     public boolean isOpenAiCompatible() {
         return this != ANTHROPIC;
+    }
+
+    /**
+     * Model ids as the providers spell them: letters, digits and {@code . _ - : / @}, plus the
+     * square brackets some OpenRouter variants use. Anything else is a typo or an attempt to put
+     * something other than an id into a request body.
+     */
+    private static final java.util.regex.Pattern MODEL_ID =
+            java.util.regex.Pattern.compile("[A-Za-z0-9._:/@\\[\\]-]{1,120}");
+
+    /** True for a string shaped like a model id. Says nothing about whether the model exists. */
+    public static boolean isValidModelId(String model) {
+        return model != null && MODEL_ID.matcher(model).matches();
     }
 
     /** Parses a stored or submitted provider name, falling back to null rather than throwing. */

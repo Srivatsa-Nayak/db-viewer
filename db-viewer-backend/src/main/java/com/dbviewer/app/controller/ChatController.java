@@ -1,9 +1,13 @@
 package com.dbviewer.app.controller;
 
+import com.dbviewer.app.auth.RequiresAccount;
 import com.dbviewer.app.auth.AuthContext;
 import com.dbviewer.app.llm.ChatTurn;
 import com.dbviewer.app.llm.LlmException;
 import com.dbviewer.app.llm.StreamResult;
+import com.dbviewer.app.llm.Usage;
+import com.dbviewer.app.llm.UsageRecorder;
+import com.dbviewer.app.ratelimit.RateLimiter;
 import com.dbviewer.app.service.ApiKeyService;
 import com.dbviewer.app.service.ChatService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -11,6 +15,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -24,9 +29,13 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 
 /**
  * The canvas chat assistant.
@@ -38,6 +47,15 @@ import java.util.Map;
  * <p>Account-gated, and enforced here rather than only in the UI. Each message spends real money
  * against whichever key is in play — the application's own by default — which puts it in the
  * same category as export and share links, the two other things that require an account.
+ *
+ * <h2>Spend control</h2>
+ *
+ * <p>Accounts are free and instant, so an account alone does not limit anything: a script could
+ * sign up and drain the application's key. Questions on the <em>app's</em> key are therefore
+ * capped per user per hour and per day, and across everyone per day. The per-user limits are in
+ * memory and reset on a restart; the global cap is counted from the persisted usage log, so a
+ * redeploy does not hand out a fresh day's budget. A user's <em>own</em> key has a much looser
+ * hourly limit, which protects the server's threads rather than anyone's wallet.
  */
 @Slf4j
 @RestController
@@ -46,9 +64,36 @@ import java.util.Map;
 @Tag(name = "Chat assistant")
 public class ChatController {
 
+    private static final Duration HOUR = Duration.ofHours(1);
+    private static final Duration DAY = Duration.ofDays(1);
+
     private final ChatService chatService;
     private final ApiKeyService apiKeyService;
+    private final RateLimiter rateLimiter;
+    private final UsageRecorder usageRecorder;
     private final ObjectMapper json = new ObjectMapper();
+
+    /** Answers being written right now, per user. */
+    private final Map<String, Semaphore> inFlight = new ConcurrentHashMap<>();
+
+    @Value("${app.llm.quota.app-key-per-hour:20}")
+    private int appKeyPerHour;
+
+    @Value("${app.llm.quota.app-key-per-day:100}")
+    private int appKeyPerDay;
+
+    @Value("${app.llm.quota.app-key-global-per-day:1000}")
+    private int appKeyGlobalPerDay;
+
+    @Value("${app.llm.quota.own-key-per-hour:120}")
+    private int ownKeyPerHour;
+
+    /**
+     * Streams one user may have open at once. Each holds a server thread for as long as the model
+     * takes; two allows a second panel or tab without letting one account occupy the pool.
+     */
+    @Value("${app.llm.max-concurrent-per-user:2}")
+    private int maxConcurrentPerUser;
 
     /** One turn as the browser sends it. */
     public record HistoryTurn(String role, String content) {
@@ -66,8 +111,8 @@ public class ChatController {
      */
     @GetMapping("/config")
     @Operation(summary = "Chat availability",
-            description = "Reports whether a model key is configured, and which one a message "
-                    + "would use.")
+            description = "Reports whether a model key is configured, which one a message "
+                    + "would use, and how many questions are left today on the app's key.")
     public ResponseEntity<?> config() {
         Map<String, Object> result = new LinkedHashMap<>();
         boolean signedIn = AuthContext.isAuthenticated();
@@ -85,6 +130,11 @@ public class ChatController {
             result.put("usingOwnKey", credentials.ownKey());
             result.put("providerLabel", credentials.provider().label());
             result.put("model", credentials.model());
+            if (!credentials.ownKey() && appKeyPerDay > 0) {
+                RateLimiter.Decision today = rateLimiter.peek(
+                        dayKey(AuthContext.get()), appKeyPerDay, DAY);
+                result.put("quota", Map.of("limit", today.limit(), "remaining", today.remaining()));
+            }
         } catch (IllegalStateException e) {
             result.put("available", false);
             result.put("error", e.getMessage());
@@ -102,17 +152,18 @@ public class ChatController {
      * schema from inside the stream would read the wrong database, or none.
      *
      * <p>It also means a failure that happens before the first byte — no account, no key
-     * configured, an empty question — comes back as an ordinary JSON error with a real status
-     * code, which the browser can act on. Only failures that happen mid-answer have to be
-     * reported inside the stream, where the status line has already been sent.
+     * configured, an empty question, a spent quota — comes back as an ordinary JSON error with a
+     * real status code, which the browser can act on. Only failures that happen mid-answer have
+     * to be reported inside the stream, where the status line has already been sent.
      */
+    @RequiresAccount
     @PostMapping
     @Operation(summary = "Ask the schema assistant",
             description = "Streams the answer as server-sent events: `meta`, then `delta` per "
                     + "fragment, then `done` — or `error`. A failure before the stream starts is "
-                    + "an ordinary JSON error instead.")
+                    + "an ordinary JSON error instead; 429 means a limit was reached.")
     public ResponseEntity<StreamingResponseBody> chat(@RequestBody ChatRequest request) {
-        AuthContext.require();
+        String email = AuthContext.require();
 
         ChatService.ChatPrompt prompt;
         try {
@@ -120,22 +171,39 @@ public class ChatController {
                     request == null ? null : request.message(),
                     toTurns(request == null ? null : request.history()));
         } catch (IllegalArgumentException e) {
-            return jsonError(400, e.getMessage());
+            return jsonError(400, e.getMessage(), null);
         } catch (IllegalStateException e) {
-            // No key anywhere. A configuration problem, not a bad request.
-            return jsonError(503, e.getMessage());
+            // No usable key anywhere. A configuration problem, not a bad request.
+            return jsonError(503, e.getMessage(), null);
+        }
+
+        Semaphore slots = inFlight.computeIfAbsent(email, k -> new Semaphore(maxConcurrentPerUser));
+        if (!slots.tryAcquire()) {
+            return jsonError(429, "You already have " + maxConcurrentPerUser
+                    + " answers being written. Wait for one to finish, or stop it.", 5L);
+        }
+
+        List<String> charged;
+        try {
+            charged = chargeQuota(email, prompt.credentials().ownKey());
+        } catch (QuotaExceeded e) {
+            slots.release();
+            return jsonError(429, e.getMessage(), e.retryAfterSeconds);
         }
 
         StreamingResponseBody body = out -> {
+            long started = System.currentTimeMillis();
+            StreamResult result = null;
             try {
                 send(out, "meta", Map.of(
                         "provider", prompt.credentials().provider().label(),
                         "model", prompt.credentials().model(),
                         "usingOwnKey", prompt.credentials().ownKey(),
                         "tables", prompt.tableCount(),
-                        "schemaTruncated", prompt.truncated()));
+                        "schemaTruncated", prompt.truncated(),
+                        "omittedTables", prompt.omittedTables().size()));
 
-                StreamResult result = chatService.stream(prompt, fragment -> {
+                result = chatService.stream(prompt, fragment -> {
                     try {
                         send(out, "delta", Map.of("text", fragment));
                     } catch (IOException e) {
@@ -168,6 +236,18 @@ public class ChatController {
             } catch (Exception e) {
                 log.error("Chat failed", e);
                 trySend(out, "error", Map.of("message", "Something went wrong answering that."));
+            } finally {
+                slots.release();
+                if (result == null || result.characters() == 0) {
+                    // Nothing was answered, so nothing is counted against the user — a provider
+                    // outage should not use up anyone's questions for the day.
+                    charged.forEach(rateLimiter::release);
+                }
+                if (result != null) {
+                    usageRecorder.record(prompt.userEmail(), prompt.credentials(),
+                            result.usage() == null ? Usage.NONE : result.usage(),
+                            System.currentTimeMillis() - started);
+                }
             }
         };
 
@@ -180,6 +260,86 @@ public class ChatController {
                 .body(body);
     }
 
+    /* ------------------------------------------------------------------ *
+     * Quota
+     * ------------------------------------------------------------------ */
+
+    private static final class QuotaExceeded extends RuntimeException {
+        final long retryAfterSeconds;
+
+        QuotaExceeded(String message, long retryAfterSeconds) {
+            super(message);
+            this.retryAfterSeconds = retryAfterSeconds;
+        }
+    }
+
+    private static String hourKey(String email) {
+        return "chat:hour:" + email;
+    }
+
+    private static String dayKey(String email) {
+        return "chat:day:" + email;
+    }
+
+    private static String ownKeyHourKey(String email) {
+        return "chat:own:hour:" + email;
+    }
+
+    /**
+     * Counts this question against the limits that apply, or refuses it.
+     *
+     * @return the limiter keys that were charged, so a question that produces no answer can be
+     *         given back
+     */
+    private List<String> chargeQuota(String email, boolean ownKey) {
+        List<String> charged = new ArrayList<>();
+        if (ownKey) {
+            RateLimiter.Decision hour = rateLimiter.tryAcquire(ownKeyHourKey(email), ownKeyPerHour, HOUR);
+            if (!hour.allowed()) {
+                throw new QuotaExceeded("That is " + ownKeyPerHour + " questions this hour. Try again in "
+                        + minutes(hour.retryAfterSeconds()) + ".", hour.retryAfterSeconds());
+            }
+            charged.add(ownKeyHourKey(email));
+            return charged;
+        }
+
+        if (appKeyGlobalPerDay > 0 && usageRecorder.appKeyRequestsToday() >= appKeyGlobalPerDay) {
+            throw new QuotaExceeded("The assistant has answered as many questions on the app's key "
+                    + "as it can today. Add your own API key in your profile to keep going.",
+                    secondsUntilUtcMidnight());
+        }
+        RateLimiter.Decision hour = rateLimiter.tryAcquire(hourKey(email), appKeyPerHour, HOUR);
+        if (!hour.allowed()) {
+            throw new QuotaExceeded("You have asked " + appKeyPerHour + " questions this hour on the "
+                    + "app's key. Try again in " + minutes(hour.retryAfterSeconds())
+                    + ", or add your own API key in your profile.", hour.retryAfterSeconds());
+        }
+        charged.add(hourKey(email));
+        RateLimiter.Decision day = rateLimiter.tryAcquire(dayKey(email), appKeyPerDay, DAY);
+        if (!day.allowed()) {
+            rateLimiter.release(hourKey(email));
+            throw new QuotaExceeded("You have used today's " + appKeyPerDay + " questions on the "
+                    + "app's key. Add your own API key in your profile to keep going.",
+                    day.retryAfterSeconds());
+        }
+        charged.add(dayKey(email));
+        return charged;
+    }
+
+    private static String minutes(long seconds) {
+        long m = Math.max(1, (seconds + 59) / 60);
+        return m == 1 ? "a minute" : m + " minutes";
+    }
+
+    private static long secondsUntilUtcMidnight() {
+        long now = System.currentTimeMillis() / 1000;
+        return 86_400 - (now % 86_400);
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Responses
+     * ------------------------------------------------------------------ */
+
     /**
      * A JSON error, wrapped in the streaming body type the method has to declare.
      *
@@ -190,20 +350,29 @@ public class ChatController {
      * costs this: an error before the stream begins has to be written as bytes too. It is still
      * an ordinary JSON response with a real status code, which is what the browser needs.
      */
-    private ResponseEntity<StreamingResponseBody> jsonError(int status, String message) {
-        String payload;
-        try {
-            payload = json.writeValueAsString(Map.of("error", message));
-        } catch (Exception e) {
-            payload = "{\"error\":\"The assistant is unavailable.\"}";
+    private ResponseEntity<StreamingResponseBody> jsonError(int status, String message,
+                                                            Long retryAfterSeconds) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("error", message);
+        if (retryAfterSeconds != null) {
+            payload.put("retryAfter", retryAfterSeconds);
         }
-        byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
-        return ResponseEntity.status(status)
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(out -> {
-                    out.write(bytes);
-                    out.flush();
-                });
+        String text;
+        try {
+            text = json.writeValueAsString(payload);
+        } catch (Exception e) {
+            text = "{\"error\":\"The assistant is unavailable.\"}";
+        }
+        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(status)
+                .contentType(MediaType.APPLICATION_JSON);
+        if (retryAfterSeconds != null) {
+            builder.header(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfterSeconds));
+        }
+        return builder.body(out -> {
+            out.write(bytes);
+            out.flush();
+        });
     }
 
     /** Signals that the client closed the connection; not an error worth reporting. */
