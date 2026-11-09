@@ -1,5 +1,6 @@
 package com.dbviewer.app.controller;
 
+import com.dbviewer.app.auth.RequiresAccount;
 import com.dbviewer.app.auth.AuthContext;
 import com.dbviewer.app.exception.UnauthorizedException;
 import com.dbviewer.app.dto.*;
@@ -125,14 +126,21 @@ public class DatabaseController {
 
     // ─── Query Execution ──────────────────────────────────────────────────────────
 
+    @RequiresAccount
     @PostMapping("/query")
     @Operation(summary = "Run SQL Query",
-            description = "Executes a raw SQL query against the database",
+            description = "Executes one raw SQL statement against the current workspace. "
+                    + "Requires an account, like the scratchpad.",
             tags = {"QueryExecuter"})
     public ResponseEntity<?> runQuery(@RequestBody QueryRequest request) {
         try {
+            // The same gate as /scratchpad: this is arbitrary SQL, and it used to be the one
+            // route that ran it anonymously.
+            AuthContext.require();
             List<Map<String, Object>> data = databaseService.executeQuery(request.getQuery());
             return ResponseEntity.ok(Map.of("data", data));
+        } catch (UnauthorizedException e) {
+            return ResponseEntity.status(401).body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
@@ -147,8 +155,7 @@ public class DatabaseController {
         try {
             return ResponseEntity.ok(databaseService.getDbInfo());
         } catch (Exception e) {
-            log.error("DB info error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "DB info error");
         }
     }
 
@@ -156,12 +163,16 @@ public class DatabaseController {
 
     @GetMapping("/table-data/{tableName}")
     @Operation(summary = "Get Table Data", description = "Returns columns and rows for a specific table")
-    public ResponseEntity<?> getTableData(@PathVariable String tableName) {
+    public ResponseEntity<?> getTableData(@PathVariable String tableName,
+                                          @RequestParam(value = "limit", defaultValue = "100") int limit,
+                                          @RequestParam(value = "offset", defaultValue = "0") int offset) {
         try {
-            return ResponseEntity.ok(databaseService.getTableData(tableName));
+            return ResponseEntity.ok(databaseService.getTableData(tableName, limit, offset));
+        } catch (IllegalArgumentException e) {
+            // An unknown name is the caller's mistake (or a probe), not a server failure.
+            return ResponseEntity.status(404).body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Table data error for {}", tableName, e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "Table data error");
         }
     }
 
@@ -207,8 +218,7 @@ public class DatabaseController {
             databaseService.updateCell(request);
             return ResponseEntity.ok(Map.of("message", "Updated successfully"));
         } catch (Exception e) {
-            log.error("Update cell error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "Update cell error");
         }
     }
 
@@ -235,8 +245,7 @@ public class DatabaseController {
             databaseService.deleteRow(request);
             return ResponseEntity.ok(Map.of("message", "Row deleted successfully"));
         } catch (Exception e) {
-            log.error("Delete row error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "Delete row error");
         }
     }
 
@@ -263,8 +272,7 @@ public class DatabaseController {
             databaseService.clearDatabase();
             return ResponseEntity.ok(Map.of("message", "Database cleared successfully"));
         } catch (Exception e) {
-            log.error("Clear DB error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "Clear DB error");
         }
     }
 
@@ -301,8 +309,7 @@ public class DatabaseController {
         try {
             return ResponseEntity.ok(Map.of("notes", databaseService.getAllTableNotes()));
         } catch (Exception e) {
-            log.error("List notes error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "List notes error");
         }
     }
 
@@ -314,8 +321,7 @@ public class DatabaseController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Notes error for {}", tableName, e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "Notes error");
         }
     }
 
@@ -334,8 +340,7 @@ public class DatabaseController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Add note error for {}", tableName, e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "Add note error");
         }
     }
 
@@ -348,8 +353,7 @@ public class DatabaseController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(404).body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Update note error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "Update note error");
         }
     }
 
@@ -362,8 +366,7 @@ public class DatabaseController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(404).body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Delete note error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "Delete note error");
         }
     }
 
@@ -379,8 +382,7 @@ public class DatabaseController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Load example error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "Load example error");
         }
     }
 
@@ -395,8 +397,7 @@ public class DatabaseController {
         try {
             return ResponseEntity.ok(Map.of("workspaces", databaseService.listWorkspaces()));
         } catch (Exception e) {
-            log.error("List workspaces error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "List workspaces error");
         }
     }
 
@@ -414,8 +415,7 @@ public class DatabaseController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Set workspace name error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "Set workspace name error");
         }
     }
 
@@ -434,21 +434,16 @@ public class DatabaseController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Drop column error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", rootMessage(e)));
+            return ErrorResponses.failure(e, log, "Drop column error");
         }
     }
 
     /** The engine's own refusal is usually the useful part, and it is nested deep in the cause chain. */
-    private String rootMessage(Throwable error) {
-        Throwable cause = error;
-        while (cause.getCause() != null && cause.getCause() != cause) cause = cause.getCause();
-        return cause.getMessage() == null ? error.toString() : cause.getMessage();
-    }
 
     /** Body for {@link #runScratchpad}. */
     public record ScriptRequest(String script) { }
 
+    @RequiresAccount
     @PostMapping("/scratchpad")
     @Operation(summary = "Run SQL",
             description = "Runs a script statement by statement and reports what each one did, "
@@ -465,8 +460,7 @@ public class DatabaseController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Scratchpad error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", rootMessage(e)));
+            return ErrorResponses.failure(e, log, "Scratchpad error");
         }
     }
 
@@ -487,8 +481,7 @@ public class DatabaseController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Add foreign key error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", rootMessage(e)));
+            return ErrorResponses.failure(e, log, "Add foreign key error");
         }
     }
 
@@ -504,8 +497,7 @@ public class DatabaseController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Drop foreign key error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", rootMessage(e)));
+            return ErrorResponses.failure(e, log, "Drop foreign key error");
         }
     }
 
@@ -522,8 +514,7 @@ public class DatabaseController {
         try {
             return ResponseEntity.ok(Map.of("meta", databaseService.getCanvasMeta()));
         } catch (Exception e) {
-            log.error("Get canvas meta error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "Get canvas meta error");
         }
     }
 
@@ -540,8 +531,7 @@ public class DatabaseController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Set canvas meta error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "Set canvas meta error");
         }
     }
 
@@ -556,8 +546,7 @@ public class DatabaseController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Delete canvas meta error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "Delete canvas meta error");
         }
     }
 
@@ -579,24 +568,25 @@ public class DatabaseController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Delete workspace error", e);
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ErrorResponses.failure(e, log, "Delete workspace error");
         }
     }
 
     // ─── Export CSV ───────────────────────────────────────────────────────────────
 
+    @RequiresAccount
     @GetMapping("/export/{tableName}")
     @Operation(summary = "Export Table as CSV", description = "Downloads the specified table as a CSV file")
     public void exportCsv(@PathVariable String tableName, HttpServletResponse response) {
         try {
             // Taking data out of the app is the one thing that needs an account.
             AuthContext.require();
+            // Read first, so an unknown name fails before any header is written.
+            List<Map<String, Object>> rows = databaseService.getTableRows(tableName);
+
             response.setContentType("text/csv");
             response.setHeader(HttpHeaders.CONTENT_DISPOSITION,
-                    "attachment; filename=" + tableName + ".csv");
-
-            List<Map<String, Object>> rows = databaseService.getTableRows(tableName);
+                    "attachment; filename=\"" + csvFileName(tableName) + "\"");
             PrintWriter writer = response.getWriter();
 
             if (!rows.isEmpty()) {
@@ -629,6 +619,16 @@ public class DatabaseController {
         }
     }
 
+    /**
+     * A table name made safe for a quoted {@code Content-Disposition} filename. A real table can
+     * be called anything an imported dump said, including quotes and semicolons, and those would
+     * otherwise end up in a response header.
+     */
+    static String csvFileName(String tableName) {
+        String safe = tableName == null ? "" : tableName.replaceAll("[^A-Za-z0-9._-]", "_");
+        return (safe.isBlank() ? "table" : safe) + ".csv";
+    }
+
     // ─── Export SQL ───────────────────────────────────────────────────────────────
 
     @GetMapping("/dialects")
@@ -640,6 +640,7 @@ public class DatabaseController {
                 .toList()));
     }
 
+    @RequiresAccount
     @GetMapping("/export-sql")
     @Operation(summary = "Export Database as SQL",
             description = "Downloads a full SQL dump. Pass dialect=mysql|mariadb|postgres|"

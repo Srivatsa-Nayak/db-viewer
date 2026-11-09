@@ -5,6 +5,7 @@ import { Columns, Loader2, AlertCircle, Info } from 'lucide-react';
 import { dbService } from '@/services/api';
 import { history } from '@/services/history';
 import { Callout, GhostButton, Modal, ModalActions, PrimaryButton } from '@/components/ui/Modal';
+import { errorMessage } from '@/services/errors';
 
 const COLUMN_TYPES = ["VARCHAR", "INT", "DECIMAL", "BOOLEAN", "DATE", "TIME", "DATETIME"] as const;
 const VARCHAR_LENGTHS = [64, 128, 256] as const;
@@ -93,9 +94,7 @@ export const AddColumnModal = ({
             onSuccess();
             onClose();
         } catch (err: unknown) {
-            const message = err && typeof err === "object" && "response" in err
-                ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
-                : undefined;
+            const message = errorMessage(err);
             setError(message || "Failed to add the column. Please try again.");
         } finally {
             setIsSaving(false);

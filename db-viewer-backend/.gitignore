@@ -8,3 +8,7 @@ target/
 .DS_Store
 *.log
 data/
+
+# Local secrets. Loaded by `spring.config.import` in application.properties, which is
+# tracked and must never hold a key itself.
+local.properties

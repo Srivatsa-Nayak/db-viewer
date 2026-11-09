@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { Loader2, AlertCircle, Check, Copy, Link2, Eye } from 'lucide-react';
 import { shareService } from '@/services/api';
 import { Callout, GhostButton, Modal, PrimaryButton } from '@/components/ui/Modal';
+import { errorMessage } from '@/services/errors';
 
 interface ShareModalProps {
     isOpen: boolean;
@@ -45,9 +46,7 @@ export const ShareModal = ({ isOpen, fileName, onClose, onNeedsAccount }: ShareM
                     onNeedsAccount();
                     return;
                 }
-                const message = err && typeof err === 'object' && 'response' in err
-                    ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
-                    : undefined;
+                const message = errorMessage(err);
                 setError(message || 'Could not create the share link.');
             })
             .finally(() => { if (!cancelled) setBusy(false); });

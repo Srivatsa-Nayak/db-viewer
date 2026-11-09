@@ -12,6 +12,7 @@ import { ColumnInfo, Relationship, TableInfo } from "@/types";
 import { OrthogonalEdge } from "@/components/canvas/OrthogonalEdge";
 import GroupBox from "@/components/canvas/GroupBox";
 import { CanvasGroup } from "@/types";
+import { errorMessage } from '@/services/errors';
 
 /**
  * Read-only view of a shared file.
@@ -159,9 +160,7 @@ export default function SharedFilePage({ params }: { params: Promise<{ token: st
             .then(data => { if (!cancelled) setSchema(data as SharedSchema); })
             .catch((err: unknown) => {
                 if (cancelled) return;
-                const message = err && typeof err === "object" && "response" in err
-                    ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
-                    : undefined;
+                const message = errorMessage(err);
                 setError(message || "This share link could not be opened.");
             })
             .finally(() => { if (!cancelled) setLoading(false); });

@@ -7,7 +7,9 @@ import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.stereotype.Component;
 
 import javax.sql.DataSource;
@@ -15,7 +17,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
+import java.time.Duration;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -37,8 +40,14 @@ import java.util.stream.Stream;
  *   <li><b>MySQL</b> - one schema per workspace ({@code ws_<id>}), created on demand.</li>
  * </ul>
  *
- * <p>Requests that carry no workspace id fall back to the default JdbcTemplate,
- * which preserves the original single-database behaviour for direct API/Swagger use.
+ * <p>Requests that carry no workspace id fall back to a shared <b>sandbox</b> workspace
+ * ({@link #SANDBOX_ID}), which keeps direct API and Swagger use working. They do <em>not</em>
+ * reach the application's own database. That one holds {@code app_users} (password hashes,
+ * encrypted API keys), {@code workspace_owners} and {@code shared_links}. It used to be the
+ * fallback, which let an anonymous caller with no header read password hashes through
+ * {@code /query} or {@code /table-data/app_users}, reassign ownership of any workspace, or drop
+ * every account with {@code DELETE /workspace}. The sandbox is an ordinary workspace database;
+ * clients cannot address it by id, because {@link #sanitize} rejects the reserved prefix.
  */
 @Slf4j
 @Component
@@ -47,8 +56,21 @@ public class WorkspaceManager {
     /** Workspace ids come from the browser, so they are whitelisted before touching a path or SQL identifier. */
     private static final int MAX_ID_LENGTH = 64;
 
+    /**
+     * Ids starting with this are the server's own and are refused from clients. Without that, a
+     * caller could claim the sandbox through {@code X-Workspace-Id} and then own the database
+     * every header-less request lands in.
+     */
+    static final String RESERVED_PREFIX = "__";
+
+    /** The workspace a request with no {@code X-Workspace-Id} is served from. */
+    public static final String SANDBOX_ID = RESERVED_PREFIX + "sandbox";
+
     private final JdbcTemplate defaultJdbcTemplate;
     private final Map<String, Workspace> workspaces = new ConcurrentHashMap<>();
+
+    /** When each open workspace was last used, for {@link #evictIdle}. */
+    private final Map<String, Long> lastUsed = new ConcurrentHashMap<>();
 
     private final String baseUrl;
     private final String driverClassName;
@@ -74,13 +96,33 @@ public class WorkspaceManager {
         this.workspaceDir = workspaceDir;
     }
 
-    /** JdbcTemplate for the workspace bound to the current request, or the default one. */
+    /**
+     * JdbcTemplate for the workspace bound to the current request, or the shared sandbox.
+     *
+     * <p>Never the application's own database: that is reached only through the injected
+     * {@code JdbcTemplate} bean, by services that own its tables.
+     */
     public JdbcTemplate current() {
         String id = WorkspaceContext.get();
+        return currentWorkspace().jdbcTemplate();
+    }
+
+    /**
+     * A transaction on the current workspace's database, for a change made of several
+     * statements that must land together — a table rebuild, a whole import. Runs on the same
+     * connection {@link #current()} uses, so statements issued through it take part.
+     */
+    public TransactionTemplate currentTransaction() {
+        return currentWorkspace().transactions();
+    }
+
+    private Workspace currentWorkspace() {
+        String id = WorkspaceContext.get();
         if (id == null || id.isBlank()) {
-            return defaultJdbcTemplate;
+            lastUsed.put(SANDBOX_ID, System.currentTimeMillis());
+            return workspaces.computeIfAbsent(SANDBOX_ID, this::createWorkspace);
         }
-        return forWorkspace(id).jdbcTemplate();
+        return forWorkspace(id);
     }
 
     /** True when the current request is scoped to a workspace rather than the default database. */
@@ -91,7 +133,63 @@ public class WorkspaceManager {
 
     public Workspace forWorkspace(String workspaceId) {
         String safeId = sanitize(workspaceId);
+        lastUsed.put(safeId, System.currentTimeMillis());
         return workspaces.computeIfAbsent(safeId, this::createWorkspace);
+    }
+
+    /**
+     * Closes the connections of workspaces nobody has used for {@code idle}, and then the least
+     * recently used ones beyond {@code maxOpen}.
+     *
+     * <p>The cache used to only ever grow. Every id a browser invents opens a connection (a
+     * pool of five on MySQL), so a long-running instance — or a caller inventing ids on
+     * purpose — accumulated them without limit. Closing one loses nothing: the data is in its
+     * file or schema, and the next request for it reopens it. In-memory SQLite is the exception,
+     * where the connection <em>is</em> the database, so it is never evicted.
+     *
+     * @return how many were closed
+     */
+    public int evictIdle(Duration idle, int maxOpen) {
+        if (isInMemory()) {
+            return 0;
+        }
+        long now = System.currentTimeMillis();
+        int closed = 0;
+        for (String id : List.copyOf(workspaces.keySet())) {
+            long used = lastUsed.getOrDefault(id, 0L);
+            if (now - used >= idle.toMillis() && closeOne(id)) {
+                closed++;
+            }
+        }
+        if (maxOpen > 0 && workspaces.size() > maxOpen) {
+            List<String> oldestFirst = workspaces.keySet().stream()
+                    .sorted(Comparator.comparingLong(id -> lastUsed.getOrDefault(id, 0L)))
+                    .toList();
+            for (String id : oldestFirst.subList(0, workspaces.size() - maxOpen)) {
+                if (closeOne(id)) {
+                    closed++;
+                }
+            }
+        }
+        if (closed > 0) {
+            log.info("Closed {} idle workspace connection(s); {} open", closed, workspaces.size());
+        }
+        return closed;
+    }
+
+    private boolean closeOne(String id) {
+        Workspace workspace = workspaces.remove(id);
+        lastUsed.remove(id);
+        if (workspace == null) {
+            return false;
+        }
+        close(workspace.dataSource());
+        return true;
+    }
+
+    /** How many workspaces have an open connection right now. */
+    public int openCount() {
+        return workspaces.size();
     }
 
     /**
@@ -101,6 +199,7 @@ public class WorkspaceManager {
     public void dropWorkspace(String workspaceId) {
         String safeId = sanitize(workspaceId);
         Workspace workspace = workspaces.remove(safeId);
+        lastUsed.remove(safeId);
 
         if (isMysql()) {
             try {
@@ -124,7 +223,11 @@ public class WorkspaceManager {
     }
 
     public List<String> openWorkspaceIds() {
-        return new ArrayList<>(workspaces.keySet());
+        return workspaces.keySet().stream().filter(id -> !isReserved(id)).toList();
+    }
+
+    private static boolean isReserved(String id) {
+        return id.startsWith(RESERVED_PREFIX);
     }
 
     /**
@@ -142,6 +245,7 @@ public class WorkspaceManager {
                                 Constants.Workspaces.MYSQL_LIST_WORKSPACE_SCHEMAS, String.class)
                         .stream()
                         .map(schema -> schema.substring("ws_".length()))
+                        .filter(id -> !isReserved(id))
                         .sorted()
                         .toList();
             } catch (Exception e) {
@@ -164,6 +268,7 @@ public class WorkspaceManager {
             return files.map(path -> path.getFileName().toString())
                     .filter(name -> name.startsWith("ws_") && name.endsWith(".db"))
                     .map(name -> name.substring("ws_".length(), name.length() - ".db".length()))
+                    .filter(id -> !isReserved(id))
                     .sorted()
                     .toList();
         } catch (IOException e) {
@@ -177,7 +282,8 @@ public class WorkspaceManager {
     private Workspace createWorkspace(String safeId) {
         DataSource dataSource = isMysql() ? createMysqlDataSource(safeId) : createSqliteDataSource(safeId);
         log.info("Opened workspace {} ({})", safeId, isMysql() ? "mysql" : "sqlite");
-        return new Workspace(dataSource, new JdbcTemplate(dataSource));
+        return new Workspace(dataSource, new JdbcTemplate(dataSource),
+                new TransactionTemplate(new DataSourceTransactionManager(dataSource)));
     }
 
     private DataSource createSqliteDataSource(String safeId) {
@@ -230,6 +336,10 @@ public class WorkspaceManager {
         if (!trimmed.matches("[A-Za-z0-9_-]+")) {
             throw new IllegalArgumentException(
                     "Workspace id may only contain letters, digits, underscores and hyphens");
+        }
+        if (isReserved(trimmed)) {
+            throw new IllegalArgumentException(
+                    "Workspace ids starting with " + RESERVED_PREFIX + " are reserved");
         }
         return trimmed;
     }
@@ -300,7 +410,8 @@ public class WorkspaceManager {
         workspaces.clear();
     }
 
-    /** A workspace's datasource plus the JdbcTemplate bound to it. */
-    public record Workspace(DataSource dataSource, JdbcTemplate jdbcTemplate) {
+    /** A workspace's datasource, the JdbcTemplate bound to it, and transactions on it. */
+    public record Workspace(DataSource dataSource, JdbcTemplate jdbcTemplate,
+                            TransactionTemplate transactions) {
     }
 }

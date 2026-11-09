@@ -35,6 +35,15 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      # Before the bump, so a failing suite stops the run without pushing a release commit.
+      # The build below used to be the only step, with -DskipTests, so nothing ever ran the
+      # tests on the way to production.
+      - name: Run tests
+        working-directory: db-viewer-backend
+        run: |
+          chmod +x mvnw
+          ./mvnw -B test
+
       # Bump before building, so the deployed jar reports the version this merge produced
       # rather than the previous one.
       - name: Bump patch version
@@ -45,9 +54,8 @@ jobs:
 
       - name: Build with Maven
         working-directory: db-viewer-backend
-        run: |
-          chmod +x mvnw
-          ./mvnw clean package -DskipTests
+        # Tests already ran above; running them again here would only double the time.
+        run: ./mvnw -B clean package -DskipTests
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3

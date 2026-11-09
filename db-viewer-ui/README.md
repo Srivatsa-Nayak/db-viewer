@@ -57,8 +57,8 @@ File** to start from an empty database.
 | `npm run lint` | ESLint (flat config in `eslint.config.mjs`) |
 | `npx tsc --noEmit` | Type-only check |
 
-There is **no test suite**. `npx tsc --noEmit`, `npm run lint` and `npm run build` are the gates —
-run all three before pushing.
+`npm test` runs the Vitest unit tests in `tests/` (pure logic: parsers, the chat stream reader, the schema-to-graph transform, exporters). Together with `npx tsc --noEmit`, `npm run lint` and `npm run build` they are the gates —
+run all four before pushing.
 
 ---
 
@@ -106,6 +106,11 @@ db-viewer-ui/
 │   │   ├── OrthogonalEdge.tsx      Custom edge: right angles, routed around the nodes
 │   │   └── edgeRouting.ts          The router itself — candidate routes, scored
 │   ├── tables/TableNode.tsx        One table as a graph node (custom React Flow node)
+│   ├── chat/
+│   │   ├── ChatLauncher.tsx        The round button in the canvas's top-right corner
+│   │   ├── SchemaChat.tsx          The panel: a column beside the canvas, like the Explorer
+│   │   ├── ChatConversation.tsx    Messages, streaming and composer; keyed per workspace
+│   │   └── ChatAnswer.tsx          Prose + the fenced SQL block, with no markdown dependency
 │   └── modal/
 │       ├── NewFileModal.tsx        Name a new empty SQL file
 │       ├── CreateTableModal.tsx    Full table definition incl. PK / NOT NULL / FK
@@ -116,6 +121,7 @@ db-viewer-ui/
 │       ├── NoticeModal.tsx         Error / warning / success with collapsible details
 │       ├── AuthModal.tsx           Sign up / sign in, with the reason it was asked for
 │       ├── ShareModal.tsx          Creates and copies a read-only link
+│       ├── ApiKeySection.tsx       Bring-your-own model key, rendered inside ProfileModal
 │       ├── TableNotesModal.tsx     Per-table to-do list (portalled)
 │       ├── NewTableHelpModal.tsx   Canvas toolbar: what the New Table button does
 │       └── InfoModal.tsx           "What is this app" summary + version + credits
@@ -123,6 +129,7 @@ db-viewer-ui/
 │       ├── Modal.tsx           ★ The dialog primitive every modal is built on
 │       └── ConfirmDialog.tsx   Destructive confirmation, built on Modal
 ├── services/
+│   ├── chatStore.ts        One assistant conversation per open file, for the life of the tab
 │   ├── api.ts                  ★ The only module that talks to the backend
 │   ├── sessionStorage.ts       Remembers open files + canvas layout across a refresh
 │   └── exportImage.ts          Canvas → PNG via html-to-image
@@ -373,6 +380,11 @@ The transform tolerates both `snake_case` and `camelCase` on relationship fields
 | `AnchoredMenu` | Portalled dropdown for controls that live on the canvas | Caller captures the anchor rect on click; closes on wheel/resize rather than following the canvas. See [Gotchas](#gotchas) |
 | `Tooltip` | Hover/focus definition popover | Portals to `document.body` and renders its own trigger `<span>`; see [Gotchas](#gotchas) |
 | `ColorSwatchPicker` | The six table colours plus "none", as a `radiogroup` | Deliberately not `<input type="color">`: an arbitrary hex is unreadable in one of the two themes and indistinguishable from its neighbours at canvas zoom |
+| `ChatLauncher` | The round button in the canvas's top-right corner | Lives in React Flow's `Panel`; the panel it toggles lives in the editor shell, so neither owns the open state — `page.tsx` does |
+| `SchemaChat` | The assistant panel: a column beside the canvas, mirroring `FileExplorer` | Column from `lg` up, overlay drawer below, width-animated and `inert` while closed. Asks `GET /chat/config` on first open rather than on mount — whether a message can be sent depends on server configuration the browser cannot guess |
+| `ChatConversation` | Messages, streaming, the composer, and the example prompts | Mounted with the workspace id as its `key`, and mounts *from* `services/chatStore.ts` — so switching files parks the conversation rather than destroying it, and switching back restores it. Examples are written around the user's real table names — a sample question about a `posts` table they do not have reads as a different product |
+| `ChatAnswer` | Renders one answer: prose plus its fenced SQL | ~190 lines instead of a markdown library. Handles five constructs; the one that matters is the `sql` block, which a general renderer turns into a `<pre>` when what is wanted is a button |
+| `ApiKeySection` | Bring-your-own API key, inside `ProfileModal` | Paste-to-replace, never edit-in-place: the stored key is encrypted and the server will not return it. Every button is `type="button"` — see [Gotchas](#gotchas) |
 | `NoticeModal` | Any error/warning the user must see | Used for import reports — a `.sql` dump is rarely fully portable, so skipped statements are listed here instead of only in the server log |
 
 ---
@@ -503,6 +515,27 @@ with the reason — for a table that has none. Disabling beats a control that si
 Both surfaces also share one commit rule: **`onBlur` is the only path that writes.** Enter and
 Escape merely call `blur()`, with Escape setting an abandon flag first. A second commit in the key
 handler is what used to fire a duplicate `update-cell` on every Enter.
+
+**6. The chat stream is `fetch`, and it has to duplicate the Axios interceptors.** Every other
+call in `services/api.ts` gets `X-Workspace-Id`, `X-Client-Id` and `Authorization` from an
+interceptor; `chatService.stream` sets all three by hand, because neither alternative works.
+Axios in the browser buffers the whole response before resolving — the answer would arrive
+complete after twenty seconds instead of a word at a time — and `EventSource`, which does stream,
+can only issue a GET and cannot set a header. **If you add a header to the interceptors, add it
+there too**; nothing will fail loudly if you don't, the assistant will just start answering about
+the wrong workspace.
+
+**7. A button inside `ProfileModal` needs `type="button"`.** The whole dialog is one `<form>`
+whose submit saves the display name and password. `ApiKeySection` sits inside it and has its own
+Save and Remove, so an unmarked button there submits the profile form instead of doing its own
+job — and, because the profile form is usually unchanged, appears to do nothing at all.
+
+**8. Pushing text into `SqlScratchpad` means remounting it.** It holds the editor's contents in
+local state. Lifting that to `page.tsx` would re-render a 1,700-line component on every keystroke,
+and applying an incoming prop through an effect is `set-state-in-effect`, which is an error here.
+So the caller bumps `scratchpadSeed.n` and the `key` changes — mounting is the reset, the same
+pattern every dialog uses. The counter matters as much as the text: without it, sending the same
+snippet twice would change nothing.
 
 ---
 

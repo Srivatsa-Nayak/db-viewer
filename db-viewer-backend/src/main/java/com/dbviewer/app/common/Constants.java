@@ -121,6 +121,25 @@ public final class Constants {
                 )
                 """;
 
+        /**
+         * Columns for a user's own LLM API key, added to an {@code app_users} table created
+         * before the chat assistant existed.
+         *
+         * <p>Run unconditionally and ignore the failure, exactly as
+         * {@link #ADD_WORKSPACE_OWNERS_FILE_NAME} does: neither SQLite nor MySQL has a portable
+         * "add column if missing", so the attempt is the check.
+         *
+         * <p>The key is stored encrypted ({@code SecretCipher}) rather than hashed. A password is
+         * only ever compared and so can be hashed; an API key has to be recovered in full and
+         * handed to the provider.
+         */
+        public static final String[] ADD_APP_USERS_LLM_COLUMNS = {
+                "ALTER TABLE app_users ADD COLUMN llm_provider VARCHAR(32)",
+                "ALTER TABLE app_users ADD COLUMN llm_key_cipher TEXT",
+                "ALTER TABLE app_users ADD COLUMN llm_model VARCHAR(120)",
+                "ALTER TABLE app_users ADD COLUMN llm_key_hint VARCHAR(32)",
+        };
+
         /** %s: notes table name. %s: the engine's auto-increment primary key clause. */
         public static final String CREATE_NOTES_TABLE = """
                 CREATE TABLE IF NOT EXISTS "%s" (
@@ -171,6 +190,28 @@ public final class Constants {
 
         public static final String UPDATE_PASSWORD_HASH =
                 "UPDATE app_users SET password_hash = ? WHERE email = ?";
+
+        /**
+         * Stores the user's own model key. {@code llm_key_hint} is the masked tail shown back to
+         * them — the ciphertext cannot be, and an input that renders as eight bullets gives no
+         * way to tell a stale key from the current one.
+         */
+        public static final String UPDATE_LLM_KEY =
+                "UPDATE app_users SET llm_provider = ?, llm_key_cipher = ?, llm_model = ?, "
+                        + "llm_key_hint = ? WHERE email = ?";
+
+        /** Changes the model only; the stored key is untouched. */
+        public static final String UPDATE_LLM_MODEL =
+                "UPDATE app_users SET llm_model = ? WHERE email = ?";
+
+        /** Re-saves the key in the current cipher format, after reading one stored in an older one. */
+        public static final String UPDATE_LLM_KEY_CIPHER =
+                "UPDATE app_users SET llm_key_cipher = ? WHERE email = ?";
+
+        /** Reverts to the application's default key. The row stays; only the key is forgotten. */
+        public static final String CLEAR_LLM_KEY =
+                "UPDATE app_users SET llm_provider = NULL, llm_key_cipher = NULL, "
+                        + "llm_model = NULL, llm_key_hint = NULL WHERE email = ?";
     }
 
     /**
@@ -202,6 +243,22 @@ public final class Constants {
         public static final String DELETE_OWNER =
                 "DELETE FROM workspace_owners WHERE workspace_id = ?";
 
+        /** Added to tables created before workspaces were swept; run once, failure ignored. */
+        public static final String ADD_LAST_ACCESS =
+                "ALTER TABLE workspace_owners ADD COLUMN last_access VARCHAR(40)";
+
+        /** ?: ISO instant, workspace id. */
+        public static final String TOUCH =
+                "UPDATE workspace_owners SET last_access = ? WHERE workspace_id = ?";
+
+        /**
+         * Anonymous workspaces not used since ?: an ISO instant. ISO-8601 instants in UTC sort
+         * as text, which is what makes the comparison portable between SQLite and MySQL.
+         */
+        public static final String SELECT_STALE_ANONYMOUS =
+                "SELECT workspace_id FROM workspace_owners WHERE owner_key LIKE 'anon:%' "
+                        + "AND COALESCE(last_access, created_at) < ?";
+
         /**
          * Hands a browser's anonymous workspaces to the account it has just signed into, so the
          * work someone did before making an account is not stranded behind an identity they can
@@ -212,6 +269,54 @@ public final class Constants {
     }
 
     /** Read-only share links. Also in the default database — a link outlives any one file. */
+    /**
+     * The assistant's usage log, one row per day, user, model and key type, in the application
+     * database.
+     *
+     * <p>An aggregate rather than one row per question: the questions it answers are "what did
+     * the app's key cost this week" and "who is using most of it", and a per-call log would grow
+     * by a row for every message for no extra answer.
+     */
+    public static final class Usage {
+        private Usage() {
+        }
+
+        public static final String CREATE_TABLE = """
+                CREATE TABLE IF NOT EXISTS llm_usage (
+                    day VARCHAR(10) NOT NULL,
+                    email VARCHAR(320) NOT NULL,
+                    provider VARCHAR(32) NOT NULL,
+                    model VARCHAR(120) NOT NULL,
+                    own_key INTEGER NOT NULL,
+                    requests BIGINT NOT NULL,
+                    input_tokens BIGINT NOT NULL,
+                    output_tokens BIGINT NOT NULL,
+                    cached_tokens BIGINT NOT NULL,
+                    cost_usd DOUBLE PRECISION NOT NULL,
+                    PRIMARY KEY (day, email, provider, model, own_key)
+                )
+                """;
+
+        /** Adds one call to the day's row. Run first; zero rows updated means insert instead. */
+        public static final String ADD = """
+                UPDATE llm_usage SET requests = requests + 1, input_tokens = input_tokens + ?,
+                    output_tokens = output_tokens + ?, cached_tokens = cached_tokens + ?,
+                    cost_usd = cost_usd + ?
+                WHERE day = ? AND email = ? AND provider = ? AND model = ? AND own_key = ?
+                """;
+
+        public static final String INSERT = """
+                INSERT INTO llm_usage (day, email, provider, model, own_key, requests,
+                    input_tokens, output_tokens, cached_tokens, cost_usd)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                """;
+
+        /** Requests on the app's own key today, across everyone. ?: day. */
+        public static final String APP_KEY_REQUESTS_ON = """
+                SELECT COALESCE(SUM(requests), 0) FROM llm_usage WHERE day = ? AND own_key = 0
+                """;
+    }
+
     public static final class Share {
         private Share() { }
 
@@ -307,6 +412,17 @@ public final class Constants {
                 "SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE "
                         + "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? "
                         + "AND REFERENCED_TABLE_NAME = ? AND REFERENCED_COLUMN_NAME = ?";
+
+        /** Every index column on a table, MySQL, in index order. ?: table name. */
+        public static final String MYSQL_INDEX_COLUMNS =
+                "SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS "
+                        + "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? "
+                        + "ORDER BY INDEX_NAME, SEQ_IN_INDEX";
+
+        /** A view's definition, MySQL. ?: view name. */
+        public static final String MYSQL_VIEW_DDL =
+                "SELECT VIEW_DEFINITION FROM INFORMATION_SCHEMA.VIEWS "
+                        + "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?";
 
         /** Single-column unique indexes, MySQL. ?: table name. */
         public static final String MYSQL_UNIQUE_COLUMNS =
@@ -441,6 +557,22 @@ public final class Constants {
 
         /** %s: table name. Capped so a large table cannot flood the canvas. */
         public static final String SELECT_ALL_LIMITED = "SELECT * FROM \"%s\" LIMIT 100";
+
+        /** One page of a table. %s: table. ?: limit, offset. */
+        public static final String SELECT_PAGE = "SELECT * FROM \"%s\" LIMIT ? OFFSET ?";
+
+        /** %s: table. */
+        public static final String COUNT_ROWS = "SELECT COUNT(*) FROM \"%s\"";
+
+        /**
+         * Like {@link #UPDATE_CELL_BY_ID}, addressed by whichever column identifies a row.
+         * %s: table, column, key column. ?: new value, key value.
+         */
+        public static final String UPDATE_CELL_BY_KEY =
+                "UPDATE \"%s\" SET \"%s\" = ? WHERE \"%s\" = ?";
+
+        /** %s: table, key column. ?: key value. */
+        public static final String DELETE_BY_KEY = "DELETE FROM \"%s\" WHERE \"%s\" = ?";
 
         /** %s: table. %s: column. ?: new value. ?: record id. */
         public static final String UPDATE_CELL_BY_ID =

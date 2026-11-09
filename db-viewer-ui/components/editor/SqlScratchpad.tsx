@@ -4,6 +4,8 @@ import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Play, ChevronDown, ChevronUp, Loader2, AlertCircle, Lock, Terminal } from 'lucide-react';
 import { dbService } from '@/services/api';
 import { ScratchpadResult, StatementResult } from '@/types';
+import { highlightSql } from './sqlHighlight';
+import { errorMessage } from '@/services/errors';
 
 /**
  * A bottom drawer for running SQL against the open file.
@@ -20,52 +22,22 @@ import { ScratchpadResult, StatementResult } from '@/types';
  * comes up, which is not remembering exactly how a table was spelled.
  */
 
-/** Only what a scratchpad needs: enough to see structure at a glance. */
-const KEYWORDS = new Set([
-    'SELECT', 'FROM', 'WHERE', 'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE', 'CREATE',
-    'TABLE', 'VIEW', 'INDEX', 'DROP', 'ALTER', 'ADD', 'COLUMN', 'JOIN', 'LEFT', 'RIGHT', 'INNER',
-    'OUTER', 'ON', 'AS', 'AND', 'OR', 'NOT', 'NULL', 'IS', 'IN', 'LIKE', 'ORDER', 'BY', 'GROUP',
-    'HAVING', 'LIMIT', 'OFFSET', 'DISTINCT', 'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'PRIMARY',
-    'KEY', 'FOREIGN', 'REFERENCES', 'UNIQUE', 'DEFAULT', 'CHECK', 'CASCADE', 'INTEGER', 'TEXT',
-    'VARCHAR', 'BOOLEAN', 'DATE', 'DATETIME', 'REAL', 'BLOB', 'IF', 'EXISTS', 'PRAGMA', 'WITH',
-    'UNION', 'ALL', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'ASC', 'DESC', 'REPLACE',
-]);
-
-/**
- * Splits SQL into spans.
- *
- * Order matters: comments and strings are consumed whole, before anything inside them can be
- * mistaken for a keyword. `SELECT` inside `'a SELECT string'` must not light up.
- */
-const TOKEN = /(--[^\n]*|\/\*[\s\S]*?\*\/)|('(?:[^']|'')*')|(\b\d+(?:\.\d+)?\b)|([A-Za-z_][A-Za-z0-9_]*)/g;
-
-const highlight = (sql: string): React.ReactNode[] => {
-    const out: React.ReactNode[] = [];
-    let last = 0;
-    let key = 0;
-
-    for (const match of sql.matchAll(TOKEN)) {
-        const [text, comment, string, num, word] = match;
-        const at = match.index ?? 0;
-        if (at > last) out.push(sql.slice(last, at));
-
-        if (comment) out.push(<span key={key++} className="text-ink-400 italic">{text}</span>);
-        else if (string) out.push(<span key={key++} className="text-emerald-600">{text}</span>);
-        else if (num) out.push(<span key={key++} className="text-amber-600">{text}</span>);
-        else if (word && KEYWORDS.has(word.toUpperCase())) {
-            out.push(<span key={key++} className="text-brand-600 font-semibold">{text}</span>);
-        } else out.push(text);
-
-        last = at + text.length;
-    }
-    out.push(sql.slice(last));
-    return out;
-};
+/** Shared with the assistant's code blocks, so both colour SQL the same way. */
+const highlight = highlightSql;
 
 const PLACEHOLDER = `-- Ctrl+Enter to run. Several statements are fine.
 SELECT * FROM your_table LIMIT 10;`;
 
 interface SqlScratchpadProps {
+    /**
+     * Text to start the editor with — how the chat assistant hands SQL over.
+     *
+     * Read once, at mount. The caller remounts with a new `key` to send a second snippet, which
+     * is deliberate on both sides: it keeps this component's editor state local, and it makes
+     * "replace what is in the editor" the explicit behaviour rather than an append nobody asked
+     * for. The result pane goes with it, correctly — those results belonged to the old script.
+     */
+    initialSql?: string;
     isOpen: boolean;
     onToggle: () => void;
     /** Table names, offered as chips so nobody has to remember an exact spelling. */
@@ -77,9 +49,9 @@ interface SqlScratchpadProps {
 }
 
 export const SqlScratchpad = ({
-    isOpen, onToggle, tableNames, hasAccount, onNeedsAccount, onSchemaChanged,
+    initialSql, isOpen, onToggle, tableNames, hasAccount, onNeedsAccount, onSchemaChanged,
 }: SqlScratchpadProps) => {
-    const [sql, setSql] = useState('');
+    const [sql, setSql] = useState(initialSql ?? '');
     const [isRunning, setRunning] = useState(false);
     const [result, setResult] = useState<ScratchpadResult | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -101,9 +73,7 @@ export const SqlScratchpad = ({
             // SELECT would make the canvas jump for no reason.
             if (next.schemaChanged) onSchemaChanged();
         } catch (e: unknown) {
-            const message = e && typeof e === 'object' && 'response' in e
-                ? (e as { response?: { data?: { error?: string } } }).response?.data?.error
-                : undefined;
+            const message = errorMessage(e);
             setError(message || 'That could not be run.');
             setResult(null);
         } finally {

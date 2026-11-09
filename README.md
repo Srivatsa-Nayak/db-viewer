@@ -54,9 +54,11 @@ Built with **Spring Boot 3.3 (Java 17)** on the backend and **Next.js 16** on th
 | **🗑️ Safe table deletion** | Delete a table from its node — refused with a clear message when another table's foreign key still references it. Confirming leaves a **ghost**: the node stays put, greyed, with a countdown and an Undo button, and the delete is only sent when that runs out. Undo cancels it, and nothing was ever removed, so there is nothing to put back. |
 | **🔍 Detail that follows the zoom** | A table shows everything at 70% and above, its key columns between 40% and 70%, and just a name and a column count below that. Relationship lines are drawn at every level — seeing how things connect is the reason to zoom out. |
 | **⚡ Editing on the canvas** | Each node carries a three-row peek at its contents; double-click a cell to change it. Fetched only when you open it, and offered only where the text is big enough to read. |
+| **✦ Schema assistant** | A chat panel in the canvas's top-right corner that can read the file you have open. Ask what a schema does, what is wrong with it, how to model something new, or what the app itself can do. It answers from your actual tables, columns, keys and relationships — **never from your data**, which is not sent. When it writes SQL you get it as a block you can load straight into the SQL panel; it cannot run anything itself. |
+| **🔑 Bring your own model key** | The assistant runs on the app's key by default. Add an Anthropic, OpenAI or OpenRouter key in **Your profile** and it uses yours instead, with any model your account can reach. The key is stored encrypted without a provider call (so pasting one costs nothing; a wrong key says so on the first question), and the app will not show it to you again, only a masked hint. If the server's secret changes and a saved key can no longer be read, the profile says so and the assistant asks you to paste it again rather than quietly billing the app's key. |
 | **📝 Table notes** | A to-do list per table, stored with the file. Tick items off and come back to them later. |
 | **🔗 Share links** | Create a read-only link to a file. Anyone with the link can view the schema; nobody can edit it. |
-| **👤 Optional accounts** | Everything works signed out. Only exporting and sharing need a free account (password: 8+ chars, a capital and a special character). Signed in, you can change your display name and password from **Edit profile**. |
+| **👤 Optional accounts** | Everything works signed out. Exporting, sharing, running SQL and asking the assistant need a free account (password: 8+ chars, a capital and a special character). Signed in, you can change your display name and password from **Edit profile**. |
 | **🔒 Private workspaces** | Every file belongs to whoever made it. A signed-in user's files follow their account to any browser; a signed-out visitor's files belong to that browser alone. Knowing a workspace id is no longer enough to open it — the API answers 403. |
 | **💾 Session persistence** | The files you have open survive a browser refresh — the list and your canvas layout are remembered locally, and the schema is re-read from the databases, which are the source of truth. |
 | **📑 API docs** | OpenAPI/Swagger UI generated from the backend controllers. |
@@ -97,7 +99,10 @@ afterwards.
 The second key idea: **each open file is a workspace with its own physical database.** The frontend
 tags every request with an `X-Workspace-Id` header; the backend lazily creates and caches a
 `DataSource` per id — a separate `.db` file on SQLite, a separate schema on MySQL. A request with no
-workspace id falls back to a shared default database, which is what Swagger and `curl` see.
+workspace id lands in a shared **sandbox** workspace (`__sandbox`), which is what Swagger and `curl`
+see. It never reaches the application's own database (accounts, ownership, share links): that is
+only touched by the services that own those tables, and ids starting with `__` are refused from
+clients so the sandbox cannot be claimed.
 
 Full details: [`docs/SYSTEM-DESIGN.md`](docs/SYSTEM-DESIGN.md) and
 [`docs/DATABASE-DESIGN.md`](docs/DATABASE-DESIGN.md).
@@ -121,7 +126,7 @@ db-viewer/
 │   │   ├── sql/                Script splitter + MySQL→SQLite translator
 │   │   └── workspace/          Per-file database isolation
 │   ├── src/main/resources/     application.properties + mysql/prod profiles
-│   └── src/test/java/          81 JUnit 5 / MockMvc / AssertJ tests
+│   └── src/test/java/          262 JUnit 5 / MockMvc / AssertJ tests
 ├── db-viewer-ui/               Next.js 16 frontend
 │   ├── app/                    App Router: / landing, /app editor, /share/[token]
 │   ├── components/             header, canvas, editor, tables, modal
@@ -250,13 +255,37 @@ java -jar db-viewer-backend/target/db-viewer-*.jar \
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `8080` | HTTP port |
-| `DB_PATH` | `./visualizer.db` | SQLite file for the **default** (no-workspace) database |
+| `DB_PATH` | `./visualizer.db` | SQLite file for the application's own database (accounts, workspace owners, share links). Workspace endpoints never read or write it |
 | `WORKSPACE_DIR` | `./data/workspaces` | Directory holding one `.db` file per open SQL file |
 | `SPRING_PROFILES_ACTIVE` | *(none)* | `mysql` and/or `prod` |
 | `MYSQL_HOST` / `MYSQL_PORT` | `localhost` / `3306` | MySQL profile only |
 | `MYSQL_DB` | `dbviewer` | Default schema for no-workspace requests |
 | `MYSQL_USER` / `MYSQL_PASSWORD` | `root` / `root` | MySQL credentials |
 | `AUTH_SECRET` | *(none)* | Signing key for session tokens. **Set this (32+ chars) in any real deployment** — when blank a random key is generated at startup and everyone is signed out on every restart |
+| `CORS_ALLOWED_ORIGINS` | localhost:3000 + the deployed UI | Comma-separated browser origins allowed to call the API (patterns like `https://*.example.com` work). **A UI served from anywhere else gets CORS errors until it is listed** |
+| `RATE_LIMIT_ENABLED` / `RATE_LIMIT_TRUST_FORWARDED_FOR` | `true` / `true` | Per-address request limits (sign-in, sign-up, imports, raw SQL, everything). Behind a proxy the address is the last `X-Forwarded-For` hop; set the second to `false` if the app is reachable directly |
+| `MAX_UPLOAD_SIZE` / `IMPORT_MAX_STATEMENTS` / `IMPORT_MAX_CSV_ROWS` | `50MB` / `20000` / `200000` | Import limits, so one file cannot occupy the instance |
+| `WORKSPACE_ANONYMOUS_RETENTION_DAYS` | `30` | Anonymous (signed-out) files unused this long are deleted; `0` keeps them. Signed-in users' files are never swept |
+| `WORKSPACE_IDLE_CLOSE_MINUTES` / `WORKSPACE_MAX_OPEN` | `30` / `200` | Idle workspace connections are closed; the data stays on disk and reopens on the next request |
+| `SWAGGER_ENABLED` | `true` | Set `false` to turn off Swagger UI and `/v3/api-docs` |
+| `LOG_SQL` | `WARN` | `DEBUG` logs every SQL statement — local debugging only |
+| `LLM_API_KEY` | *(none)* | The app's own model key, used by the chat assistant for any signed-in user who has not supplied their own. Blank is a working deployment — the assistant reports itself unavailable until a user brings a key |
+| `LLM_PROVIDER` | `OPENROUTER` | `OPENROUTER`, `ANTHROPIC` or `OPENAI`. Picks the wire format as well as the endpoint |
+| `LLM_MODEL` | *(provider default)* | Model id for the app's key — e.g. `openai/gpt-4o`, `claude-sonnet-5` |
+| `LLM_MAX_TOKENS` | `8192` | Output-token ceiling per answer. Thinking models spend part of it before they start writing |
+| `LLM_ANTHROPIC_EFFORT` | *(none)* | Anthropic only: `low`, `medium` or `high`. Unset sends nothing, because older models reject it. `low` is plenty for schema questions on current models |
+| `LLM_QUOTA_PER_HOUR` / `LLM_QUOTA_PER_DAY` | `20` / `100` | Questions per user on the **app's** key. `0` = unlimited. A user's own key is limited only by `LLM_QUOTA_OWN_KEY_PER_HOUR` (`120`) |
+| `LLM_QUOTA_GLOBAL_PER_DAY` | `1000` | Questions on the app's key across everyone per day. Counted from the `llm_usage` table, so it survives restarts |
+| `LLM_KEY_SECRET` | *(none)* | Optional separate secret for encrypting saved API keys. Unset, a key derived from `AUTH_SECRET` is used; set, rotating `AUTH_SECRET` no longer makes saved keys unreadable |
+| `LLM_SITE_URL` | `http://localhost:3000` | Sent to OpenRouter for usage attribution; ignored by the others |
+
+`AUTH_SECRET` does double duty: it signs session tokens **and** derives the key that encrypts
+users' stored API keys. Rotating it invalidates both — everyone is signed out, and everyone is
+asked to paste their API key again.
+
+For a gateway rather than a vendor's public endpoint (Azure OpenAI, LiteLLM, an internal proxy
+with a spend cap), set `app.llm.openai-base-url`, `app.llm.anthropic-base-url` or
+`app.llm.openrouter-base-url` in `application.properties`.
 
 ### Frontend
 
@@ -286,6 +315,9 @@ set headers.
 | `GET` | `/templates/{id}` | One template, including its SQL body |
 | `POST` | `/templates/{id}/apply` | Create a template's tables in the current workspace |
 | `POST` | `/demo` | Shortcut for applying the Online Store template |
+| `GET` `PUT` `PATCH` `DELETE` | `/auth/api-key` | Read (masked), store, change the model of, or forget the caller's own model API key. The key itself is never returned |
+| `POST` | `/chat` | Ask the schema assistant. Streams server-sent events: `meta`, then `delta` per fragment, then `done` — or `error`. Requires an account |
+| `GET` | `/chat/config` | Whether the assistant can answer, and whose key it would spend |
 | `DELETE` | `/table/{name}` | Drop a table (409 when still referenced) |
 | `GET` `POST` | `/table-notes` · `/table-notes/{table}` | Per-table to-do notes |
 | `POST` | `/share` | Create a read-only share link **(account required)** |
@@ -293,9 +325,10 @@ set headers.
 | `GET` `DELETE` | `/shares` · `/share/{token}` | List / revoke your links **(account required)** |
 | `POST` | `/import/analyze` | Report what a file *would* create — tables, columns, inferred types and what will be skipped. Creates nothing |
 | `POST` | `/upload` | Import a `.csv` or `.sql` file (multipart, field `file`; optional `columnTypes` JSON of corrected types) |
-| `POST` | `/query` | Execute raw SQL |
+| `POST` | `/query` | Execute one raw SQL statement in the current workspace **(account required)** |
 | `GET` | `/db-info` | All tables, columns, row previews (max 100) and relationships |
-| `GET` | `/table-data/{table}` | Columns + rows (max 100) for one table |
+| `GET` | `/table-data/{table}?limit=&offset=` | Columns, one page of rows (default 100, at most 1,000), the real `total`, and the `keyColumn` rows are edited by (`id`, else a single-column primary key) |
+| `GET` | `/actuator/health` | `{"status":"UP"}` for the host's health check. Nothing else under `/actuator` is exposed |
 | `POST` | `/create-table` | Create a table with PK / `NOT NULL` / foreign keys |
 | `POST` | `/alter-table` | Add a column to an existing table |
 | `POST` | `/update-column` | Rename a column, or change its type or nullability |
@@ -338,14 +371,15 @@ curl localhost:8080/db-info -H 'X-Workspace-Id: fileA'   # sees only fileA's use
 ## ✅ Testing and quality gates
 
 ```bash
-# Backend — 96 tests, in-memory SQLite, no setup required
+# Backend — 262 tests, in-memory SQLite, no setup required
 cd db-viewer-backend && ./mvnw test
 
 # Single class
 ./mvnw test -Dtest=WorkspaceIsolationTest
 
-# Frontend — no test suite; these are the gates
+# Frontend — 20 Vitest unit tests (parsers, the chat stream reader, schema→graph, exports)
 cd db-viewer-ui
+npm test             # vitest run
 npx tsc --noEmit     # type check
 npm run lint         # eslint
 npm run build        # production build
@@ -369,6 +403,15 @@ failure worth catching — and the suite is deliberately one layer deep per beha
 | `ForeignKeyConstraintTest` | Creating and dropping a foreign key from a canvas drag, its pre-flight refusals (orphan rows, non-unique target, type mismatch, duplicate), and indexes/`UNIQUE`/`CHECK` surviving the rebuild |
 | `ScratchpadTest` | Multi-statement SQL reporting per statement, the row/statement/timeout caps, and internal `__` tables refused |
 | `ShareDuplicateLinkTest` | Repeated and concurrent sharing returning one link, and pre-existing duplicates neither breaking the route nor being silently revoked |
+| `SecretCipherTest` | Round-tripping a stored API key, a fresh nonce per encryption, a tampered ciphertext failing closed, and an unreadable one answering null rather than throwing |
+| `ApiKeyStorageTest` | Bring-your-own keys: encrypted at rest, never returned to the caller, masked to a hint, a user's key taking precedence over the app's — and that saving one makes **no** provider call, so pasting a key never costs anything |
+| `LlmClientTest` | Request bodies per provider (no `temperature`, cache breakpoints, usage requested), stream parsing for Anthropic and OpenRouter, retry before the first byte against a local stub server |
+| `ChatQuotaTest` | The app key's hourly and daily limits, failed answers not counted, usage written to `llm_usage`, `truncated` on the done frame |
+| `ChatSchemaRenderTest` | An oversized schema drops whole tables, names them, and keeps its relationships |
+| `SecurityHardeningTest` | Every `@RequiresAccount` route refuses an anonymous caller (walks the mapping table), per-address and per-account limits, CORS allowlist, health endpoint only |
+| `BackendRobustnessTest` | Paging and real totals, editing by primary key, transactional imports, import limits, idle-connection eviction, abandoned-workspace sweep |
+| `RateLimiterTest` | The fixed-window counter behind every limit |
+| `ChatPromptTest` | What the assistant is told — tables, columns, keys, foreign keys, the engine, open table notes — and what it is not: **no row values**, no forged `system` turn smuggled in through the history |
 
 ---
 
@@ -446,3 +489,9 @@ keep.
 | Row edit/delete does nothing | Both address rows by an `id` column. A table without one can be viewed but not edited row-wise. |
 | Port 8080 already in use | `./mvnw spring-boot:run -Dspring-boot.run.arguments=--server.port=8090` and set `NEXT_PUBLIC_API_URL` to match. |
 | Workspace files piling up in `data/workspaces` | Nothing prunes them automatically. Use **File → Delete file** in the UI, or delete the directory while the app is stopped. |
+| The assistant says no model key is configured | The server has no `LLM_API_KEY`. Either set one, or add your own in **Your profile → Assistant API key** — the assistant works fine on a user's own key alone. |
+| `429 Too many requests` | A limit was reached: sign-in or sign-up attempts from one address, imports, raw SQL, or the assistant's quota on the app's key. The response says how long to wait (`Retry-After`). Limits are listed in the configuration table |
+| The deployed UI shows CORS errors on every request | Its origin is not in `CORS_ALLOWED_ORIGINS`. Add it (comma-separated) and restart the backend |
+| Your saved API key disappeared after a restart | `AUTH_SECRET` is unset, so the encryption key is regenerated at boot and the stored ciphertext can no longer be read. The profile dialog warns about this. Set `AUTH_SECRET` and enter the key once more. |
+| The assistant answers "I can only see the schema" when asked about data | Working as intended. Row values are never sent to the model — only table names, columns, types, keys, relationships and your table notes. Use **Edit data** on the node for the rows themselves. |
+| The assistant's answer arrives all at once after a long pause | Something between the browser and the server is buffering the stream. The response sets `X-Accel-Buffering: no` for nginx; other proxies need their own buffering turned off for `/chat`. |

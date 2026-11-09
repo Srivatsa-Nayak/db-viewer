@@ -121,8 +121,9 @@ const SAMPLE_ROWS = 3;
  * all — `DataEditor` disables its buttons for exactly this reason rather than silently doing
  * nothing, and the strip says so in words.
  */
-const rowIdOf = (row: RowData): string | number | null => {
-    const value = row.id ?? row.ID;
+const rowIdOf = (row: RowData, keyColumn: string | null = null): string | number | null => {
+    // The backend names the key column: `id`, or a single-column primary key.
+    const value = keyColumn ? row[keyColumn] : (row.id ?? row.ID);
     return typeof value === 'string' || typeof value === 'number' ? value : null;
 };
 
@@ -235,6 +236,7 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
      ──────────────────────────────────────────────────────────────────────── */
   const [isDataOpen, setDataOpen] = useState(false);
   const [rows, setRows] = useState<RowData[] | null>(null);
+  const [rowKey, setRowKey] = useState<string | null>(null);
   const [isLoadingRows, setLoadingRows] = useState(false);
   const [dataError, setDataError] = useState<string | null>(null);
   const [editingCell, setEditingCell] = useState<{ rowId: string | number; col: string } | null>(null);
@@ -257,6 +259,7 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
     try {
       const result = await dbService.getTableData(data.label);
       setRows(Array.isArray(result) ? result : result.rows);
+      setRowKey(Array.isArray(result) ? null : result.keyColumn ?? null);
     } catch {
       setDataError('Could not read the rows.');
     } finally {
@@ -276,7 +279,7 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
     const value = cellDraft;
     const previous = rows;
     setRows(prev => prev?.map(row =>
-      rowIdOf(row) === cell.rowId ? { ...row, [cell.col]: value } : row) ?? prev);
+      rowIdOf(row, rowKey) === cell.rowId ? { ...row, [cell.col]: value } : row) ?? prev);
 
     try {
       await dbService.updateCell({
@@ -718,7 +721,7 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
                     </thead>
                     <tbody>
                       {rows.slice(0, SAMPLE_ROWS).map((row, index) => {
-                        const rowId = rowIdOf(row);
+                        const rowId = rowIdOf(row, rowKey);
                         return (
                           // Keyed by the row's own id, never by index — the rule the row
                           // editor already follows.
@@ -763,10 +766,24 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
                                       ? '' : String(row[col.name]));
                                     setEditingCell({ rowId, col: col.name });
                                   }}
+                                  // Reachable without a mouse: Tab to the cell, then Enter or F2,
+                                  // the spreadsheet convention. Double-click stays the pointer route.
+                                  tabIndex={rowId === null ? undefined : 0}
+                                  onKeyDown={(e) => {
+                                    if (rowId === null || (e.key !== 'Enter' && e.key !== 'F2')) return;
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    abandonCellRef.current = false;
+                                    setCellDraft(row[col.name] === null || row[col.name] === undefined
+                                      ? '' : String(row[col.name]));
+                                    setEditingCell({ rowId, col: col.name });
+                                  }}
+                                  aria-label={rowId === null ? undefined : `${col.name}: ${displayValue(row[col.name])}. Press Enter to edit.`}
                                   title={rowId === null
-                                    ? 'This row has no id column, so it cannot be edited here'
-                                    : `Double-click to edit ${col.name}`}
-                                  className={`max-w-[90px] truncate rounded px-1 font-mono text-ink-600 ${
+                                    ? 'This table has no id or single-column key, so rows cannot be edited here'
+                                    : `Double-click, or press Enter, to edit ${col.name}`}
+                                  className={`max-w-[90px] truncate rounded px-1 font-mono text-ink-600
+                                    focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-500 ${
                                     rowId === null ? 'cursor-default' : 'cursor-text hover:bg-brand-50'
                                   }`}
                                 >
@@ -792,8 +809,8 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
                       "Edit data" is still there for adding and deleting, so nothing is lost by
                       leaving it out. */}
                   <p className="flex items-center gap-1 px-1 pt-0.5 text-[8px] text-ink-400">
-                    {rowIdOf(rows[0]) === null
-                      ? 'No id column — rows cannot be edited here.'
+                    {rowIdOf(rows[0], rowKey) === null
+                      ? 'No id or single-column key — rows cannot be edited here.'
                       : hasMoreRows
                         ? 'First few rows. Double-click a cell to edit.'
                         : `All ${rows.length} row${rows.length === 1 ? '' : 's'}. Double-click a cell to edit.`}

@@ -5,6 +5,8 @@ import { Loader2, AlertCircle, User, Check, CheckCircle2 } from 'lucide-react';
 import { authService, AuthUser } from '@/services/api';
 import { Callout, GhostButton, Modal, ModalActions, PrimaryButton } from '@/components/ui/Modal';
 import { PasswordField } from '@/components/ui/PasswordField';
+import { ApiKeySection } from './ApiKeySection';
+import { errorMessage } from '@/services/errors';
 
 interface ProfileModalProps {
     isOpen: boolean;
@@ -65,9 +67,7 @@ export const ProfileModal = ({ isOpen, user, onClose, onUpdated }: ProfileModalP
             setSaved(true);
             setTimeout(() => setSaved(false), 2500);
         } catch (err: unknown) {
-            const message = err && typeof err === 'object' && 'response' in err
-                ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
-                : undefined;
+            const message = errorMessage(err);
             setError(message || 'Could not save your changes.');
         } finally {
             setBusy(false);
@@ -109,7 +109,7 @@ export const ProfileModal = ({ isOpen, user, onClose, onUpdated }: ProfileModalP
                             className="w-full bg-surface border border-ink-300 rounded-md py-2.5 sm:py-2 pl-10 pr-3 text-sm text-ink-900 placeholder:text-ink-400 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
                             value={displayName}
                             onChange={e => { setDisplayName(e.target.value); setError(null); }}
-                            placeholder="Ada Lovelace"
+                            placeholder="Your name"
                         />
                     </div>
                     <p className="text-[11px] text-ink-400 mt-1.5">
@@ -170,6 +170,12 @@ export const ProfileModal = ({ isOpen, user, onClose, onUpdated }: ProfileModalP
                             : undefined}
                     />
                 </div>
+
+                {/* Below the password, above the status messages: an API key is account-level
+                    settings like the two fields above it, but it saves on its own button rather
+                    than through the dialog's submit, so it must not sit between a field and the
+                    confirmation of that field being saved. */}
+                <ApiKeySection />
 
                 {saved && (
                     <Callout tone="info" icon={<CheckCircle2 size={14} />}>Your profile has been updated.</Callout>

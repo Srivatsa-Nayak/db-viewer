@@ -47,6 +47,30 @@ public class WorkspaceOwnershipServiceImpl implements WorkspaceOwnershipService 
             log.debug("Refused workspace {} to {}", workspaceId, owner == null ? "an unidentified caller" : owner);
             throw new WorkspaceForbiddenException(workspaceId);
         }
+        touch(workspaceId);
+    }
+
+    /** When each workspace's last_access was last written, so it is written at most hourly. */
+    private final java.util.Map<String, Long> lastTouched = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long TOUCH_EVERY_MS = 60 * 60 * 1000L;
+
+    /**
+     * Records that a workspace is in use, which is what the sweeper reads to decide a file is
+     * abandoned. Throttled: once an hour is plenty for a decision measured in days, and a write
+     * per request would double the database traffic of every canvas action.
+     */
+    private void touch(String workspaceId) {
+        long now = System.currentTimeMillis();
+        Long previous = lastTouched.get(workspaceId);
+        if (previous != null && now - previous < TOUCH_EVERY_MS) {
+            return;
+        }
+        lastTouched.put(workspaceId, now);
+        try {
+            jdbcTemplate.update(Constants.Ownership.TOUCH, Instant.now().toString(), workspaceId);
+        } catch (DataAccessException e) {
+            log.debug("Could not record use of workspace {}: {}", workspaceId, e.getMessage());
+        }
     }
 
     private void claim(String workspaceId, String owner) {

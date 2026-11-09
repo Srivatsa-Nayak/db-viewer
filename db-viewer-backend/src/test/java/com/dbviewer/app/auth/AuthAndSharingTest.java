@@ -9,11 +9,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.Map;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -40,6 +42,12 @@ class AuthAndSharingTest {
 
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper objectMapper;
+    /**
+     * The application's own database, read directly. These checks used to go through
+     * {@code /query} with no workspace header, which is exactly the hole that let anyone read
+     * {@code app_users}; {@link #appDatabaseIsUnreachableThroughTheApi} now pins that shut.
+     */
+    @Autowired JdbcTemplate appDb;
 
     private static String token;
     private static String shareToken;
@@ -122,10 +130,9 @@ class AuthAndSharingTest {
                 .andExpect(jsonPath("$.emailAlreadyRegistered").value(true));
 
         // And only one row was ever created.
-        mockMvc.perform(post("/query").contentType(MediaType.APPLICATION_JSON)
-                        .content(json(Map.of("query",
-                                "SELECT COUNT(*) c FROM app_users WHERE email='sharer@example.com'"))))
-                .andExpect(jsonPath("$.data[0].c").value(1));
+        assertThat(appDb.queryForObject(
+                "SELECT COUNT(*) FROM app_users WHERE email='sharer@example.com'", Integer.class))
+                .isEqualTo(1);
     }
 
     @Test
@@ -166,12 +173,46 @@ class AuthAndSharingTest {
     @Test
     @Order(7)
     void passwordsAreHashed_notStored() throws Exception {
+        String hash = appDb.queryForObject(
+                "SELECT password_hash FROM app_users WHERE email='sharer@example.com'", String.class);
+        assertThat(hash).startsWith("$2").doesNotContain("A-good-password");
+    }
+
+    /**
+     * The application's own tables must not be reachable through any workspace endpoint.
+     *
+     * <p>A request with no {@code X-Workspace-Id} used to run against the application database
+     * itself, so an anonymous caller could read password hashes with {@code /query}, page
+     * through {@code /table-data/app_users}, or drop every account with {@code DELETE
+     * /workspace}. It now lands in an ordinary sandbox workspace that has none of those tables.
+     */
+    @Test
+    @Order(7)
+    void appDatabaseIsUnreachableThroughTheApi() throws Exception {
+        // /query needs an account now, like the scratchpad.
         mockMvc.perform(post("/query").contentType(MediaType.APPLICATION_JSON)
-                        .content(json(Map.of("query",
-                                "SELECT password_hash FROM app_users WHERE email='sharer@example.com'"))))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].password_hash", startsWith("$2")))
-                .andExpect(jsonPath("$.data[0].password_hash", not(containsString("A-good-password"))));
+                        .content(json(Map.of("query", "SELECT * FROM app_users"))))
+                .andExpect(status().isUnauthorized());
+
+        // Signed in and with no header, it runs in the sandbox, where there is no app_users.
+        mockMvc.perform(post("/query").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("query", "SELECT * FROM app_users"))))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(get("/table-data/app_users"))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/table-data/workspace_owners"))
+                .andExpect(status().isNotFound());
+
+        // Clearing "the default database" clears the sandbox and leaves the accounts alone.
+        mockMvc.perform(delete("/workspace")).andExpect(status().isOk());
+        assertThat(appDb.queryForObject("SELECT COUNT(*) FROM app_users", Integer.class))
+                .isPositive();
+
+        // And the sandbox cannot be addressed, or claimed, by id.
+        mockMvc.perform(get("/db-info").header("X-Workspace-Id", "__sandbox"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test

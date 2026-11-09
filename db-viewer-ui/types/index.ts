@@ -119,6 +119,13 @@ export interface SchemaResponse {
 export interface TableDataResponse {
     columns: ColumnInfo[] | string[];
     rows: RowData[];
+    /** Rows in the whole table, not just this page. Absent from older backends. */
+    total?: number;
+    /**
+     * The column a row is edited and deleted by: `id` when there is one, otherwise a
+     * single-column primary key. Absent when rows cannot be addressed one at a time.
+     */
+    keyColumn?: string;
 }
 
 /* ── Import staging ───────────────────────────────────────────────────────

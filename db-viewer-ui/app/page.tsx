@@ -22,6 +22,7 @@ import {
 } from "@/services/api";
 import { clearSession, loadSession, saveSession } from "@/services/sessionStorage";
 import { newWorkspaceId } from "@/services/workspaceId";
+import { errorMessage } from '@/services/errors';
 
 // Neither dialog is on the path to first paint, so neither belongs in the landing bundle.
 const AuthModal = dynamic(() => import("@/components/modal/AuthModal").then(m => m.AuthModal), { ssr: false });
@@ -81,9 +82,7 @@ export default function LandingPage() {
             router.push("/app");
         } catch (err: unknown) {
             setActiveWorkspace(existingActiveId());
-            const message = err && typeof err === "object" && "response" in err
-                ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
-                : undefined;
+            const message = errorMessage(err);
             setNotice({
                 isOpen: true,
                 severity: "error",

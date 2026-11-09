@@ -86,8 +86,9 @@ db-viewer-backend/
     │   │   │   └── OpenApiConfig.java          Swagger metadata
     │   │   ├── controller/                     Every REST endpoint lives here
     │   │   │   ├── DatabaseController.java     All data routes; thin, try/catch → {error}
-    │   │   │   ├── AuthController.java         /auth/signup, /auth/login, /auth/me
+    │   │   │   ├── AuthController.java         /auth/signup, /login, /me, /api-key
     │   │   │   ├── ShareController.java        /share, /shares
+    │   │   │   ├── ChatController.java         /chat, /chat/config — SSE
     │   │   │   ├── TemplateController.java     /templates
     │   │   │   └── GlobalExceptionHandler.java
     │   │   ├── dto/                            One POJO per request/response shape
@@ -180,7 +181,7 @@ current workspace on every statement, so as long as new code uses `jdbc()` rathe
 | `GET` | `/version` | *(new)* | Version declared in `pom.xml`, bumped on every merge to `master` | — |
 | `POST` | `/import/analyze` | — | Dry run: what importing the file would create. Creates nothing | header |
 | `POST` | `/upload` | `HandleFileUpload` | Import `.csv` or `.sql` (multipart, field `file`; optional `columnTypes` JSON) | header |
-| `POST` | `/query` | `HandleQuery` | Execute raw SQL | header |
+| `POST` | `/query` | `HandleQuery` | Execute one raw SQL statement (account required) | header |
 | `GET` | `/db-info` | `HandleGetDBInfo` | All schemas, row previews (≤100) and relationships | header |
 | `GET` | `/table-data/{table}` | `HandleGetTableData` | Columns + rows (≤100) for one table | header |
 | `POST` | `/create-table` | `HandleCreateTable` | Create a table with PK / `NOT NULL` / FKs | header |
@@ -196,6 +197,9 @@ current workspace on every statement, so as long as new code uses `jdbc()` rathe
 | `GET` | `/auth/me` | *(new)* | Current user, `{}` when anonymous | — |
 | `POST` | `/share` | *(new)* | Create a share link **(account required)** | header |
 | `GET` | `/share/{token}` | *(new)* | View a shared schema (public) | — |
+| `GET` `PUT` `DELETE` | `/auth/api-key` | *(new)* | The caller's own model key: masked status, store, forget. Never calls the provider | — |
+| `POST` | `/chat` | *(new)* | Ask the schema assistant; streams SSE **(account required)** | header |
+| `GET` | `/chat/config` | *(new)* | Whether the assistant is usable, and whose key would pay | — |
 | `POST` | `/insert-row` | `HandleInsertRow` | Insert a row (empty or with values) | header |
 | `POST` | `/update-cell` | `HandleUpdateCell` | Update one cell by row `id` | header |
 | `POST` | `/delete-row` | `HandleDeleteRow` | Delete a row by `id` | header |
@@ -342,9 +346,13 @@ curl localhost:8080/db-info -H 'X-Workspace-Id: demo'   # {"tables":[],"relation
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `8080` | HTTP port |
-| `DB_PATH` | `./visualizer.db` | SQLite file for the **default** (no-workspace) database |
+| `DB_PATH` | `./visualizer.db` | SQLite file for the application's own database (accounts, owners, share links). A request with no workspace header uses the `__sandbox` workspace, never this file |
 | `WORKSPACE_DIR` | `./data/workspaces` | Directory holding one `.db` per workspace |
-| `AUTH_SECRET` | *(none)* | Signing key for session tokens; 32+ chars. Blank means a random key per restart |
+| `AUTH_SECRET` | *(none)* | Signing key for session tokens **and** the derivation key for stored API keys; 32+ chars. Blank means a random key per restart — everyone signed out, every stored API key unreadable |
+| `LLM_API_KEY` | *(none)* | The app's own model key for the chat assistant. Blank is valid: the assistant reports itself unavailable until a user brings their own |
+| `LLM_PROVIDER` | `OPENROUTER` | `OPENROUTER`, `ANTHROPIC` or `OPENAI` — picks the wire format as well as the host |
+| `LLM_MODEL` | *(provider default)* | Model id for the app's key |
+| `LLM_SITE_URL` | `http://localhost:3000` | OpenRouter usage attribution; ignored elsewhere |
 | `SPRING_PROFILES_ACTIVE` | *(none)* | `mysql` and/or `prod` |
 | `MYSQL_HOST` / `MYSQL_PORT` | `localhost` / `3306` | MySQL profile only |
 | `MYSQL_DB` | `dbviewer` | Default schema for no-workspace requests |
@@ -357,6 +365,13 @@ spring.datasource.url=jdbc:sqlite:${DB_PATH:./visualizer.db}
 app.db.driver=sqlite                                # sqlite | mysql — selects SQL dialect
 app.workspace.dir=${WORKSPACE_DIR:./data/workspaces}
 spring.servlet.multipart.max-file-size=50MB         # upload cap
+spring.mvc.async.request-timeout=180000             # a streamed chat answer holds the request open
+
+# Point a provider at a gateway instead of its public endpoint (Azure OpenAI,
+# LiteLLM, an internal proxy with a spend cap). Unset means the vendor directly.
+app.llm.openai-base-url=https://api.openai.com/v1
+app.llm.anthropic-base-url=https://api.anthropic.com/v1
+app.llm.openrouter-base-url=https://openrouter.ai/api/v1
 ```
 
 `app.db.driver` is what `isSqlite()` / `isMysql()` branch on. Switching to MySQL means activating
@@ -410,7 +425,7 @@ The image sets `DB_PATH=/data/visualizer.db` and `WORKSPACE_DIR=/data/workspaces
 ## Testing
 
 ```bash
-./mvnw test                                     # all 81 tests
+./mvnw test                                     # all 262 tests
 ./mvnw test -Dtest=WorkspaceIsolationTest       # one class
 ./mvnw test -Dtest=ColumnEditTest#renameColumn_shouldKeepTypeAndData
 ```
@@ -420,11 +435,21 @@ fixtures to load.
 
 | Class | Count | Covers |
 |---|---|---|
-| `DatabaseControllerIntegrationTest` | 18 | Every route via MockMvc: routing, binding, error status codes, workspace scoping, generated DDL, and the effect of each call |
-| `WorkspaceIsolationTest` | 8 | Same table name in two workspaces, row leakage, default-DB separation, workspace deletion, id sanitisation, MySQL URL rewriting |
-| `ColumnEditTest` | 12 | Rename/retype/renullify a column, SQLite rebuild preserving keys/FKs/data, primary-key protection, identifier validation, pragma restoration |
+| `DatabaseControllerIntegrationTest` | 19 | Every route via MockMvc: routing, binding, error status codes, workspace scoping, generated DDL, and the effect of each call |
+| `WorkspaceIsolationTest` | 9 | Same table name in two workspaces, row leakage, default-DB separation, workspace deletion, id sanitisation, MySQL URL rewriting |
+| `ColumnEditTest` | 14 | Rename/retype/renullify a column, SQLite rebuild preserving keys/FKs/data, primary-key protection, identifier validation, pragma restoration |
+| `DropColumnTest` | 10 | The undo inverse of add-column: keys and referenced columns refused, everything else preserved through the rebuild |
+| `ForeignKeyConstraintTest` | 18 | A drag gesture writing a real constraint, its pre-flight refusals, and indexes/`UNIQUE`/`CHECK` surviving the rebuild |
+| `SchemaMetadataTest` | 10 | `isUnique`, `defaultValue`, `autoIncrement`, and foreign keys carrying their constraint id and `ON DELETE` rule |
+| `CanvasMetaTest` | 12 | Colours and groups surviving a refresh, cascading with their table, and staying out of exports |
+| `ScratchpadTest` | 16 | Multi-statement execution reported per statement, the row/statement/timeout caps, internal `__` tables refused |
 | `SqlImportTest` | 8 | Real phpMyAdmin dump, comment-prefixed statements, semicolons in string literals, `DELIMITER` blocks, ALTER-key folding, skip reporting |
+| `MultiDialectImportTest` | 15 | MySQL, MariaDB, PostgreSQL and SQL Server dumps detected and translated |
 | `AuthAndSharingTest` | 14 | Signup validation, BCrypt hashing, no account enumeration, forged tokens, share create/view/revoke, anonymous refusal |
+| `ShareDuplicateLinkTest` | 6 | Repeated and concurrent sharing returning one link; pre-existing duplicates neither breaking the route nor being revoked |
+| `SecretCipherTest` | 6 | A stored API key round-tripping, a fresh nonce per encryption, a tampered ciphertext failing closed, an unreadable one answering null |
+| `ApiKeyStorageTest` | 13 | Bring-your-own keys: encrypted at rest, never returned, masked, preferred over the app's, and saved **without** a provider call |
+| `ChatPromptTest` | 13 | What the assistant is shown, and what it is not — **no row values**, no forged `system` turn from the browser's history |
 | `TableLifecycleTest` | 9 | Example schema, FK-guarded deletion, table notes |
 | `TemplateCatalogueTest` | 11 | Every template applies, has relationships and rows, states accurate counts, and its parsed preview schema matches the real database |
 

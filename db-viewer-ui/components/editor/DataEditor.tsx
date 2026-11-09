@@ -8,6 +8,7 @@ import { dbService } from '@/services/api';
 import { ColumnInfo, RowData } from '@/types';
 import { Callout, GhostButton, Modal, PrimaryButton } from '@/components/ui/Modal';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { errorMessage } from '@/services/errors';
 
 interface DataEditorProps {
     tableName: string | null;
@@ -36,10 +37,18 @@ const formatValueForInput = (val: RowData[string] | undefined, type: string) => 
     return strVal;
 };
 
-const getRowId = (row: RowData): string | number | null => {
-    const value = row.id ?? row.ID;
+/**
+ * The value a row is addressed by. The backend names the column (`keyColumn`): `id` when there
+ * is one, otherwise a single-column primary key. Tables keyed by, say, `customer_code` used to
+ * be uneditable here because only a column literally called `id` counted.
+ */
+const getRowId = (row: RowData, keyColumn: string | null): string | number | null => {
+    const value = keyColumn ? row[keyColumn] : (row.id ?? row.ID);
     return typeof value === 'string' || typeof value === 'number' ? value : null;
 };
+
+/** Rows fetched per page. More than a screen, few enough to render instantly. */
+const PAGE_SIZE = 200;
 
 const isIdColumn = (name: string) => name.toLowerCase() === 'id';
 
@@ -49,6 +58,10 @@ const CELL_INPUT = 'w-full bg-surface text-ink-900 px-2 py-1.5 rounded border bo
 export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
     const [data, setData] = useState<RowData[]>([]);
     const [columns, setColumns] = useState<ColumnInfo[]>([]);
+    /** Rows in the table, from the backend's count; null when it did not say. */
+    const [total, setTotal] = useState<number | null>(null);
+    const [keyColumn, setKeyColumn] = useState<string | null>(null);
+    const [isLoadingMore, setLoadingMore] = useState(false);
     const [loading, setLoading] = useState(false);
     /** A load that failed. Previously swallowed, so a dead backend rendered "Table is empty". */
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -85,9 +98,11 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
         setLoading(true);
         setLoadError(null);
         try {
-            const response = await dbService.getTableData(tableName);
+            const response = await dbService.getTableData(tableName, { limit: PAGE_SIZE, offset: 0 });
 
             if (response && !Array.isArray(response) && 'columns' in response) {
+                setTotal(response.total ?? null);
+                setKeyColumn(response.keyColumn ?? null);
                 const rawCols = response.columns;
                 // The backend has shipped both `["id"]` and `[{name, type}]` over its life.
                 if (Array.isArray(rawCols) && rawCols.every((col): col is string => typeof col === 'string')) {
@@ -111,14 +126,29 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
         }
     }, [tableName]);
 
+    /** The next page, appended. Rows are addressed by key, so a page boundary cannot duplicate one. */
+    const loadMore = useCallback(async () => {
+        if (!tableName) return;
+        setLoadingMore(true);
+        try {
+            const response = await dbService.getTableData(tableName, { limit: PAGE_SIZE, offset: data.length });
+            if (response && !Array.isArray(response)) {
+                setData(prev => [...prev, ...(response.rows || [])]);
+                if (response.total !== undefined) setTotal(response.total);
+            }
+        } catch {
+            setActionError('Could not load more rows.');
+        } finally {
+            setLoadingMore(false);
+        }
+    }, [tableName, data.length]);
+
     useEffect(() => {
         if (tableName) loadData();
     }, [tableName, loadData]);
 
     const describeError = (err: unknown, fallback: string) => {
-        const message = err && typeof err === "object" && "response" in err
-            ? (err as { response?: { data?: { error?: string } } }).response?.data?.error
-            : undefined;
+        const message = errorMessage(err);
         return message || fallback;
     };
 
@@ -150,7 +180,7 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
     /* ── Row edit ────────────────────────────────────────────────────────── */
 
     const startRowEdit = (row: RowData) => {
-        const rowId = getRowId(row);
+        const rowId = getRowId(row, keyColumn);
         if (rowId === null) return;
         setEditingCell(null);
         setEditingRowId(rowId);
@@ -164,7 +194,7 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
 
     const handleSaveRow = async () => {
         if (editingRowId === null || !tableName) return;
-        const original = data.find(r => getRowId(r) === editingRowId);
+        const original = data.find(r => getRowId(r, keyColumn) === editingRowId);
         if (!original) return cancelRowEdit();
 
         // Only push the fields the user actually touched.
@@ -218,7 +248,7 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
         const value = editValue;
         const previous = data;
         setData(prev => prev.map(row =>
-            getRowId(row) === cell.rowId ? { ...row, [cell.col]: value } : row
+            getRowId(row, keyColumn) === cell.rowId ? { ...row, [cell.col]: value } : row
         ));
 
         try {
@@ -262,7 +292,9 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
                 title={<span className="font-mono text-brand-700">{tableName}</span>}
                 subtitle={
                     loading ? 'Loading…'
-                        : `${data.length} row${data.length === 1 ? '' : 's'} · click a cell to edit it, or use the pencil for a whole row`
+                        : `${total !== null && total > data.length
+                            ? `${data.length.toLocaleString()} of ${total.toLocaleString()} rows`
+                            : `${data.length} row${data.length === 1 ? '' : 's'}`} · click a cell to edit it, or use the pencil for a whole row`
                 }
                 footer={
                     !isAdding ? (
@@ -361,7 +393,7 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
                                     </tr>
                                 )}
                                 {data.map((row, i) => {
-                                    const rowId = getRowId(row);
+                                    const rowId = getRowId(row, keyColumn);
                                     const isRowEditing = rowId !== null && rowId === editingRowId;
                                     return (
                                         // Keyed by the row's own id where it has one. Keying by
@@ -468,7 +500,7 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
                                                             disabled={rowId === null}
                                                             className="text-ink-400 hover:text-brand-600 p-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
                                                             aria-label="Edit row"
-                                                            title={rowId === null ? "This row has no id column to edit by" : "Edit row"}
+                                                            title={rowId === null ? "This table has no id or single-column primary key to edit rows by" : "Edit row"}
                                                         >
                                                             <Pencil size={14} />
                                                         </button>
@@ -477,7 +509,7 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
                                                             disabled={rowId === null}
                                                             className="text-ink-400 hover:text-red-500 p-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
                                                             aria-label="Delete row"
-                                                            title={rowId === null ? "This row has no id column to delete by" : "Delete row"}
+                                                            title={rowId === null ? "This table has no id or single-column primary key to delete rows by" : "Delete row"}
                                                         >
                                                             <Trash2 size={14} />
                                                         </button>
@@ -489,6 +521,16 @@ export const DataEditor = ({ tableName, onClose }: DataEditorProps) => {
                                 })}
                             </tbody>
                         </table>
+                        {total !== null && total > data.length && (
+                            <div className="flex items-center justify-center gap-3 py-3 border-t border-ink-200">
+                                <span className="text-xs text-ink-500">
+                                    Showing {data.length.toLocaleString()} of {total.toLocaleString()} rows
+                                </span>
+                                <GhostButton onClick={() => void loadMore()} disabled={isLoadingMore}>
+                                    {isLoadingMore ? 'Loading…' : `Load ${Math.min(PAGE_SIZE, total - data.length)} more`}
+                                </GhostButton>
+                            </div>
+                        )}
                     </div>
                 )}
             </Modal>
