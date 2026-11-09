@@ -66,7 +66,7 @@ run all four before pushing.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `NEXT_PUBLIC_API_URL` | `http://localhost:8080` | Backend base URL, read in `services/api.ts` |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8080` | Backend base URL, read in `services/api/` |
 
 Files present: `.env.local` (local dev) and `.env.production` (the deployed Azure API).
 
@@ -191,7 +191,7 @@ Each open file is an independent backend database. The file's `id` **is** the ba
 
 ```mermaid
 flowchart LR
-    A["User switches file<br/>or creates a new one"] --> B["setActiveWorkspace(id)<br/>in services/api.ts"]
+    A["User switches file<br/>or creates a new one"] --> B["setActiveWorkspace(id)<br/>in services/api/"]
     B --> C["Axios interceptor adds<br/>X-Workspace-Id to every request"]
     C --> D["Backend resolves that file's<br/>own database"]
 ```
@@ -212,7 +212,7 @@ close-without-deleting action — the wording has to match what it actually does
 
 ### The API boundary
 
-`services/api.ts` is the only module that talks to the backend. It owns the Axios instance, the
+`services/api/` is the only module that talks to the backend. It owns the Axios instance, the
 active workspace id, cache-busting, and the two download URL builders.
 
 ```ts
@@ -246,7 +246,7 @@ used to carry its own `c.is_pk ?? c.isPk` fallback — and a reader that forgot 
 treated every primary key as an ordinary column. `normaliseColumn`, `normaliseRelationships` and
 `normaliseSchema` fold both spellings into the camelCase types in `types/index.ts` at the boundary.
 Those types are now ground truth; the `Raw*` types describing the wire format should be imported
-only by `services/api.ts`.
+only by `services/api/`.
 
 | `dbService` method | Endpoint |
 |---|---|
@@ -517,7 +517,7 @@ Escape merely call `blur()`, with Escape setting an abandon flag first. A second
 handler is what used to fire a duplicate `update-cell` on every Enter.
 
 **6. The chat stream is `fetch`, and it has to duplicate the Axios interceptors.** Every other
-call in `services/api.ts` gets `X-Workspace-Id`, `X-Client-Id` and `Authorization` from an
+call in `services/api/` gets `X-Workspace-Id`, `X-Client-Id` and `Authorization` from an
 interceptor; `chatService.stream` sets all three by hand, because neither alternative works.
 Axios in the browser buffers the whole response before resolving — the answer would arrive
 complete after twenty seconds instead of a word at a time — and `EventSource`, which does stream,
@@ -542,7 +542,7 @@ snippet twice would change nothing.
 ## Adding a feature
 
 1. Start from **`app/page.tsx`** for anything workspace-level.
-2. Add or change backend calls **only** in `services/api.ts`, and confirm the endpoint exists in
+2. Add or change backend calls **only** in `services/api/`, and confirm the endpoint exists in
    `../db-viewer-backend/src/main/java/com/dbviewer/app/controller/DatabaseController.java`.
 3. If a new endpoint needs workspace scoping, it gets it for free through the Axios interceptor —
    unless it's a browser download, which needs `&workspaceId=` on the URL.

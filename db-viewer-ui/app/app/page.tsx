@@ -1,32 +1,36 @@
 "use client";
 
-import { useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import dynamic from "next/dynamic";
 import { FileCode, Plus, Loader2, Sparkles } from 'lucide-react';
 
 import { Header } from "@/components/header/Header";
 import { Visualizer, RelationshipDraft } from "@/components/canvas/Visualizer";
-import { FileExplorer, ExplorerFile } from "@/components/editor/FileExplorer";
+import { FileExplorer } from "@/components/editor/FileExplorer";
 import { SqlScratchpad } from "@/components/editor/SqlScratchpad";
 import { SchemaChat } from "@/components/chat/SchemaChat";
 import { chatStore } from "@/services/chatStore";
 import { ChatLauncher } from "@/components/chat/ChatLauncher";
 import { Notice } from '@/components/modal/NoticeModal';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
-import { ActionToast, ToastState } from '@/components/ui/ActionToast';
-import { Edge, Node, applyNodeChanges, NodeChange } from "reactflow";
+import { ActionToast } from '@/components/ui/ActionToast';
+import { Node, applyNodeChanges, NodeChange } from "reactflow";
 import {
     dbService, setActiveWorkspace, authService, isAuthRequired, isForeignWorkspace,
     AuthUser, TableNote, WorkspaceSummary,
 } from "@/services/api";
 import { clearSession, loadSession, saveSession } from "@/services/sessionStorage";
-import { history, HistorySnapshot } from "@/services/history";
+import { history } from "@/services/history";
 import { newWorkspaceId } from "@/services/workspaceId";
 import { downloadCanvasImage } from "@/services/exportImage";
 import { CanvasGroup, ImportPlan, Relationship, SqlDialectId, TableInfo, TagColour } from "@/types";
-import type { GroupBoxData } from "@/components/canvas/GroupBox";
+import type { NodeDecoration, Workspace } from "@/types/workspace";
+import { useToast } from "@/hooks/useToast";
+import { useUndoRedo } from "@/hooks/useUndoRedo";
+import { useAssistantPanel } from "@/hooks/useAssistantPanel";
+import { useNodeDragHistory } from "@/hooks/useNodeDragHistory";
 import {
-    GROUP_NODE_PREFIX, defaultPosition, groupNodes, junctionTables,
+    defaultPosition, groupNodes, junctionTables,
     keyColumnsByTable, transformRelationshipsToEdges,
 } from "@/services/schemaGraph";
 import { errorMessage } from "@/services/errors";
@@ -49,53 +53,6 @@ const ImportPreviewModal = dynamic(
     () => import('@/components/modal/ImportPreviewModal').then(m => m.ImportPreviewModal), { ssr: false });
 const ProfileModal = dynamic(() => import('@/components/modal/ProfileModal').then(m => m.ProfileModal), { ssr: false });
 
-/**
- * One open SQL file. The `id` is also the backend workspace id: the backend keeps a
- * separate database per id, so tables created in one file are invisible to every
- * other file and two files may reuse the same table names.
- */
-interface Workspace {
-    id: string;
-    name: string;
-    nodes: Node[];
-    edges: Edge[];
-    /**
-     * The relationships as the backend reported them, kept beside the edges they produced.
-     *
-     * An `Edge` is a drawing instruction — two node ids and two handle ids — and the text
-     * exports need the schema, not the drawing. Deriving one back from the other would mean
-     * parsing handle ids, which is exactly the sort of thing that quietly stops working.
-     */
-    relationships: Relationship[];
-    fileData: ExplorerFile;
-    isImported: boolean;
-    /**
-     * Everything the user has said *about* a table, as opposed to what the database says.
-     *
-     * Kept out of the nodes on purpose. `refreshActiveSchema` rebuilds every node from the server
-     * response, so anything living on a node is destroyed by the next refresh — colour was the
-     * first thing to hit that, and grouping, ghosting and collapsed state would each hit it again.
-     * Decorations live here, keyed by table name, and are folded onto the nodes at render time.
-     */
-    decorations: Record<string, NodeDecoration>;
-    /** Named boundaries drawn around sets of tables. Members, not geometry — see `CanvasGroup`. */
-    groups: CanvasGroup[];
-}
-
-/**
- * A user's annotations on one table.
- *
- * Presentational fields are applied as a `className`, never through node `data`: React Flow
- * compares `data` by reference, so putting a colour in it would rebuild every node's data object
- * and re-render the whole canvas on each frame of a drag. `DemoCanvas` documents the same rule for
- * its refused-delete styling.
- */
-export interface NodeDecoration {
-    /** A token name (`brand`, `teal`, …), never a hex value — see the `--color-tag-*` ramp. */
-    colour?: TagColour;
-    /** A short free-text label, e.g. "Billing". */
-    tag?: string;
-}
 
 /**
  * How long a dropped table lingers as a ghost before the delete is really sent.
@@ -114,12 +71,6 @@ export default function Home() {
      * The assistant panel, which is a column of the shell rather than a popover — so its open
      * state belongs here with the explorer's, not inside the component.
      */
-    const [isChatOpen, setChatOpen] = useState(false);
-    /**
-     * Bumped whenever the profile dialog closes, which is where the API key is managed. Part of
-     * the assistant's `configKey`, so a key added there is picked up without a reload.
-     */
-    const [profileCloses, setProfileCloses] = useState(0);
     const [editingTable, setEditingTable] = useState<string | null>(null);
     const [notice, setNotice] = useState<Notice>({ isOpen: false, severity: 'error', title: '', message: '' });
     const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -148,17 +99,6 @@ export default function Home() {
     const [pendingImport, setPendingImport] = useState<{ file: File; plan: ImportPlan } | null>(null);
     const [isProfileOpen, setProfileOpen] = useState(false);
     const [isScratchpadOpen, setScratchpadOpen] = useState(false);
-    /**
-     * SQL the chat assistant has written, waiting to be loaded into the scratchpad.
-     *
-     * The counter is the point of the shape. `SqlScratchpad` holds its editor text in local
-     * state, and pushing new text into it from outside would mean either lifting that state to
-     * this page — re-rendering a 1,700-line component on every keystroke — or setting state from
-     * an effect, which the lint config rejects. Remounting on a changed `key` is the repo's
-     * documented third option: mounting is the reset. Sending a second snippet with identical
-     * text still reloads it, because the counter moved even though the SQL did not.
-     */
-    const [scratchpadSeed, setScratchpadSeed] = useState<{ sql: string; n: number } | null>(null);
     const [notes, setNotes] = useState<TableNote[]>([]);
     const [tableToDelete, setTableToDelete] = useState<string | null>(null);
     /**
@@ -1075,92 +1015,10 @@ export default function Home() {
 
     /* ── Undo / redo ─────────────────────────────────────────────────────── */
 
-    const [toast, setToast] = useState<ToastState | null>(null);
-    /** Set when Ctrl+Z lands on a lossy entry: the confirmation shows before anything runs. */
-    const [pendingLossyUndo, setPendingLossyUndo] = useState<string | null>(null);
-
-    const historyState: HistorySnapshot = useSyncExternalStore(
-        history.subscribe, history.getSnapshot, history.getServerSnapshot);
-
-    /** Whether the open file has an assistant conversation, for the launcher's dot. */
-    const hasConversation = useSyncExternalStore(
-        chatStore.subscribe, () => chatStore.has(activeWorkspaceId), () => false);
-
-    /**
-     * Toasts dismiss themselves from a timer started here, not from an effect inside the toast:
-     * `react-hooks/set-state-in-effect` is an error, and a self-dismissing component needs
-     * exactly that.
-     */
-    const dismissTimer = useRef<number | null>(null);
-    const showToast = useCallback((next: ToastState) => {
-        if (dismissTimer.current !== null) window.clearTimeout(dismissTimer.current);
-        setToast(next);
-        dismissTimer.current = window.setTimeout(() => setToast(null), 4000);
-    }, []);
-
-    const runUndo = useCallback(async () => {
-        const result = await history.undo();
-        if (result.ok) {
-            showToast({
-                message: `Undid: ${result.label}`,
-                tone: 'ok',
-                action: { label: 'Redo', onClick: () => { void history.redo(); } },
-            });
-        } else {
-            showToast({ message: result.reason, tone: 'error' });
-        }
-    }, [showToast]);
-
-    const requestUndo = useCallback(() => {
-        const next = history.peekUndo();
-        if (!next) {
-            const { blockedBy } = history.getSnapshot();
-            if (blockedBy) showToast({ message: blockedBy, tone: 'error' });
-            return;
-        }
-        // A lossy inverse cannot put back what the forward change destroyed, so it asks first
-        // rather than quietly doing something irreversible in the name of reversing something.
-        if (next.lossy) { setPendingLossyUndo(next.label); return; }
-        void runUndo();
-    }, [runUndo, showToast]);
-
-    const requestRedo = useCallback(async () => {
-        const result = await history.redo();
-        showToast(result.ok
-            ? { message: `Redid: ${result.label}`, tone: 'ok' }
-            : { message: result.reason, tone: 'error' });
-    }, [showToast]);
-
-    /**
-     * Ctrl+Z / Ctrl+Shift+Z, following the Ctrl+F precedent in `Visualizer` — with two guards it
-     * does not need.
-     *
-     * A dialog on top means the canvas is not what is being read. And an editable element means
-     * the keystroke belongs to whoever is typing: stealing it there would undo a *schema change*
-     * while somebody is halfway through a cell, which is both surprising and unrecoverable.
-     */
-    useEffect(() => {
-        const onKeyDown = (event: KeyboardEvent) => {
-            if (!(event.ctrlKey || event.metaKey)) return;
-            const key = event.key.toLowerCase();
-            if (key !== 'z' && key !== 'y') return;
-            if (document.body.dataset.dialogOpen === 'true') return;
-
-            const target = event.target as HTMLElement | null;
-            if (target?.isContentEditable) return;
-            const tag = target?.tagName;
-            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-
-            event.preventDefault();
-            if (key === 'y' || event.shiftKey) void requestRedo();
-            else requestUndo();
-        };
-        window.addEventListener('keydown', onKeyDown);
-        return () => window.removeEventListener('keydown', onKeyDown);
-    }, [requestUndo, requestRedo]);
-
-    /** History is per-file: an entry naming a table in one workspace means nothing in another. */
-    useEffect(() => { history.reset(activeWorkspaceId); }, [activeWorkspaceId]);
+    const { toast, showToast, dismissToast } = useToast();
+    const {
+        historyState, requestUndo, requestRedo, pendingLossyUndo, confirmLossyUndo, cancelLossyUndo,
+    } = useUndoRedo(activeWorkspaceId, showToast);
 
     /**
      * Creates the relationship someone just drew on the canvas.
@@ -1214,18 +1072,6 @@ export default function Home() {
             'Undo stops here: SQL you ran by hand may have changed what the earlier steps assumed.');
     }, [refreshActiveSchema]);
 
-    /**
-     * Loads the assistant's SQL into the scratchpad and opens it.
-     *
-     * The assistant never runs anything. This is the whole of its write path: the scratchpad is
-     * already the reviewed, account-gated, per-statement-reporting route for arbitrary SQL, so
-     * the assistant becomes another way to fill it rather than a second way around it. The user
-     * still reads the statements and still presses Run.
-     */
-    const handleAssistantSql = useCallback((sql: string) => {
-        setScratchpadSeed({ sql, n: Date.now() });
-        setScratchpadOpen(true);
-    }, []);
 
     /* ── Domain groups ───────────────────────────────────────────────────── */
 
@@ -1338,141 +1184,18 @@ export default function Home() {
         ];
     }, [activeWorkspace, nodesWithNotes, handleRenameGroup, handleGroupColour, handleUngroup]);
 
-    /** Moves named nodes outright. The undo and redo of a drag are both just this. */
-    const placeNodes = useCallback((positions: Record<string, { x: number; y: number }>) => {
-        setWorkspaces(prev => prev.map(w => w.id !== activeWorkspaceIdRef.current ? w : {
-            ...w,
-            nodes: w.nodes.map(n => positions[n.id] ? { ...n, position: positions[n.id] } : n),
-        }));
-    }, []);
+    const { handleNodeDragStart, handleNodeDrag, handleNodeDragStop } =
+        useNodeDragHistory(activeWorkspaceIdRef, activeWorkspaceRef, setWorkspaces);
 
-    /**
-     * Where the dragged nodes were when the gesture began.
-     *
-     * Taken from React Flow's drag *callbacks* rather than from `onNodesChange`, for two reasons.
-     * A drag emits a position change on every mouse move, so reading them would put a hundred
-     * entries on the stack for one gesture and make Ctrl+Z crawl the node back across the canvas —
-     * and the bookkeeping would have to happen inside the `setWorkspaces` updater, which React is
-     * free to run twice, recording the same drag twice. Start and stop fire exactly once each.
-     */
-    const dragOriginRef = useRef<Record<string, { x: number; y: number }>>({});
-
-    /**
-     * Where a group box was when its drag began, and where each of its tables was.
-     *
-     * A group's position is derived from its members, so React Flow moving the box achieves
-     * nothing on its own — the next render would put it straight back. The box's movement is
-     * therefore read as an instruction and applied to the tables instead, which moves the box
-     * because the box *is* the tables.
-     */
-    const groupDragRef = useRef<{
-        id: string;
-        from: { x: number; y: number };
-        members: Record<string, { x: number; y: number }>;
-    } | null>(null);
-
-    const handleNodeDragStart = useCallback((_: unknown, node: Node, dragged: Node[]) => {
-        if (node.id.startsWith(GROUP_NODE_PREFIX)) {
-            const group = (node.data as GroupBoxData | undefined)?.group;
-            const nodes = activeWorkspaceRef.current?.nodes ?? [];
-            groupDragRef.current = {
-                id: node.id,
-                from: { ...node.position },
-                members: Object.fromEntries(nodes
-                    .filter(n => group?.tables.includes(n.id))
-                    .map(n => [n.id, { ...n.position }])),
-            };
-            return;
-        }
-        dragOriginRef.current = Object.fromEntries(dragged.map(n => [n.id, { ...n.position }]));
-    }, []);
-
-    /** Translates a group's tables as its box is dragged. */
-    const handleNodeDrag = useCallback((_: unknown, node: Node) => {
-        const drag = groupDragRef.current;
-        if (!drag || drag.id !== node.id) return;
-        const dx = node.position.x - drag.from.x;
-        const dy = node.position.y - drag.from.y;
-        placeNodes(Object.fromEntries(Object.entries(drag.members)
-            .map(([id, at]) => [id, { x: at.x + dx, y: at.y + dy }])));
-    }, [placeNodes]);
-
-    const handleNodeDragStop = useCallback((_: unknown, node: Node, dragged: Node[]) => {
-        const groupDrag = groupDragRef.current;
-        if (groupDrag && groupDrag.id === node.id) {
-            groupDragRef.current = null;
-            const dx = node.position.x - groupDrag.from.x;
-            const dy = node.position.y - groupDrag.from.y;
-            if (dx === 0 && dy === 0) return;
-
-            const before = groupDrag.members;
-            const after = Object.fromEntries(Object.entries(before)
-                .map(([id, at]) => [id, { x: at.x + dx, y: at.y + dy }]));
-            history.push({
-                label: `Move ${Object.keys(before).length} tables`,
-                undo: async () => placeNodes(before),
-                redo: async () => placeNodes(after),
-            });
-            return;
-        }
-
-        const from = dragOriginRef.current;
-        dragOriginRef.current = {};
-
-        const to: Record<string, { x: number; y: number }> = {};
-        let moved = false;
-        for (const node of dragged) {
-            const origin = from[node.id];
-            if (!origin) continue;
-            to[node.id] = { ...node.position };
-            if (origin.x !== node.position.x || origin.y !== node.position.y) moved = true;
-        }
-        // A click that shifted nothing is not a step worth undoing.
-        if (!moved) return;
-
-        const before = Object.fromEntries(Object.keys(to).map(id => [id, from[id]]));
-        history.push({
-            label: dragged.length > 1 ? `Move ${dragged.length} tables` : `Move ${dragged[0].id}`,
-            undo: async () => placeNodes(before),
-            redo: async () => placeNodes(to),
-        });
-    }, [placeNodes]);
-
-    /**
-     * Opens or closes the assistant.
-     *
-     * Below `lg` both side panels are overlay drawers on the same canvas, so opening one closes
-     * the other — two stacked drawers would leave the lower one unreachable behind the upper
-     * one's scrim. From `lg` up they are real columns and can both stay open, which is the whole
-     * point of the canvas being between them.
-     */
-    const toggleChat = useCallback(() => {
-        setChatOpen(open => {
-            const next = !open;
-            if (next && !window.matchMedia('(min-width: 1024px)').matches) {
-                setIsExplorerOpen(false);
-            }
-            return next;
-        });
-    }, []);
-
-    /**
-     * Ctrl+I (Cmd+I) opens and closes the assistant. Stands down while a dialog is open, the
-     * same rule Ctrl+F and Ctrl+Z follow; it works from inside the assistant's own composer, so
-     * the panel can be closed without reaching for the mouse.
-     */
-    useEffect(() => {
-        const onKeyDown = (event: KeyboardEvent) => {
-            if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return;
-            if (event.key.toLowerCase() !== 'i') return;
-            if (document.body.dataset.dialogOpen === 'true') return;
-            if (!activeWorkspaceIdRef.current) return;
-            event.preventDefault();
-            toggleChat();
-        };
-        window.addEventListener('keydown', onKeyDown);
-        return () => window.removeEventListener('keydown', onKeyDown);
-    }, [toggleChat]);
+    const closeExplorer = useCallback(() => setIsExplorerOpen(false), []);
+    const openScratchpad = useCallback(() => setScratchpadOpen(true), []);
+    const {
+        isChatOpen, closeChat, toggleChat, hasConversation, scratchpadSeed, sendToScratchpad,
+        chatConfigKey, noteProfileClosed,
+    } = useAssistantPanel({
+        activeWorkspaceId, activeWorkspaceIdRef, userEmail: user?.email ?? null,
+        closeExplorer, openScratchpad,
+    });
 
     const selectFile = useCallback((fileId: string) => {
         setActiveWorkspaceId(fileId);
@@ -1510,7 +1233,7 @@ export default function Home() {
                     className={`lg:hidden absolute inset-0 z-30 bg-scrim/50 transition-opacity duration-300 motion-reduce:transition-none ${
                         isExplorerOpen || isChatOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
                     }`}
-                    onClick={() => { setIsExplorerOpen(false); setChatOpen(false); }}
+                    onClick={() => { setIsExplorerOpen(false); closeChat(); }}
                     aria-hidden="true"
                 />
 
@@ -1539,7 +1262,7 @@ export default function Home() {
                             onRedo={requestRedo}
                             onCreateRelationship={handleCreateRelationship}
                             onCreateGroup={handleCreateGroup}
-                            toast={<ActionToast toast={toast} onDismiss={() => setToast(null)} />}
+                            toast={<ActionToast toast={toast} onDismiss={dismissToast} />}
                             chat={<ChatLauncher isOpen={isChatOpen} onToggle={toggleChat}
                                                 hasConversation={hasConversation} />}
                         />
@@ -1605,15 +1328,15 @@ export default function Home() {
                 {activeWorkspace && (
                     <SchemaChat
                         isOpen={isChatOpen}
-                        onClose={() => setChatOpen(false)}
+                        onClose={closeChat}
                         workspaceKey={activeWorkspace.id}
                         tableNames={activeWorkspace.fileData.tables.map(t => t.name)}
                         hasAccount={!!user}
                         onNeedsAccount={() => requireAccount('Asking the assistant')}
-                        onSendToScratchpad={handleAssistantSql}
+                        onSendToScratchpad={sendToScratchpad}
                         onManageKey={() => (user ? setProfileOpen(true)
                             : requireAccount('Adding your own API key'))}
-                        configKey={`${user?.email ?? 'anonymous'}:${profileCloses}`}
+                        configKey={chatConfigKey}
                     />
                 )}
             </div>
@@ -1684,8 +1407,8 @@ export default function Home() {
                 detail="Changing a column's type discards anything that could not be converted. Undo puts the type back; it cannot put the data back."
                 confirmLabel="Undo anyway"
                 tone="danger"
-                onConfirm={() => { setPendingLossyUndo(null); void runUndo(); }}
-                onClose={() => setPendingLossyUndo(null)}
+                onConfirm={confirmLossyUndo}
+                onClose={cancelLossyUndo}
             />
 
             <ConfirmDialog
@@ -1723,7 +1446,7 @@ export default function Home() {
                 <ProfileModal
                     isOpen
                     user={user}
-                    onClose={() => { setProfileOpen(false); setProfileCloses(n => n + 1); }}
+                    onClose={() => { setProfileOpen(false); noteProfileClosed(); }}
                     onUpdated={setUser}
                 />
             )}
