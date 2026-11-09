@@ -110,6 +110,19 @@ export interface RelationshipDraft {
 const columnFromHandle = (handleId: string | null | undefined, suffix: string): string | null =>
     handleId && handleId.endsWith(suffix) ? handleId.slice(0, -suffix.length) : null;
 
+/**
+ * The canvas chrome: every floating control is one of these docks, so the toolbar, the zoom
+ * control and the assistant read as one set rather than four styles that grew up separately.
+ */
+const DOCK = 'flex items-center gap-0.5 h-9 px-1 rounded-lg border border-line bg-surface shadow-glow-sm';
+
+/** A tool inside a dock: a quiet square that lights brand only while its tool is on. */
+const TOOL = 'relative h-7 w-7 flex items-center justify-center rounded-md text-ink-500 transition-colors '
+    + 'hover:bg-ink-100 hover:text-ink-900 disabled:opacity-35 disabled:hover:bg-transparent '
+    + 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500';
+const TOOL_ON = 'bg-brand-50 text-brand-700 hover:bg-brand-50 hover:text-brand-700';
+const DOCK_DIVIDER = 'w-px h-4 bg-line mx-1';
+
 export const Visualizer = ({
     nodes, edges, onNodesChange, onNodeDragStart, onNodeDragStop, onRefreshRequest,
     history, onUndo, onRedo, toast, chat, onCreateRelationship, onCreateGroup, onNodeDrag,
@@ -348,7 +361,7 @@ export const Visualizer = ({
                     {/* The colour is themed from CSS, not from this prop: React Flow writes it to
                         the pattern's `fill` *attribute*, where a CSS variable is not valid. The
                         value below is only what shows if that rule is ever lost. */}
-                    <Background color="#94a3b8" gap={24} size={1.5} variant={BackgroundVariant.Dots} />
+                    <Background color="#c5cedb" gap={20} size={1.2} variant={BackgroundVariant.Dots} />
 
                     {/* Given the same options as the initial fit: the button reads its own
                         defaults otherwise, so the two disagreed about what "fit" meant. */}
@@ -398,7 +411,7 @@ export const Visualizer = ({
                             // A little larger than it was: at 182px a hundred-table schema was a
                             // grey smudge, and the map is the only thing that makes that many
                             // tables navigable at all.
-                            style={{ width: 208, height: 148 }}
+                            style={{ width: 184, height: 128 }}
                             className="!bottom-3 !right-3 hidden sm:!block"
                         />
                     )}
@@ -422,16 +435,23 @@ export const Visualizer = ({
                     )}
 
                     <Panel position="top-left" className="!m-2 sm:!m-4">
-                        <div className="flex p-1 rounded-md shadow-glow-md border bg-surface border-line">
+                        <div className={DOCK}>
+                            {/* The one solid control on the canvas: making a table is the primary
+                                action here, and nothing else competes with it for colour. */}
                             <button
                                 type="button"
                                 onClick={() => setCreateModalOpen(true)}
-                                className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-white brand-gradient brand-gradient-hover rounded transition-all"
+                                aria-label="New table"
+                                className="flex items-center gap-1.5 h-7 px-2 sm:px-2.5 rounded-md text-[12px] font-semibold whitespace-nowrap
+                                           bg-brand-600 text-white hover:brightness-110 transition
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1"
                             >
-                                <Plus size={14} /> New table
+                                {/* Icon-only on a phone, where the dock has to share the top edge
+                                    with the assistant launcher. */}
+                                <Plus size={14} /> <span className="hidden sm:inline">New table</span>
                             </button>
 
-                            <div className="w-px mx-1 my-1 bg-ink-200" />
+                            <div className={DOCK_DIVIDER} />
 
                             {onUndo && (
                                 <>
@@ -439,29 +459,27 @@ export const Visualizer = ({
                                         type="button"
                                         onClick={onUndo}
                                         disabled={!history?.canUndo && !history?.blockedBy}
-                                        className="p-1.5 rounded text-ink-600 transition-colors hover:bg-ink-100
-                                                   disabled:opacity-35 disabled:hover:bg-transparent"
+                                        className={TOOL}
                                         aria-label="Undo"
                                         title={history?.undoLabel
                                             ? `Undo: ${history.undoLabel}  (Ctrl+Z)`
                                             : 'Undo  (Ctrl+Z)'}
                                     >
-                                        <Undo2 size={16} />
+                                        <Undo2 size={15} />
                                     </button>
                                     <button
                                         type="button"
                                         onClick={onRedo}
                                         disabled={!history?.canRedo}
-                                        className="p-1.5 rounded text-ink-600 transition-colors hover:bg-ink-100
-                                                   disabled:opacity-35 disabled:hover:bg-transparent"
+                                        className={TOOL}
                                         aria-label="Redo"
                                         title={history?.redoLabel
                                             ? `Redo: ${history.redoLabel}  (Ctrl+Shift+Z)`
                                             : 'Redo  (Ctrl+Shift+Z)'}
                                     >
-                                        <Redo2 size={16} />
+                                        <Redo2 size={15} />
                                     </button>
-                                    <div className="w-px mx-1 my-1 bg-ink-200" />
+                                    <div className={DOCK_DIVIDER} />
                                 </>
                             )}
 
@@ -469,11 +487,7 @@ export const Visualizer = ({
                                 <button
                                     type="button"
                                     onClick={() => onCreateGroup(selectedTables)}
-                                    className={`relative p-1.5 rounded transition-colors ${
-                                        selectedTables.length > 1
-                                            ? 'bg-brand-50 text-brand-700'
-                                            : 'text-ink-600 hover:bg-ink-100'
-                                    }`}
+                                    className={`${TOOL} ${selectedTables.length > 1 ? TOOL_ON : ''}`}
                                     aria-label="Group tables"
                                     // The title carries the instructions, because the gesture that
                                     // does this — shift-drag a lasso — is invisible until somebody
@@ -483,7 +497,7 @@ export const Visualizer = ({
                                         : 'Group tables — hold Shift and drag a box around two or '
                                           + 'more, or Ctrl-click each one, then press this'}
                                 >
-                                    <Boxes size={16} />
+                                    <Boxes size={15} />
                                     {selectedTables.length > 1 && (
                                         <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center
                                                          justify-center rounded-full bg-brand-600 px-1 text-[8px]
@@ -497,16 +511,14 @@ export const Visualizer = ({
                             <button
                                 type="button"
                                 onClick={() => setShowNotation(v => !v)}
-                                className={`p-1.5 rounded transition-colors ${
-                                    showNotation ? 'bg-brand-50 text-brand-700' : 'text-ink-600 hover:bg-ink-100'
-                                }`}
+                                className={`${TOOL} ${showNotation ? TOOL_ON : ''}`}
                                 aria-pressed={showNotation}
                                 aria-label="Show relationship cardinality"
                                 title={showNotation
                                     ? 'Crow’s foot notation — click for plain arrows'
                                     : 'Plain arrows — click for crow’s foot notation'}
                             >
-                                <Spline size={16} />
+                                <Spline size={15} />
                             </button>
 
                             {/* Ctrl+F is the real entry point; this is how anyone finds out it
@@ -514,36 +526,34 @@ export const Visualizer = ({
                             <button
                                 type="button"
                                 onClick={() => setSearchOpen(v => !v)}
-                                className={`p-1.5 rounded transition-colors ${
-                                    isSearchOpen ? 'bg-brand-50 text-brand-700' : 'text-ink-600 hover:bg-ink-100'
-                                }`}
+                                className={`${TOOL} ${isSearchOpen ? TOOL_ON : ''}`}
                                 aria-label="Find a table or column (Ctrl+F)"
                                 title="Find a table or column  (Ctrl+F)"
                             >
-                                <Search size={16} />
+                                <Search size={15} />
                             </button>
 
                             <button
                                 type="button"
                                 onClick={() => setMinimapOpen(v => !v)}
-                                className={`p-1.5 rounded transition-colors ${
-                                    isMinimapOpen ? 'bg-brand-50 text-brand-700' : 'text-ink-600 hover:bg-ink-100'
-                                }`}
+                                // Gone below sm, like the minimap itself: a toggle for something
+                                // that is never drawn at that width is a button that does nothing.
+                                className={`${TOOL} max-sm:hidden ${isMinimapOpen ? TOOL_ON : ''}`}
                                 aria-label={isMinimapOpen ? 'Hide the minimap' : 'Show the minimap'}
                                 title={isMinimapOpen ? 'Hide the minimap' : 'Show the minimap'}
                                 aria-pressed={isMinimapOpen}
                             >
-                                <MapIcon size={16} />
+                                <MapIcon size={15} />
                             </button>
 
                             <button
                                 type="button"
                                 onClick={() => setNewTableHelpOpen(true)}
-                                className="p-1.5 rounded text-ink-600 hover:bg-ink-100"
+                                className={TOOL}
                                 aria-label="What does New Table do?"
                                 title="What does New Table do?"
                             >
-                                <Info size={16} />
+                                <Info size={15} />
                             </button>
                         </div>
                     </Panel>
@@ -558,10 +568,10 @@ export const Visualizer = ({
                     )}
 
                     <Panel position="top-right" className="!m-2 sm:!m-4">
-                      <div className="flex flex-col items-end gap-2">
+                      <div className="flex items-center gap-2">
                         {/* Hidden on the narrowest screens, where pinch-zoom is the natural
                             gesture and the control would sit on top of the canvas content. */}
-                        <div className="hidden sm:flex items-center gap-2 px-2 py-1 rounded-md shadow-glow-md border bg-surface border-line">
+                        <div className={`${DOCK} hidden sm:flex px-2.5 gap-1.5`}>
                             <ZoomIn size={14} className="text-ink-400" />
                             <select
                                 value={zoomOptions.includes(Math.round(zoomLevel * 100) / 100)
@@ -569,7 +579,7 @@ export const Visualizer = ({
                                     : 1}
                                 onChange={handleZoomChange}
                                 aria-label="Zoom level"
-                                className="bg-transparent text-xs font-mono focus:outline-none cursor-pointer text-ink-900"
+                                className="bg-transparent text-[12px] font-mono tabular-nums focus:outline-none cursor-pointer text-ink-800"
                             >
                                 {zoomOptions.map(z => (
                                     <option key={z} value={z}>{Math.round(z * 100)}%</option>
@@ -577,10 +587,8 @@ export const Visualizer = ({
                             </select>
                         </div>
 
-                        {/* Below the zoom control rather than beside it: the panel it opens is
-                            wider than the corner, and stacking keeps the launcher in the same
-                            place at every width, including the ones where the zoom pill is not
-                            rendered at all. */}
+                        {/* Last in the row, so it keeps the corner at every width — including
+                            the ones where the zoom control is not rendered at all. */}
                         {chat}
                       </div>
                     </Panel>

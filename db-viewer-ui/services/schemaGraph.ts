@@ -165,7 +165,7 @@ export const transformRelationshipsToEdges = (relationships: Relationship[], tab
         // Not animated. A marching dash on one edge reads as flow; on eighty of them it reads as
         // noise, and this is a diagram people keep open for hours.
         animated: false,
-        style: { stroke: EDGE_COLOUR, strokeWidth: 1.6 },
+        style: { stroke: EDGE_COLOUR, strokeWidth: 1.35 },
         markerEnd: { type: MarkerType.ArrowClosed, color: EDGE_COLOUR, width: 16, height: 16 },
     }));
 

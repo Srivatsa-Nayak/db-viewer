@@ -97,7 +97,7 @@ interface TableNodeData {
   onUndoDelete?: (tableName: string) => void;
 }
 
-const ACTION_BUTTON = 'p-1 rounded text-white/80 hover:text-white transition-colors';
+const ACTION_BUTTON = 'p-1 rounded text-ink-400 hover:text-ink-900 hover:bg-ink-100 transition-colors';
 
 /**
  * How many rows the strip shows.
@@ -325,17 +325,26 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
   // across the header; with those gone the constraint is the only one that should have applied
   // all along — how long a column name is before it truncates.
   return (
-    <div className={`node-card bg-surface rounded-md min-w-[215px] max-w-[265px] shadow-glow-md
-                     transition-shadow hover:shadow-glow-lg group/node ${
-      data.isView ? 'border border-dashed border-ink-400' : 'border border-brand-200'
+    /*
+     * A data-dictionary card rather than a coloured block.
+     *
+     * Every header used to be a solid brand gradient, so a hundred tables were a hundred blue
+     * bars and the colour stopped meaning anything. The card is now neutral, and colour is kept
+     * for what it says: the 3px binding stripe down the left edge (`.node-card::before` in
+     * globals.css) is the table's tag colour, or brand blue when it has none; a selected table
+     * gets a brand ring; keys keep their amber and blue glyphs.
+     */
+    <div className={`node-card relative bg-surface rounded-lg min-w-[215px] max-w-[265px]
+                     transition-[box-shadow,border-color] hover:shadow-glow-md group/node ${
+      data.isView ? 'node-card-view border border-dashed border-ink-300' : 'border border-line'
     }`}>
 
-      <div className="node-header brand-gradient px-2.5 py-2 flex items-center justify-between rounded-t-md gap-1.5">
+      <div className="node-header pl-3.5 pr-2 py-2 flex items-center justify-between gap-1.5 border-b border-line">
         <div className="flex items-center gap-1.5 overflow-hidden">
           {data.isView
-            ? <Eye size={12} className="text-white shrink-0" />
-            : <Database size={12} className="text-white shrink-0" />}
-          <span className="font-bold text-white text-[11px] truncate leading-tight" title={data.label}>
+            ? <Eye size={13} className="text-ink-400 shrink-0" />
+            : <Database size={13} className="text-ink-400 shrink-0" />}
+          <span className="font-mono font-semibold text-ink-900 text-[12px] truncate leading-tight" title={data.label}>
             {data.label}
           </span>
         </div>
@@ -372,7 +381,7 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
                 const el = e.currentTarget;
                 setMenuAnchor(open => (open ? null : { el, rect: el.getBoundingClientRect() }));
               }}
-              className={`${ACTION_BUTTON} ${menuAnchor ? 'bg-white/20 text-white' : ''}`}
+              className={`${ACTION_BUTTON} ${menuAnchor ? 'bg-ink-100 text-ink-900' : ''}`}
               title="Table actions"
               aria-label={`Actions for ${data.label}`}
               aria-haspopup="menu"
@@ -490,15 +499,15 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
           already carries five controls, and a name plus a label competing for the same row is
           what makes a node illegible at 50%. */}
       {(data.tag || data.isJunction || data.isView) && (
-        <div className="px-2 py-1 bg-surface-tint border-b border-line flex items-center gap-1.5">
+        <div className="pl-3.5 pr-2 py-1 border-b border-line flex items-center gap-1.5">
           {data.isView && (
             <Tooltip
               content="A view: a saved query that reads from other tables. It has no rows of its
                        own, so it cannot be edited here — change the tables it reads from."
-              className="shrink-0 rounded bg-ink-200 px-1 py-px text-[8px] font-bold uppercase
-                         tracking-wide text-ink-600 outline-none focus-visible:ring-1 focus-visible:ring-brand-500"
+              className="shrink-0 rounded bg-ink-100 px-1.5 py-px text-[10px] font-medium
+                         text-ink-600 outline-none focus-visible:ring-1 focus-visible:ring-brand-500"
             >
-              view
+              View
             </Tooltip>
           )}
           {data.isJunction && (
@@ -506,15 +515,16 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
               content="A join table: its whole primary key is made of foreign keys, so it exists to
                        connect the two tables it points at rather than to describe anything itself.
                        The two lines leaving it are the many-to-many."
-              className="shrink-0 text-[8px] font-bold uppercase tracking-wide rounded px-1 py-px
-                         bg-ink-200 text-ink-600 outline-none focus-visible:ring-1 focus-visible:ring-brand-500"
+              className="shrink-0 text-[10px] font-medium rounded px-1.5 py-px
+                         bg-ink-100 text-ink-600 outline-none focus-visible:ring-1 focus-visible:ring-brand-500"
             >
-              join
+              Join table
             </Tooltip>
           )}
           {data.tag && (
-            <span className="text-[9px] font-semibold uppercase tracking-wide text-ink-500 truncate"
+            <span className="node-tag flex items-center gap-1 text-[10px] font-medium text-ink-600 truncate"
                   title={data.tag}>
+              <span className="node-tag-dot h-1.5 w-1.5 rounded-full shrink-0" aria-hidden="true" />
               {data.tag}
             </span>
           )}
@@ -524,7 +534,7 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
       {/* `node-ghost-body` turns pointer events off in CSS. The columns still render, because
           each one carries the handle its edges attach to — hiding them would detach every
           relationship for the length of the countdown. */}
-      <div className={`flex flex-col bg-ink-50 py-0.5 rounded-b-md ${
+      <div className={`flex flex-col bg-surface py-0.5 rounded-b-lg ${
         data.ghost ? 'node-ghost-body' : ''
       }`}>
         {/* At block tier the rows are gone but the relationships are not, so every handle an

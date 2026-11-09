@@ -65,18 +65,19 @@ interface DemoNodeData {
  * detach every table from its coordinates.
  */
 const DemoTableNode = memo(({ data }: { data: DemoNodeData }) => (
+    // `schema-card` draws the editor's binding stripe, so this matches `TableNode` card for card.
     <div
-        className="demo-node rounded-md border border-brand-200 bg-surface shadow-glow-md"
+        className="demo-node schema-card relative rounded-lg border border-line bg-surface shadow-glow-sm"
         style={data.delay ? { animationDelay: `${data.delay}ms` } : undefined}
     >
-        <div className="brand-gradient flex items-center gap-1.5 rounded-t-md px-2 py-1.5">
-            <Database size={10} className="shrink-0 text-white" />
-            <span className="truncate text-[10px] font-bold leading-tight text-white">{data.label}</span>
+        <div className="flex items-center gap-1.5 border-b border-line py-1.5 pl-3 pr-2">
+            <Database size={11} className="shrink-0 text-ink-400" />
+            <span className="truncate font-mono text-[10.5px] font-semibold leading-tight text-ink-900">{data.label}</span>
         </div>
 
-        <div className="flex flex-col rounded-b-md bg-ink-50 py-0.5">
+        <div className="flex flex-col rounded-b-lg bg-surface py-0.5">
             {data.columns.map(column => (
-                <div key={column.name} className="relative flex h-[22px] items-center justify-between gap-3 px-2">
+                <div key={column.name} className="relative flex h-[22px] items-center justify-between gap-3 pl-3 pr-2">
                     {column.fk && (
                         <Handle
                             type="target"
@@ -214,7 +215,7 @@ export const DemoCanvas = ({
         className: edgeDelay ? 'demo-edge-draw' : undefined,
         style: {
             stroke: 'var(--color-edge)',
-            strokeWidth: 1.6,
+            strokeWidth: 1.35,
             ...(edgeDelay ? { animationDelay: `${edgeDelay + index * 140}ms` } : {}),
         },
         markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--color-edge)', width: 14, height: 14 },
@@ -250,7 +251,7 @@ export const DemoCanvas = ({
                 zoomOnPinch={false}
                 preventScrolling={false}
             >
-                <Background color="#94a3b8" gap={22} size={1.2} variant={BackgroundVariant.Dots} />
+                <Background color="#c5cedb" gap={20} size={1.2} variant={BackgroundVariant.Dots} />
             </ReactFlow>
         </div>
     );

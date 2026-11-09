@@ -170,35 +170,35 @@ export const FileExplorer = ({
                     — search box shrinking, filenames re-wrapping — instead of sliding away.
                 */}
                 <div className={`${PANEL_W_BASE} ${PANEL_W_LG} h-full flex flex-col`}>
-                    <div className="h-14 flex items-center justify-between px-3 sm:px-4 border-b border-line shrink-0">
-                        <span className="font-semibold text-ink-800 flex items-center gap-2 text-sm">
-                            <FileCode size={18} className="text-ink-500" /> Explorer
+                    <div className="h-11 flex items-center justify-between pl-3 pr-2 border-b border-line shrink-0">
+                        <span className="font-semibold text-ink-800 flex items-center gap-2 text-[13px]">
+                            <FileCode size={15} className="text-ink-400" /> Files
                         </span>
-                        <div className="flex gap-1">
+                        <div className="flex gap-0.5">
                             <button
                                 onClick={onCreateFile}
-                                className="p-1.5 text-ink-500 hover:text-brand-600 hover:bg-ink-100 rounded transition-colors"
+                                className="h-7 w-7 flex items-center justify-center text-ink-500 hover:text-ink-900 hover:bg-ink-100 rounded-md transition-colors"
                                 aria-label="New blank file"
                                 title="New blank file"
                             >
-                                <Plus size={18} />
+                                <Plus size={16} />
                             </button>
                             <button
                                 onClick={onToggle}
-                                className="p-1.5 text-ink-400 hover:text-ink-700 hover:bg-ink-100 rounded transition-colors"
+                                className="h-7 w-7 flex items-center justify-center text-ink-400 hover:text-ink-900 hover:bg-ink-100 rounded-md transition-colors"
                                 aria-label="Collapse the file explorer"
                                 title="Collapse the file explorer"
                             >
-                                <LayoutPanelLeft size={18} />
+                                <LayoutPanelLeft size={16} />
                             </button>
                         </div>
                     </div>
 
-                    <div className="p-3 border-b border-line shrink-0">
+                    <div className="p-2 border-b border-line shrink-0">
                         <div className="relative">
                             <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none" />
                             <input
-                                className="w-full bg-surface border border-ink-300 rounded-md py-2 pl-8 pr-3 text-xs text-ink-800 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-colors placeholder:text-ink-400"
+                                className="w-full bg-surface-tint border border-line rounded-md h-8 pl-8 pr-3 text-[12px] text-ink-800 focus:outline-none focus:bg-surface focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-colors placeholder:text-ink-400"
                                 placeholder="Search files and tables..."
                                 aria-label="Search files and tables"
                                 value={searchTerm}
@@ -221,8 +221,8 @@ export const FileExplorer = ({
                             return (
                                 <div key={file.id} className="mb-1">
                                     <div
-                                        className={`flex items-center gap-1.5 px-2 py-2 lg:py-1.5 rounded-md cursor-pointer select-none transition-colors border ${
-                                            isActive ? 'bg-brand-50 border-brand-200' : 'hover:bg-ink-100 border-transparent'
+                                        className={`flex items-center gap-1.5 px-2 h-9 lg:h-8 rounded-md cursor-pointer select-none transition-colors ${
+                                            isActive ? 'bg-brand-50' : 'hover:bg-ink-100'
                                         }`}
                                         onClick={() => onSelectFile(file.id)}
                                     >
@@ -240,7 +240,7 @@ export const FileExplorer = ({
                                         </button>
                                         <Database size={14} className={isActive ? 'text-brand-600' : 'text-ink-400'} />
                                         <span
-                                            className={`text-xs font-medium truncate flex-1 ${isActive ? 'text-brand-700' : 'text-ink-700'}`}
+                                            className={`text-[13px] font-medium truncate flex-1 ${isActive ? 'text-brand-700' : 'text-ink-700'}`}
                                             title={file.name}
                                         >
                                             {file.name}
@@ -248,7 +248,7 @@ export const FileExplorer = ({
                                     </div>
 
                                     {isFileExpanded && (
-                                        <div className="ml-3 pl-2 border-l border-ink-200 mt-1 space-y-0.5">
+                                        <div className="ml-3.5 pl-2 border-l border-line mt-0.5 mb-1 space-y-px">
                                             {file.tables.length === 0 && (
                                                 <p className="text-[11px] text-ink-400 italic px-2 py-1">No tables yet</p>
                                             )}
@@ -266,10 +266,10 @@ export const FileExplorer = ({
                                                                 {isTableExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                                                             </span>
                                                             <Table size={12} className="text-ink-400" />
-                                                            <span className="text-xs text-ink-500 group-hover:text-ink-800 truncate flex-1" title={table.name}>
+                                                            <span className="font-mono text-[12px] text-ink-600 group-hover:text-ink-900 truncate flex-1" title={table.name}>
                                                                 {table.name}
                                                             </span>
-                                                            <span className="text-[9px] text-ink-500 bg-ink-100 px-1.5 py-0.5 rounded-full min-w-[1.25rem] text-center shrink-0">
+                                                            <span className="text-[10px] tabular-nums text-ink-400 min-w-[1.25rem] text-right shrink-0">
                                                                 {table.columns.length}
                                                             </span>
                                                         </div>
@@ -279,15 +279,15 @@ export const FileExplorer = ({
                                                                 {table.columns.map(col => (
                                                                     <div
                                                                         key={col.name}
-                                                                        className="flex items-center gap-2 px-2 py-0.5 hover:bg-ink-100 rounded text-[10px] text-ink-400 hover:text-ink-700 select-none group/col"
+                                                                        className="flex items-center gap-2 px-2 py-0.5 hover:bg-ink-100 rounded text-[11px] text-ink-500 hover:text-ink-800 select-none group/col"
                                                                     >
                                                                         {col.isPk
-                                                                            ? <KeyRound size={10} className="text-brand-500 shrink-0" />
+                                                                            ? <KeyRound size={10} className="text-key-pk shrink-0" />
                                                                             : <Columns size={10} className="opacity-40 group-hover/col:opacity-70 shrink-0" />}
-                                                                        <span className={`truncate flex-1 font-mono ${col.isPk ? 'text-brand-600 font-semibold' : ''}`}>
+                                                                        <span className={`truncate flex-1 font-mono ${col.isPk ? 'text-ink-900 font-semibold' : ''}`}>
                                                                             {col.name}
                                                                         </span>
-                                                                        <span className="text-[9px] font-mono text-ink-400 opacity-70 shrink-0">{col.type}</span>
+                                                                        <span className="text-[10px] font-mono text-ink-400 shrink-0">{col.type}</span>
                                                                     </div>
                                                                 ))}
                                                             </div>

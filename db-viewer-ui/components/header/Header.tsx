@@ -57,18 +57,19 @@ const MenuItem = ({ icon, title, description, onClick, disabled, locked, danger 
 );
 
 /**
- * The shared treatment for controls on the app bar.
+ * The shared treatment for controls on the app bar: quiet text buttons on a plain surface.
  *
- * Translucent white rather than solid: the bar is a blue gradient in the light theme and a dark
- * panel in the dark one, and a wash of whatever is beneath works on both — where the old solid
- * white hover state only ever worked on the gradient.
+ * The bar used to be a full-width brand gradient. That put the strongest colour in the app at
+ * the edge of vision for the whole session, competing with the canvas it frames. The editor is a
+ * drafting table, and the chrome around the paper should recede; the brand colour now lives in
+ * the logo mark and the one primary action.
  */
-const HEADER_BUTTON = 'flex items-center gap-2 px-2.5 sm:px-3 py-2 rounded-md text-sm font-medium '
-    + 'transition-colors text-white/80 hover:bg-white/15 hover:text-white';
+const HEADER_BUTTON = 'flex items-center gap-1.5 h-8 px-2.5 rounded-md text-[13px] font-medium '
+    + 'transition-colors text-ink-600 hover:bg-ink-100 hover:text-ink-900 '
+    + 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500';
 
-/** The open state keeps a lit treatment, so a control does not appear to switch off while its
- *  own menu is showing. */
-const HEADER_BUTTON_ACTIVE = 'bg-white/20 text-white';
+/** The open state stays lit, so a control does not appear to switch off while its menu shows. */
+const HEADER_BUTTON_ACTIVE = 'bg-ink-100 text-ink-900';
 
 export const Header = ({
     onUpload, onNewFile, onClear, onShowInfo, onExport,
@@ -84,20 +85,31 @@ export const Header = ({
     const run = (action: () => void) => { setFileOpen(false); action(); };
 
     return (
-        <header className="app-header h-16 shrink-0 flex items-center justify-between px-3 sm:px-6 shadow-glow-md z-50">
+        <header className="editor-bar h-12 shrink-0 flex items-center justify-between gap-3 px-2 sm:px-3 z-50">
 
-            {/* Left: brand, then the File and Share controls */}
-            <div className="flex items-center gap-2 sm:gap-4 min-w-0">
-                <Link href="/" className="flex items-center gap-3 shrink-0" title="Back to the home page">
-                    <span className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shadow-sm">
-                        <Database size={18} className="text-brand-600" />
+            {/* Left: brand and the open file as a breadcrumb, then the File and Share controls */}
+            <div className="flex items-center gap-1 sm:gap-1.5 min-w-0">
+                <Link href="/" title="Back to the home page"
+                      className="flex items-center gap-2 shrink-0 h-8 px-1.5 rounded-md hover:bg-ink-100 transition-colors">
+                    <span className="w-6 h-6 brand-gradient rounded-md flex items-center justify-center">
+                        <Database size={14} className="text-white" />
                     </span>
-                    <span className="text-white font-semibold text-lg sm:text-xl tracking-tight hidden md:block">
-                        SQL <span className="text-brand-200">Visualizer</span>
+                    <span className="text-ink-900 font-semibold text-sm tracking-tight hidden md:block">
+                        SQL Visualizer
                     </span>
                 </Link>
 
-                <div className="h-6 w-px bg-white/25 hidden sm:block" />
+                {fileName && (
+                    <div className="hidden sm:flex items-center gap-1.5 min-w-0" title={fileName}>
+                        <span className="text-ink-300 select-none" aria-hidden="true">/</span>
+                        <FileText size={14} className="text-ink-400 shrink-0" />
+                        <span className="font-mono text-[13px] text-ink-800 truncate max-w-[220px]">
+                            {fileName}
+                        </span>
+                    </div>
+                )}
+
+                <div className="h-5 w-px bg-line mx-1.5 hidden sm:block" />
 
                 {/* FILE MENU — import and export live here */}
                 <div className="relative" ref={fileRef}>
@@ -108,7 +120,7 @@ export const Header = ({
                         aria-haspopup="menu"
                         aria-expanded={isFileOpen}
                     >
-                        <Files size={16} />
+                        <Files size={15} />
                         <span>File</span>
                         <ChevronDown size={14} className={`transition-transform ${isFileOpen ? 'rotate-180' : ''}`} />
                     </button>
@@ -190,7 +202,7 @@ export const Header = ({
                         disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent`}
                     title={hasData ? 'Create a shareable link' : 'Open a file first'}
                 >
-                    <Share2 size={16} />
+                    <Share2 size={15} />
                     <span className="hidden md:inline">Share</span>
                     {!user && <Lock size={11} className="opacity-70" />}
                 </button>
@@ -215,27 +227,18 @@ export const Header = ({
                 />
             </div>
 
-            {/* Right: current file, theme, account, help */}
-            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-                {fileName && (
-                    <div className="hidden md:flex items-center gap-2 bg-black/20 border border-white/20 rounded-md px-3 py-1 min-w-0">
-                        <FileText size={14} className="text-white/70 shrink-0" />
-                        <span className="text-xs font-medium max-w-[160px] truncate text-white/90" title={fileName}>
-                            {fileName}
-                        </span>
-                    </div>
-                )}
-
+            {/* Right: theme, account, help */}
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
                 {/* Beside the account rather than buried in a settings dialog: eye strain is felt
                     continuously, so the control for it has to be one click away. */}
-                <ThemeToggle />
+                <ThemeToggle variant="plain" />
 
                 {user ? (
                     <div className="relative" ref={accountRef}>
                         <button
                             type="button"
                             onClick={() => setAccountOpen(v => !v)}
-                            className="header-cta flex items-center gap-2 px-2.5 sm:px-3 py-2 rounded-md text-sm font-semibold transition-colors"
+                            className={`${HEADER_BUTTON} ${isAccountOpen ? HEADER_BUTTON_ACTIVE : ''}`}
                             title={user.email}
                             aria-haspopup="menu"
                             aria-expanded={isAccountOpen}
@@ -243,7 +246,7 @@ export const Header = ({
                             <span className="w-5 h-5 rounded-full brand-gradient text-white text-[10px] flex items-center justify-center font-bold shrink-0">
                                 {(user.displayName || user.email).charAt(0).toUpperCase()}
                             </span>
-                            <span className="hidden sm:inline max-w-[110px] truncate">{user.displayName}</span>
+                            <span className="hidden sm:inline max-w-[110px] truncate text-ink-800">{user.displayName}</span>
                             <ChevronDown size={14} className={`transition-transform ${isAccountOpen ? 'rotate-180' : ''}`} />
                         </button>
 
@@ -280,9 +283,11 @@ export const Header = ({
                     <button
                         type="button"
                         onClick={onSignIn}
-                        className="header-cta flex items-center gap-2 px-3 sm:px-4 py-2 rounded-md text-sm font-semibold shadow-sm transition-colors"
+                        className="flex items-center gap-1.5 h-8 px-3 rounded-md text-[13px] font-semibold
+                                   bg-brand-600 text-white hover:brightness-110 transition
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
                     >
-                        <LogIn size={16} />
+                        <LogIn size={15} />
                         <span className="hidden sm:inline">Sign in</span>
                     </button>
                 )}
@@ -290,11 +295,12 @@ export const Header = ({
                 <button
                     type="button"
                     onClick={onShowInfo}
-                    className="p-2 text-white/70 hover:text-white transition-colors shrink-0"
+                    className="h-8 w-8 flex items-center justify-center rounded-md text-ink-500
+                               hover:text-ink-900 hover:bg-ink-100 transition-colors shrink-0"
                     aria-label="About this app"
                     title="About this app"
                 >
-                    <HelpCircle size={20} />
+                    <HelpCircle size={17} />
                 </button>
             </div>
         </header>

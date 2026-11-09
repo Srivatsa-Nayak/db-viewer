@@ -53,20 +53,21 @@ const MiniTable = ({ name, columns, className = '', style, headerExtra }: {
     style?: React.CSSProperties;
     headerExtra?: React.ReactNode;
 }) => (
+    // The editor's card in miniature: neutral, with the binding stripe from `schema-card`.
     <div
-        className={`absolute overflow-hidden rounded-md border border-brand-200 bg-surface shadow-glow-sm ${className}`}
+        className={`schema-card absolute rounded-md border border-line bg-surface shadow-glow-sm ${className}`}
         style={style}
     >
-        <div className="brand-gradient flex items-center gap-1 px-1.5 py-1">
-            <Database size={7} className="shrink-0 text-white" />
-            <span className="truncate font-mono text-[8px] font-bold leading-none text-white">{name}</span>
+        <div className="flex items-center gap-1 border-b border-line py-1 pl-2 pr-1.5">
+            <Database size={7} className="shrink-0 text-ink-400" />
+            <span className="truncate font-mono text-[8px] font-semibold leading-none text-ink-900">{name}</span>
             {headerExtra}
         </div>
-        <div className="bg-ink-50 py-px">
+        <div className="rounded-b-md py-px">
             {columns.map(column => (
                 <div
                     key={column.name}
-                    className={`flex items-center justify-between gap-2 px-1.5 py-[3px] ${column.className ?? ''}`}
+                    className={`flex items-center justify-between gap-2 py-[3px] pl-2 pr-1.5 ${column.className ?? ''}`}
                     style={column.style}
                 >
                     <span className="flex items-center gap-0.5 overflow-hidden">
@@ -261,7 +262,7 @@ export const DemoSchemaEdit = () => (
     <Stage>
         <MiniTable
             name="customers" style={box(75, 20, 110)}
-            headerExtra={<Plus size={7} className="ml-auto shrink-0 text-white/80" />}
+            headerExtra={<Plus size={7} className="ml-auto shrink-0 text-ink-400" />}
             columns={[
                 { name: 'id', type: 'int', pk: true },
                 { name: 'email', type: 'varchar' },
@@ -319,7 +320,7 @@ export const DemoSafeDelete = () => (
             name="customers"
             className="fx fx-shake"
             style={{ ...box(14, 22, 80), ...delay(400) } as React.CSSProperties}
-            headerExtra={<Trash2 size={7} className="ml-auto shrink-0 text-white/80" />}
+            headerExtra={<Trash2 size={7} className="ml-auto shrink-0 text-ink-400" />}
             columns={[{ name: 'id', type: 'int', pk: true }, { name: 'email', type: 'varchar' }]}
         />
         <MiniTable
@@ -444,7 +445,7 @@ export const DemoNotes = () => (
     <Stage>
         <MiniTable
             name="invoices" style={box(12, 34, 86)}
-            headerExtra={<StickyNote size={7} className="ml-auto shrink-0 text-white/80" />}
+            headerExtra={<StickyNote size={7} className="ml-auto shrink-0 text-ink-400" />}
             columns={[{ name: 'id', type: 'int', pk: true }, { name: 'total', type: 'decimal' }]}
         />
         <div className="absolute space-y-1.5" style={{ left: px(126), top: py(26), width: px(120) }}>

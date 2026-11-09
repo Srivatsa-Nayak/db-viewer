@@ -44,7 +44,7 @@ const GROUPS: DocsGroup[] = [
         title: "The editor",
         items: [
             { id: "tour", label: "A tour of the screen" },
-            { id: "explorer", label: "The Explorer" },
+            { id: "explorer", label: "The Files panel" },
             { id: "canvas", label: "The canvas" },
             { id: "assistant", label: "The schema assistant" },
         ],
@@ -217,11 +217,11 @@ export default function DocsPage() {
                     >
                         <Steps>
                             <Step n={1}>
-                                Open the editor and click <UI>File</UI> in the blue header, then{" "}
+                                Open the editor and click <UI>File</UI> in the bar along the top, then{" "}
                                 <UI>Import</UI>. Pick a <Code>.csv</Code> or <Code>.sql</Code> file.
                             </Step>
                             <Step n={2}>
-                                The file opens in its own tab in the <UI>Explorer</UI> on the left,
+                                The file opens in its own row in the <UI>Files</UI> panel on the left,
                                 and its tables appear on the canvas. Foreign keys are drawn as lines
                                 between them.
                             </Step>
@@ -230,8 +230,8 @@ export default function DocsPage() {
                                 saved in the browser and is still there next time you open the file.
                             </Step>
                             <Step n={4}>
-                                Click the <UI>Edit Data</UI> icon on a table header to see and change
-                                its rows, or the <UI>+</UI> to add a column.
+                                Open a table&apos;s <UI>⋮</UI> menu and choose <UI>Edit data</UI> to
+                                see and change its rows, or <UI>Add column</UI> to add one.
                             </Step>
                             <Step n={5}>
                                 When you want it elsewhere, use <UI>File → Export…</UI> and pick a
@@ -253,7 +253,7 @@ export default function DocsPage() {
                     <Section
                         id="tour"
                         title="A tour of the screen"
-                        lead="Three regions: the header along the top, the Explorer down the left, and the canvas filling the rest."
+                        lead="Three regions: the bar along the top, the Files panel down the left, and the canvas filling the rest."
                     >
                         <ActionTable
                             caption="App bar"
@@ -270,8 +270,8 @@ export default function DocsPage() {
                                 },
                                 {
                                     icon: <Database size={15} />,
-                                    action: "File name chip",
-                                    effect: <>Shows which file the canvas is currently displaying. Handy when several are open.</>,
+                                    action: "File name",
+                                    effect: <>Beside the logo, after the <UI>/</UI>: the file the canvas is currently displaying. Handy when several are open.</>,
                                 },
                                 {
                                     icon: <Moon size={15} />,
@@ -293,7 +293,7 @@ export default function DocsPage() {
 
                     <Section
                         id="explorer"
-                        title="The Explorer"
+                        title="The Files panel"
                         lead="The left sidebar: every file you have open, and what is inside each one."
                     >
                         <ActionTable
@@ -324,7 +324,7 @@ export default function DocsPage() {
                             ]}
                         />
                         <p>
-                            In the expanded column list, primary keys are shown in blue. That marking
+                            In the expanded column list, primary keys carry a gold key. That marking
                             comes from the real schema, unlike the key icons on the canvas — see{" "}
                             <a href="#relationships" className="text-brand-700 underline underline-offset-2">Relationships</a> for why those differ.
                         </p>
@@ -397,8 +397,9 @@ export default function DocsPage() {
                         lead="A chat panel on the canvas that knows the schema you have open."
                     >
                         <p>
-                            The round <UI>✦</UI> button in the top-right corner of the canvas opens
-                            it as a panel down the right-hand side, opposite the Explorer — the
+                            The <UI>Ask</UI> button in the top-right corner of the canvas (just{" "}
+                            <UI>✦</UI> on a phone) opens it as a panel down the right-hand side,
+                            opposite the Files panel — the
                             diagram makes room for it rather than disappearing behind it, so you
                             can read both. Ask what a schema does, what is wrong with it, or for a
                             table to be designed, and it answers from the structure of the file you
@@ -458,7 +459,7 @@ export default function DocsPage() {
                             not relationships.
                         </p>
                         <p>
-                            Which file is &quot;current&quot; is whatever is selected in the Explorer.
+                            Which file is &quot;current&quot; is whatever is selected in the Files panel.
                             Every action in the editor — creating a table, editing a row, exporting —
                             applies to that file and only that file.
                         </p>
@@ -959,7 +960,7 @@ export default function DocsPage() {
                             blue connection dots are shown for any column named <Code>id</Code> or
                             ending in <Code>_id</Code>. That is a display convention — a column called{" "}
                             <Code>parent_id</Code> gets the icon whether or not it is really a key. The
-                            Explorer&apos;s blue primary-key marking uses the real schema, so trust that
+                            Files panel&apos;s primary-key marking uses the real schema, so trust that
                             one when the two disagree.
                         </Callout>
                     </Section>
@@ -1460,7 +1461,7 @@ export default function DocsPage() {
                                 },
                                 {
                                     q: "I renamed a column but the canvas looks unchanged.",
-                                    a: <>The canvas refreshes from the server after every edit. If it looks stale, switch files in the Explorer and back — and if it persists, the rename did not reach the database, so check for an error notice.</>,
+                                    a: <>The canvas refreshes from the server after every edit. If it looks stale, switch files in the Files panel and back — and if it persists, the rename did not reach the database, so check for an error notice.</>,
                                 },
                                 {
                                     q: "My .sql file imported only partly.",

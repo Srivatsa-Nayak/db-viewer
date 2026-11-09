@@ -126,7 +126,7 @@ const Examples = ({ groups, onPick }: ExamplesProps) => (
         <p className="text-[11px] text-ink-400">Pick one to edit it before sending.</p>
         {groups.map(group => (
             <div key={group.title}>
-                <p className="text-[11px] font-bold uppercase tracking-wide text-ink-400 mb-1.5">
+                <p className="text-[12px] font-semibold text-ink-500 mb-1.5">
                     {group.title}
                 </p>
                 <div className="flex flex-col gap-1">
