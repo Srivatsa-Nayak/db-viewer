@@ -154,7 +154,9 @@ export const setActiveWorkspace = (workspaceId: string | null) => {
 export const getActiveWorkspace = () => activeWorkspaceId;
 
 api.interceptors.request.use((config) => {
-    if (activeWorkspaceId) {
+    // A call may name its own workspace — comparing two open files reads the other one — and
+    // that wins over the open file.
+    if (activeWorkspaceId && !config.headers.has('X-Workspace-Id')) {
         config.headers.set('X-Workspace-Id', activeWorkspaceId);
     }
     // Identifies the browser so the backend can keep two signed-out sessions apart. Sent on

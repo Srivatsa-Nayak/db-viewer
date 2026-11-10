@@ -1,11 +1,13 @@
 "use client";
 
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { Play, ChevronDown, ChevronUp, Loader2, AlertCircle, Lock, Terminal } from 'lucide-react';
+import { Play, ChevronDown, ChevronUp, Loader2, AlertCircle, Lock, Terminal, History, Check, X } from 'lucide-react';
 import { dbService } from '@/services/api';
 import { ScratchpadResult, StatementResult } from '@/types';
 import { highlightSql } from './sqlHighlight';
 import { errorMessage } from '@/services/errors';
+import { describeWhen, loadHistory, recordRun, type HistoryEntry } from '@/services/queryHistory';
+import { useDismissable } from '@/components/ui/useDismissable';
 
 /**
  * A bottom drawer for running SQL against the open file.
@@ -38,6 +40,8 @@ interface SqlScratchpadProps {
      * for. The result pane goes with it, correctly — those results belonged to the old script.
      */
     initialSql?: string;
+    /** The open file, whose history the panel shows. */
+    workspaceId: string;
     isOpen: boolean;
     onToggle: () => void;
     /** Table names, offered as chips so nobody has to remember an exact spelling. */
@@ -49,7 +53,7 @@ interface SqlScratchpadProps {
 }
 
 export const SqlScratchpad = ({
-    initialSql, isOpen, onToggle, tableNames, hasAccount, onNeedsAccount, onSchemaChanged,
+    initialSql, workspaceId, isOpen, onToggle, tableNames, hasAccount, onNeedsAccount, onSchemaChanged,
 }: SqlScratchpadProps) => {
     const [sql, setSql] = useState(initialSql ?? '');
     const [isRunning, setRunning] = useState(false);
@@ -60,6 +64,14 @@ export const SqlScratchpad = ({
 
     const highlighted = useMemo(() => highlight(sql), [sql]);
 
+    /**
+     * What was run against this file. Read once at mount - the page remounts the panel per file
+     * (`key`), so mounting is the switch - and kept in step by `run` after that.
+     */
+    const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory(workspaceId));
+    const [isHistoryOpen, setHistoryOpen] = useState(false);
+    const historyRef = useDismissable(isHistoryOpen, () => setHistoryOpen(false));
+
     const run = useCallback(async () => {
         if (!hasAccount) return onNeedsAccount();
         if (!sql.trim() || isRunning) return;
@@ -69,6 +81,7 @@ export const SqlScratchpad = ({
         try {
             const next = await dbService.runScratchpad(sql);
             setResult(next);
+            setHistory(recordRun(workspaceId, sql, !next.failed));
             // Only when something could have changed it: re-reading the whole schema after a
             // SELECT would make the canvas jump for no reason.
             if (next.schemaChanged) onSchemaChanged();
@@ -76,10 +89,13 @@ export const SqlScratchpad = ({
             const message = errorMessage(e);
             setError(message || 'That could not be run.');
             setResult(null);
+            // A script the server refused outright (too many statements, an internal table) is
+            // still worth getting back to, to fix.
+            setHistory(recordRun(workspaceId, sql, false));
         } finally {
             setRunning(false);
         }
-    }, [sql, isRunning, hasAccount, onNeedsAccount, onSchemaChanged]);
+    }, [sql, isRunning, hasAccount, onNeedsAccount, onSchemaChanged, workspaceId]);
 
     /** Inserts a table name where the cursor is, rather than at the end. */
     const insert = (text: string) => {
@@ -129,6 +145,59 @@ export const SqlScratchpad = ({
                                     {name}
                                 </button>
                             ))}
+                        </div>
+
+                        <div className="relative shrink-0" ref={historyRef}>
+                            <button
+                                type="button"
+                                onClick={() => setHistoryOpen(v => !v)}
+                                disabled={history.length === 0}
+                                aria-haspopup="menu"
+                                aria-expanded={isHistoryOpen}
+                                className={`flex items-center gap-1.5 rounded px-2 py-1.5 text-xs font-semibold transition-colors
+                                            disabled:opacity-40 ${isHistoryOpen ? 'bg-ink-100 text-ink-900' : 'text-ink-600 hover:bg-ink-100 hover:text-ink-900'}`}
+                                title={history.length === 0 ? 'Nothing run against this file yet' : 'Scripts run against this file'}
+                            >
+                                <History size={13} />
+                                <span className="max-sm:hidden">History</span>
+                            </button>
+                            {isHistoryOpen && (
+                                <div
+                                    role="menu"
+                                    aria-label="Query history"
+                                    className="anim-menu-in absolute bottom-full right-0 z-40 mb-2 max-h-72 w-[min(26rem,calc(100vw-2rem))]
+                                               overflow-y-auto rounded-lg border border-line bg-surface py-1 shadow-glow-lg scroll-slim"
+                                >
+                                    <p className="px-3 pb-1 pt-1.5 text-[10px] text-ink-400">
+                                        Kept in this browser only, for this file. Click one to load it.
+                                    </p>
+                                    {history.map(entry => (
+                                        <button
+                                            key={`${entry.at}-${entry.sql.slice(0, 20)}`}
+                                            type="button"
+                                            role="menuitem"
+                                            onClick={() => {
+                                                setSql(entry.sql);
+                                                setHistoryOpen(false);
+                                                requestAnimationFrame(() => editorRef.current?.focus());
+                                            }}
+                                            className="flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-ink-50"
+                                        >
+                                            <span className={`mt-0.5 shrink-0 ${entry.ok ? 'text-emerald-600' : 'text-red-500'}`}>
+                                                {entry.ok ? <Check size={12} /> : <X size={12} />}
+                                            </span>
+                                            <span className="min-w-0 flex-1">
+                                                <code className="block truncate font-mono text-[11px] text-ink-800">
+                                                    {entry.sql.replace(/\s+/g, ' ')}
+                                                </code>
+                                                <span className="text-[10px] text-ink-400">
+                                                    {describeWhen(entry.at)}{entry.ok ? '' : ' · failed'}
+                                                </span>
+                                            </span>
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
                         </div>
 
                         <button

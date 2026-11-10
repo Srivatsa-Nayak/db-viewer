@@ -113,5 +113,5 @@ export const useNodeDragHistory = (
         });
     }, [placeNodes]);
 
-    return { handleNodeDragStart, handleNodeDrag, handleNodeDragStop };
+    return { handleNodeDragStart, handleNodeDrag, handleNodeDragStop, placeNodes };
 };

@@ -30,10 +30,15 @@ import { useAssistantPanel } from "@/hooks/useAssistantPanel";
 import { useNodeDragHistory } from "@/hooks/useNodeDragHistory";
 import { groupNodes, transformRelationshipsToEdges } from "@/services/schemaGraph";
 import { buildTableNodes, canvasMetaToState, type TableNodeHandlers } from "@/services/workspaceNodes";
+import { autoLayout } from "@/services/autoLayout";
+import { prepareImport, type PreparedImport } from "@/services/textImport";
+import { forgetAllHistory, forgetHistory } from "@/services/queryHistory";
 import { GHOST_MS, useTableGhosts } from "@/hooks/useTableGhosts";
 import { useTableColours } from "@/hooks/useTableColours";
 import { useDomainGroups } from "@/hooks/useDomainGroups";
 import { EmptyEditorState } from "@/components/editor/EmptyEditorState";
+import { TableListView } from "@/components/editor/TableListView";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { errorMessage } from "@/services/errors";
 
 /**
@@ -52,6 +57,10 @@ const ShareModal = dynamic(() => import('@/components/modal/ShareModal').then(m 
 const ExportModal = dynamic(() => import('@/components/modal/ExportModal').then(m => m.ExportModal), { ssr: false });
 const ImportPreviewModal = dynamic(
     () => import('@/components/modal/ImportPreviewModal').then(m => m.ImportPreviewModal), { ssr: false });
+const ImportTextModal = dynamic(
+    () => import('@/components/modal/ImportTextModal').then(m => m.ImportTextModal), { ssr: false });
+const VersionsModal = dynamic(
+    () => import('@/components/modal/VersionsModal').then(m => m.VersionsModal), { ssr: false });
 const ProfileModal = dynamic(() => import('@/components/modal/ProfileModal').then(m => m.ProfileModal), { ssr: false });
 
 
@@ -92,6 +101,16 @@ export default function Home() {
     const [pendingImport, setPendingImport] = useState<{ file: File; plan: ImportPlan } | null>(null);
     const [isProfileOpen, setProfileOpen] = useState(false);
     const [isScratchpadOpen, setScratchpadOpen] = useState(false);
+    const [isImportTextOpen, setImportTextOpen] = useState(false);
+    const [isVersionsOpen, setVersionsOpen] = useState(false);
+    /**
+     * Diagram or list, on a phone. The list is the default there: at 375px the fitted diagram
+     * is legible only as a shape. Wider screens always get the diagram, so a window resized
+     * past the breakpoint cannot be left on a list with no switch to leave it by.
+     */
+    const isPhone = useMediaQuery('(max-width: 639px)');
+    const [phoneView, setPhoneView] = useState<'list' | 'diagram'>('list');
+    const showTableList = isPhone && phoneView === 'list';
     const [notes, setNotes] = useState<TableNote[]>([]);
     const [isLoadingExample, setLoadingExample] = useState(false);
 
@@ -506,9 +525,16 @@ export default function Home() {
      * Nothing is created here and no workspace is opened, so cancelling the dialog leaves
      * exactly as much behind as never having picked the file.
      */
-    const handleFileChosen = async (file: File) => {
+    const handleFileChosen = async (chosen: File) => {
         setIsUploading(true);
         try {
+            // A .dbml file is converted to SQL in the browser and then imported like one.
+            let file = chosen;
+            if (/\.dbml$/i.test(chosen.name)) {
+                const prepared = prepareImport(chosen.name, await chosen.text(), 'dbml');
+                file = prepared.file;
+                announceConversionNotes(prepared.warnings);
+            }
             const plan = await dbService.analyzeUpload(file);
             setPendingImport({ file, plan });
         } catch (err: unknown) {
@@ -516,11 +542,30 @@ export default function Home() {
                 isOpen: true,
                 severity: 'error',
                 title: 'That file could not be read',
-                message: errorMessage(err) || `"${file.name}" could not be parsed as CSV or SQL.`,
+                message: errorMessage(err) || (err instanceof Error ? err.message : '')
+                    || `"${chosen.name}" could not be parsed as CSV, SQL or DBML.`,
             });
         } finally {
             setIsUploading(false);
         }
+    };
+
+    /** DBML that could not be carried across completely says what was left out. */
+    const announceConversionNotes = (warnings: string[]) => {
+        if (warnings.length === 0) return;
+        setNotice({
+            isOpen: true,
+            severity: 'warning',
+            title: 'Some of the DBML was left out',
+            message: 'The rest was converted to SQL and is shown in the preview.',
+            details: warnings,
+        });
+    };
+
+    /** Pasted or fetched text, already turned into a file: on to the same preview. */
+    const handleTextPrepared = (prepared: PreparedImport) => {
+        announceConversionNotes(prepared.warnings);
+        void handleFileChosen(prepared.file);
     };
 
     /** Step two: the user has seen the plan and corrected whatever the inference got wrong. */
@@ -670,7 +715,10 @@ export default function Home() {
         }
         // The schema this conversation was about no longer exists, so neither should the
         // conversation. Every other file's is untouched.
-        if (closingId) chatStore.forget(closingId);
+        if (closingId) {
+            chatStore.forget(closingId);
+            forgetHistory(closingId);
+        }
 
         const remaining = workspaces.filter(w => w.id !== closingId);
         const nextId = remaining.length > 0 ? remaining[remaining.length - 1].id : null;
@@ -764,6 +812,7 @@ export default function Home() {
         // open-file list: those workspaces are no longer this caller's, and a second user on a
         // shared browser must not find the first one's talk waiting for them.
         chatStore.forgetAll();
+        forgetAllHistory();
         clearSession();
     };
 
@@ -868,8 +917,33 @@ export default function Home() {
         ];
     }, [activeWorkspace, nodesWithNotes, handleRenameGroup, handleGroupColour, handleUngroup]);
 
-    const { handleNodeDragStart, handleNodeDrag, handleNodeDragStop } =
+    const { handleNodeDragStart, handleNodeDrag, handleNodeDragStop, placeNodes } =
         useNodeDragHistory(activeWorkspaceIdRef, activeWorkspaceRef, setWorkspaces);
+
+    /**
+     * Arranges the tables by their relationships, as one undoable step.
+     *
+     * Sizes come from React Flow's own measurements where it has them, so a forty-column table
+     * gets the room it actually takes; the estimate is only for a node not yet drawn.
+     */
+    const handleAutoLayout = useCallback(() => {
+        const workspace = activeWorkspaceRef.current;
+        if (!workspace || workspace.nodes.length === 0) return;
+        const byId = new Map(workspace.nodes.map(n => [n.id, n]));
+        const after = autoLayout(workspace.nodes.map(n => n.id), workspace.relationships, id => {
+            const node = byId.get(id);
+            const columns = (node?.data?.columns as unknown[] | undefined)?.length ?? 4;
+            return { width: node?.width ?? 265, height: node?.height ?? 56 + columns * 22 };
+        });
+        const before = Object.fromEntries(workspace.nodes.map(n => [n.id, { ...n.position }]));
+        placeNodes(after);
+        history.push({
+            label: 'Tidy layout',
+            undo: async () => placeNodes(before),
+            redo: async () => placeNodes(after),
+        });
+        showToast({ message: 'Arranged the tables by their relationships', tone: 'ok' });
+    }, [placeNodes, showToast]);
 
     const closeExplorer = useCallback(() => setIsExplorerOpen(false), []);
     const openScratchpad = useCallback(() => setScratchpadOpen(true), []);
@@ -892,6 +966,8 @@ export default function Home() {
         <div className="h-[100dvh] w-full bg-surface text-ink-800 flex flex-col overflow-hidden">
             <Header
                 onUpload={handleFileChosen}
+                onImportText={() => setImportTextOpen(true)}
+                onVersions={() => setVersionsOpen(true)}
                 onNewFile={() => setNewFileModalOpen(true)}
                 isUploading={isUploading}
                 fileName={activeWorkspace?.name || null}
@@ -931,7 +1007,33 @@ export default function Home() {
                 />
 
                 <main className="flex-1 flex flex-col relative h-full min-w-0">
-                    {activeWorkspace ? (
+                    {activeWorkspace && isPhone && (
+                        <div role="tablist" aria-label="How to show the file"
+                             className="flex shrink-0 gap-1 border-b border-line bg-surface p-1.5">
+                            {(['list', 'diagram'] as const).map(mode => (
+                                <button
+                                    key={mode}
+                                    type="button"
+                                    role="tab"
+                                    aria-selected={phoneView === mode}
+                                    onClick={() => setPhoneView(mode)}
+                                    className={`flex-1 rounded-md py-1.5 text-xs font-semibold transition-colors ${
+                                        phoneView === mode ? 'bg-brand-50 text-brand-700' : 'text-ink-500'}`}
+                                >
+                                    {mode === 'list' ? 'Tables' : 'Diagram'}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                    {activeWorkspace && showTableList ? (
+                        <TableListView
+                            tables={activeWorkspace.nodes.map(n => ({
+                                name: n.id, columns: n.data.columns, isView: n.data.isView,
+                            }))}
+                            relationships={activeWorkspace.relationships}
+                            onEditTable={setEditingTable}
+                        />
+                    ) : activeWorkspace ? (
                         <Visualizer
                             key={activeWorkspace.id}
                             nodes={canvasNodes}
@@ -946,6 +1048,7 @@ export default function Home() {
                             onRedo={requestRedo}
                             onCreateRelationship={handleCreateRelationship}
                             onCreateGroup={handleCreateGroup}
+                            onAutoLayout={handleAutoLayout}
                             toast={<ActionToast toast={toast} onDismiss={dismissToast} />}
                             chat={<ChatLauncher isOpen={isChatOpen} onToggle={toggleChat}
                                                 hasConversation={hasConversation} />}
@@ -964,7 +1067,9 @@ export default function Home() {
                         against otherwise. */}
                     {activeWorkspace && (
                         <SqlScratchpad
-                            key={scratchpadSeed?.n ?? 'blank'}
+                            // Per file as well as per seed: each file has its own history.
+                            key={`${activeWorkspace.id}:${scratchpadSeed?.n ?? 'blank'}`}
+                            workspaceId={activeWorkspace.id}
                             initialSql={scratchpadSeed?.sql}
                             isOpen={isScratchpadOpen}
                             onToggle={() => setScratchpadOpen(v => !v)}
@@ -1107,6 +1212,33 @@ export default function Home() {
             )}
 
             {isInfoOpen && <InfoModal isOpen onClose={() => setInfoOpen(false)} />}
+
+            {isVersionsOpen && activeWorkspace && (
+                <VersionsModal
+                    isOpen
+                    onClose={() => setVersionsOpen(false)}
+                    fileName={activeWorkspace.name}
+                    current={{ tables: activeWorkspace.fileData.tables, relationships: activeWorkspace.relationships }}
+                    otherFiles={workspaces.filter(w => w.id !== activeWorkspace.id).map(w => ({ id: w.id, name: w.name }))}
+                    hasAccount={!!user}
+                    onNeedsAccount={() => requireAccount('Saving versions of a file')}
+                    onRestored={async () => {
+                        // Every undo entry before this describes a file that no longer exists.
+                        await handleScratchpadRanDdl();
+                        refreshNotes();
+                    }}
+                    onOpenInScratchpad={sendToScratchpad}
+                />
+            )}
+
+            {isImportTextOpen && (
+                <ImportTextModal
+                    isOpen
+                    onClose={() => setImportTextOpen(false)}
+                    onPrepared={handleTextPrepared}
+                    defaultName={`Untitled-${workspaces.length + 1}.sql`}
+                />
+            )}
 
             {isNewFileModalOpen && (
                 <NewFileModal

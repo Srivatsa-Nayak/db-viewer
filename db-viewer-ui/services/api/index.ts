@@ -8,3 +8,4 @@ export * from './auth';
 export * from './assistant';
 export * from './sharing';
 export * from './templates';
+export * from './snapshots';
