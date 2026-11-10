@@ -12,12 +12,14 @@ const apiOrigin = (() => {
 const isDev = process.env.NODE_ENV !== "production";
 
 /**
- * Content-Security-Policy, sent **report-only** for now: violations show in the browser console
- * and nothing is blocked. Next.js inlines its bootstrap scripts, so `'unsafe-inline'` is needed
- * without per-request nonces; what the policy still buys is `connect-src`, which limits where a
- * script could send the session token in localStorage — this origin and the API. Once the
- * console stays clean on every page, rename the header to `Content-Security-Policy` to enforce
- * it. `'unsafe-eval'` is for the dev server's React tooling only.
+ * Content-Security-Policy, **enforced**. Next.js inlines its bootstrap scripts, so
+ * `'unsafe-inline'` is needed without per-request nonces; what the policy buys is `connect-src`,
+ * which limits where a script could send the session token in localStorage — this origin and
+ * the API — plus no plugins, no foreign scripts, styles, fonts or images, and no framing.
+ * The PNG export renders through `data:` and `blob:` images and fetches its fonts from this
+ * origin, which is why those are allowed. The Playwright smoke test (e2e/) fails on any
+ * violation, including during an export. `'unsafe-eval'` is for the dev server's React tooling
+ * only.
  */
 const contentSecurityPolicy = [
   "default-src 'self'",
@@ -34,13 +36,13 @@ const contentSecurityPolicy = [
 
 const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
-  // frame-ancestors is ignored in a report-only policy, so framing is refused here instead.
+  // The CSP's frame-ancestors says the same; this covers browsers that predate it.
   { key: "X-Frame-Options", value: "DENY" },
   // Full URLs within the site, only the origin to other sites. A share link carries its token
   // in the path, and it should not travel to whatever site the viewer clicks through to.
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
-  { key: "Content-Security-Policy-Report-Only", value: contentSecurityPolicy },
+  { key: "Content-Security-Policy", value: contentSecurityPolicy },
 ];
 
 const nextConfig: NextConfig = {
