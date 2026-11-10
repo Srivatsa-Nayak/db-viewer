@@ -66,7 +66,8 @@ Built with **Spring Boot 3.3 (Java 17)** on the backend and **Next.js 16** on th
 > ⚠️ **This is a developer tool, not a multi-tenant service.** Workspaces are now owned, so one
 > user's files are not readable by another, but the anonymous half of that ownership rests on an
 > `X-Client-Id` header the browser generates — a name for a session, not a credential, and
-> trivially forged by anything that is not a browser. CORS is also wide open. Treat it as
+> trivially forged by anything that is not a browser. CORS admits only the configured origins,
+> but that stops other web pages, not scripts. Treat it as
 > isolation between honest sessions, not as a security boundary: run it locally or behind your
 > own access control, and never expose the API to untrusted callers.
 
@@ -126,7 +127,7 @@ db-viewer/
 │   │   ├── sql/                Script splitter + MySQL→SQLite translator
 │   │   └── workspace/          Per-file database isolation
 │   ├── src/main/resources/     application.properties + mysql/prod profiles
-│   └── src/test/java/          275 JUnit 5 / MockMvc / AssertJ tests
+│   └── src/test/java/          288 JUnit 5 / MockMvc / AssertJ tests
 ├── db-viewer-ui/               Next.js 16 frontend
 │   ├── app/                    App Router: / landing, /app editor, /share/[token]
 │   ├── components/             header, canvas, editor, tables, modal
@@ -376,18 +377,19 @@ curl localhost:8080/db-info -H 'X-Client-Id: me' -H 'X-Workspace-Id: fileA'   # 
 ## ✅ Testing and quality gates
 
 ```bash
-# Backend — 275 tests, in-memory SQLite, no setup required
+# Backend — 288 tests, in-memory SQLite, no setup required
 cd db-viewer-backend && ./mvnw test
 
 # Single class
 ./mvnw test -Dtest=WorkspaceIsolationTest
 
-# Frontend — 20 Vitest unit tests (parsers, the chat stream reader, schema→graph, exports)
+# Frontend — 26 Vitest unit tests (parsers, the chat stream reader, schema→graph, exports)
 cd db-viewer-ui
 npm test             # vitest run
 npx tsc --noEmit     # type check
 npm run lint         # eslint
 npm run build        # production build
+npm run test:e2e     # Playwright smoke tests (backend running on :8080; uses your installed Chrome)
 ```
 
 Every test asserts an *effect* — a handler that returns 200 without doing anything is the
@@ -436,6 +438,18 @@ redeploy the other:
 - `.github/workflows/deploy-frontend.yml` — builds the Next.js `standalone` output with
   `NEXT_PUBLIC_API_URL` baked in, and deploys it.
 - `.github/workflows/version-bump.yml` — bumps the version for merges that don't touch the backend.
+- `.github/workflows/keep-warm.yml` — pings both apps every 10 minutes so the free plan does not
+  stop them (see below).
+
+### Running on the free plan
+
+The F1 plan costs nothing, and three of its limits are handled on purpose:
+
+| Limit | What handles it |
+|---|---|
+| **No "Always On"** — an idle app is stopped after ~20 minutes, and the next request waits ~30s for the JVM | `keep-warm.yml` pings both apps every 10 minutes (free on a public repository). The UI also pings the backend once per tab, allows a first request 90s instead of 30s, and shows a "waking up the server" notice when a request waits more than 3s |
+| **Only `/home` survives a redeploy** | Set the backend's app settings `DB_PATH=/home/data/visualizer.db` and `WORKSPACE_DIR=/home/data/workspaces`. The defaults are relative to the folder the jar runs in, which a deploy may clean |
+| **Small memory, 60 CPU minutes a day** | Set `JAVA_OPTS=-XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Xss512k -XX:MaxRAMPercentage=60` on the backend: a single-threaded collector and C1-only compilation start faster and use less memory on one small core |
 
 ### Versioning
 

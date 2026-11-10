@@ -785,16 +785,22 @@ export default function Home() {
             await dbService.loadExampleSchema();
 
             if (isNewFile) {
-                const schema = await dbService.getSchema();
-                await dbService.setWorkspaceName('example-store.sql');
+                // In parallel: neither depends on the other, and one after the other they were
+                // most of the wait after the example itself had been created.
+                const [schema] = await Promise.all([
+                    dbService.getSchema(),
+                    dbService.setWorkspaceName('example-store.sql'),
+                ]);
                 setWorkspaces(prev => [...prev, transformSchemaToWorkspace(
                     schema.tables, schema.relationships, 'example-store.sql', workspaceId!, false
                 )]);
+                // Changing the active file runs the notes effect, so no refreshNotes() here —
+                // calling it as well fetched the same notes twice.
                 setActiveWorkspaceId(workspaceId);
             } else {
                 await refreshActiveSchema();
+                refreshNotes();
             }
-            refreshNotes();
         } catch (err: unknown) {
             setNotice({
                 isOpen: true, severity: 'error', title: 'Could not load the example',

@@ -488,9 +488,9 @@ Two known gaps in the SQL dump:
 |---|---|
 | **Connections** | One retained connection per SQLite workspace (`SingleConnectionDataSource`); a 5-connection Hikari pool per MySQL workspace |
 | **Concurrency** | SQLite serialises statements on its connection, which sidesteps `SQLITE_BUSY` entirely at the cost of not parallelising within a workspace. Different workspaces are fully independent |
-| **Transactions** | None declared. Every statement auto-commits. A multi-row CSV import that fails halfway leaves the rows inserted so far — acceptable for an import tool, and visible immediately in the canvas |
-| **Durability** | SQLite files persist across restarts wherever the filesystem does. On the Azure F1 plan the App Service filesystem is not durable across restarts or scale events, so treat deployed workspaces as session-scoped |
-| **Growth** | Nothing prunes `app.workspace.dir`. A workspace file lives until the file is closed in the UI (`DELETE /workspace`) or the directory is cleaned manually |
+| **Transactions** | Single statements auto-commit. On SQLite an import runs as one transaction, so a crash halfway leaves the database as it was (a single statement that fails is skipped and reported, as before), and a table rebuild (column retype, foreign key change) is one transaction too |
+| **Durability** | SQLite files persist across restarts wherever the filesystem does. On Azure App Service (Linux, free plan included) only `/home` is kept across restarts and redeploys; the app's own working folder may be cleaned by a deploy. The defaults (`./visualizer.db`, `./data/workspaces`) are relative to that folder, so a deployment sets `DB_PATH=/home/data/visualizer.db` and `WORKSPACE_DIR=/home/data/workspaces` |
+| **Growth** | `WorkspaceJanitor` closes idle connections and deletes *anonymous* workspaces unused for `app.workspace.anonymous-retention-days` (default 30). A signed-in user's files live until they delete them (`DELETE /workspace`) |
 | **Backups** | None. `GET /export-sql` is the intended way to take anything of value out |
 | **Session restore** | The browser remembers only which workspace ids were open and where their nodes sat. `GET /workspaces` lists the ids that still have a database — a directory scan on SQLite, `information_schema.SCHEMATA` on MySQL — so a remembered file whose database is gone is dropped rather than lazily recreated empty |
 

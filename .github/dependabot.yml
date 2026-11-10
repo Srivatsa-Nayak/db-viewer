@@ -1,0 +1,30 @@
+# Weekly dependency updates. Minor and patch updates are grouped into one PR per ecosystem, so a
+# normal week is a handful of PRs rather than one per package; a major version gets its own PR,
+# since that is the one worth reading. Every PR runs the CI workflow before it can be merged.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /db-viewer-ui
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      frontend-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: maven
+    directory: /db-viewer-backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      backend-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

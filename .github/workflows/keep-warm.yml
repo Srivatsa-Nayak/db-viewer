@@ -1,0 +1,39 @@
+name: Keep warm
+
+# Both apps run on Azure App Service's free (F1) plan, which has no "Always On": after about
+# 20 idle minutes the app is stopped, and the next visitor waits ~30 seconds for the JVM to
+# start again. A health check every 10 minutes keeps that from happening.
+#
+# Costs: scheduled workflows are free on a public repository, and an idle health check uses a
+# few milliseconds of the plan's 60 CPU minutes a day. GitHub may run a schedule late when it
+# is busy, and switches schedules off after 60 days with no repository activity — re-enable it
+# from the Actions tab if that happens.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: keep-warm
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # A cold start can take most of a minute, so each check allows two minutes and retries
+      # rather than failing on the request that does the waking.
+      - name: Backend health
+        run: |
+          curl -fsS --max-time 120 --retry 2 --retry-delay 10 --retry-all-errors \
+            -o /dev/null -w '%{http_code} in %{time_total}s\n' \
+            https://db-viewer-api-srivatsa.azurewebsites.net/actuator/health
+
+      - name: Frontend
+        run: |
+          curl -fsS --max-time 120 --retry 2 --retry-delay 10 --retry-all-errors \
+            -o /dev/null -w '%{http_code} in %{time_total}s\n' \
+            https://db-viewer-ui-srivatsa.azurewebsites.net/

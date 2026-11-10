@@ -412,6 +412,13 @@ body[data-dialog-open="true"] {
     animation: revealUp 620ms cubic-bezier(.16, .84, .44, 1) both;
   }
 
+  /* The same entrance for content that is on screen at load (the landing hero). It starts at
+     first paint from the server's HTML instead of waiting for JavaScript, which is what
+     `.reveal` has to do to know when something has scrolled into view. */
+  .hero-in {
+    animation: revealUp 620ms cubic-bezier(.16, .84, .44, 1) both;
+  }
+
   .hero-card {
     opacity: 0;
     animation: popIn 620ms cubic-bezier(.16, .84, .44, 1) both;

@@ -129,15 +129,19 @@ export default function LandingPage() {
                 />
 
                 <div className="relative mx-auto grid max-w-6xl items-center gap-12 px-6 lg:grid-cols-2">
+                    {/* `hero-in`, not `<Reveal>`: a Reveal stays hidden until React has hydrated
+                        and an IntersectionObserver has fired, which on a phone left the headline
+                        invisible for about two seconds. This is on screen at load, so it animates
+                        in from the server's HTML with CSS alone. */}
                     <div>
-                        <Reveal>
+                        <div className="hero-in">
                             <span className="inline-flex items-center gap-1.5 rounded-full border border-brand-200/70 bg-surface/80 px-3.5 py-1.5 text-xs font-medium text-brand-700 shadow-sm backdrop-blur-sm">
                                 <Sparkles size={12} />
                                 No install, no connection string
                             </span>
-                        </Reveal>
+                        </div>
 
-                        <Reveal delay={90}>
+                        <div className="hero-in" style={{ animationDelay: "90ms" }}>
                             <h1 className="mt-6 text-4xl font-bold tracking-tight text-ink-900 sm:text-5xl lg:text-[3.4rem] lg:leading-[1.08]">
                                 See your database,{" "}
                                 {/* The accent phrase drifts through blue into indigo, so the
@@ -146,22 +150,22 @@ export default function LandingPage() {
                                     not just your SQL
                                 </span>
                             </h1>
-                        </Reveal>
+                        </div>
 
-                        <Reveal delay={170}>
+                        <div className="hero-in" style={{ animationDelay: "170ms" }}>
                         <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-600">
                             Drop in a <code className="rounded bg-ink-100 px-1.5 py-0.5 font-mono text-[0.9em] text-ink-700">.csv</code> or{" "}
                             <code className="rounded bg-ink-100 px-1.5 py-0.5 font-mono text-[0.9em] text-ink-700">.sql</code> file
                             and get a live entity-relationship diagram you can edit. Every change runs
                             against a real database, so what you see is what you have.
                         </p>
-                        </Reveal>
+                        </div>
 
                         {/* The objection a database tool has to answer before anything else, and it
                             is not "does it work" — it is "what are you asking for access to".
                             Answered in the hero rather than buried in a security page, because an
                             engineer who has not had it answered does not scroll. */}
-                        <Reveal delay={210}>
+                        <div className="hero-in" style={{ animationDelay: "210ms" }}>
                             <ul className="mt-6 grid max-w-xl gap-2.5 sm:grid-cols-3">
                                 {[
                                     {
@@ -189,9 +193,9 @@ export default function LandingPage() {
                                     </li>
                                 ))}
                             </ul>
-                        </Reveal>
+                        </div>
 
-                        <Reveal delay={250} className="mt-8 flex flex-wrap items-center gap-3">
+                        <div className="hero-in mt-8 flex flex-wrap items-center gap-3" style={{ animationDelay: "250ms" }}>
                             <Link
                                 href="/app"
                                 className="brand-gradient brand-gradient-hover shadow-glow-md inline-flex items-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold text-white transition-all hover:-translate-y-0.5"
@@ -204,13 +208,13 @@ export default function LandingPage() {
                             >
                                 Browse templates
                             </a>
-                        </Reveal>
+                        </div>
 
-                        <Reveal delay={330}>
+                        <div className="hero-in" style={{ animationDelay: "330ms" }}>
                             <p className="mt-5 text-sm text-ink-500">
                                 Free, and no account needed to import, edit or visualise.
                             </p>
-                        </Reveal>
+                        </div>
                     </div>
 
                     <div className="lg:pl-4">

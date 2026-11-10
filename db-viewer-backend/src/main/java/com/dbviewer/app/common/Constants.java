@@ -191,6 +191,10 @@ public final class Constants {
         public static final String UPDATE_PASSWORD_HASH =
                 "UPDATE app_users SET password_hash = ? WHERE email = ?";
 
+        /** Read on every signed-in request, to check the token's password stamp. */
+        public static final String SELECT_PASSWORD_HASH =
+                "SELECT password_hash FROM app_users WHERE email = ?";
+
         /**
          * Stores the user's own model key. {@code llm_key_hint} is the masked tail shown back to
          * them — the ciphertext cannot be, and an input that renders as eight bullets gives no

@@ -29,7 +29,10 @@ export const authService = {
         currentPassword?: string;
         newPassword?: string;
     }): Promise<AuthUser> => {
-        const res = await api.patch<Partial<AuthUser>>('/auth/profile', changes);
+        const res = await api.patch<Partial<AuthUser> & { token?: string }>('/auth/profile', changes);
+        // A password change signs out every other device by refusing tokens issued before it,
+        // this tab's included — so it comes back with a fresh one, which has to replace the old.
+        if (res.data?.token) setAuthToken(res.data.token);
         return {
             email: res.data?.email ?? '',
             displayName: res.data?.displayName ?? res.data?.email ?? '',
