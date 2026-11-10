@@ -78,6 +78,24 @@ test('loading the example draws its tables and relationships', async ({ page }) 
     expect(violations).toEqual([]);
 });
 
+test('deleting a table leaves an undoable ghost, and undo keeps the table', async ({ page }) => {
+    const canvas = await openExample(page);
+
+    // `reviews` is a leaf: nothing points at it, so the delete is allowed.
+    // The node itself is a button, so its menu button is not in the accessibility tree.
+    await page.locator('button[aria-label="Actions for reviews"]').click();
+    await page.getByRole('menuitem', { name: /Delete table/ }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Delete table' }).click();
+
+    await expect(canvas.locator('.react-flow__node.node-ghost', { hasText: 'reviews' })).toHaveCount(1);
+    await page.locator('button[aria-label="Keep reviews — cancel the delete"]').click();
+    await expect(canvas.locator('.react-flow__node.node-ghost')).toHaveCount(0);
+
+    // Past the countdown, the table is still there: the delete was never sent.
+    await page.waitForTimeout(7_500);
+    await expect(canvas.locator('.react-flow__node', { hasText: 'reviews' }).first()).toBeVisible();
+});
+
 test('the diagram exports as a PNG', async ({ page }) => {
     const violations = cspViolations(page);
     await signIn(page);
