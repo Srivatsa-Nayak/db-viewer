@@ -5,6 +5,7 @@ import com.dbviewer.app.service.DatabaseService;
 import com.dbviewer.app.service.SnapshotService;
 import com.dbviewer.app.sql.SqlDialect;
 import com.dbviewer.app.sql.SqlScriptSplitter;
+import com.dbviewer.app.service.helper.StatementText;
 import com.dbviewer.app.workspace.WorkspaceContext;
 import com.dbviewer.app.workspace.WorkspaceManager;
 import com.fasterxml.jackson.core.JsonProcessingException;

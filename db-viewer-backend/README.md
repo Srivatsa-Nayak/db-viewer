@@ -98,12 +98,20 @@ db-viewer-backend/
     │   │   │   ├── JwtService.java             Issue and verify session tokens
     │   │   │   ├── ShareService.java           Read-only share links
     │   │   │   ├── TemplateService.java        Catalogue + the Template record shapes
-    │   │   │   └── impl/                       The implementations
-    │   │   │       ├── DatabaseServiceImpl.java    CSV parsing, exports, schema edits
-    │   │   │       ├── AuthServiceImpl.java        BCrypt hashing, password policy
-    │   │   │       ├── JwtServiceImpl.java         HMAC-SHA256 signing
-    │   │   │       ├── ShareServiceImpl.java       Token minting and revocation
-    │   │   │       └── TemplateServiceImpl.java    Loads manifest + .sql at startup
+    │   │   │   ├── impl/                       The implementations, and only those
+    │   │   │   │   ├── DatabaseServiceImpl.java    Schema, data, exports; delegates to helper/
+    │   │   │   │   ├── AuthServiceImpl.java        BCrypt hashing, password policy
+    │   │   │   │   ├── JwtServiceImpl.java         HMAC-SHA256 signing
+    │   │   │   │   ├── ShareServiceImpl.java       Token minting and revocation
+    │   │   │   │   └── TemplateServiceImpl.java    Loads manifest + .sql at startup
+    │   │   │   └── helper/                     The parts the implementations delegate to
+    │   │   │       ├── SchemaReader.java           Table, view, column and index metadata
+    │   │   │       ├── FileImporter.java           CSV/SQL import and its pre-flight report
+    │   │   │       ├── ScratchpadRunner.java       The SQL panel, statement by statement
+    │   │   │       ├── SqliteTableRebuilder.java   SQLite's create-copy-drop-rename rebuild
+    │   │   │       ├── SqliteDdlText.java          Reading and writing SQLite DDL text
+    │   │   │       ├── StatementText.java          Statement and error-message text
+    │   │   │       └── SqlIdentifiers.java         Identifier validation
     │   │   ├── sql/
     │   │   │   ├── SqlScriptSplitter.java      Comment/quote/DELIMITER-aware statement splitter
     │   │   │   └── MySqlToSqliteTranslator.java  Dump translation + ALTER-key folding

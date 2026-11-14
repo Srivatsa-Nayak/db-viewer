@@ -1,4 +1,4 @@
-package com.dbviewer.app.service.impl;
+package com.dbviewer.app.service.helper;
 
 import com.dbviewer.app.sql.SqlDialectTranslator;
 
@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
  * table rebuild ({@link SqliteTableRebuilder}) has to read it back out. Pure functions with no
  * database access, split out of {@code DatabaseServiceImpl} so they can be read on their own.
  */
-final class SqliteDdlText {
+public final class SqliteDdlText {
 
     private SqliteDdlText() { }
 
@@ -190,7 +190,7 @@ final class SqliteDdlText {
     }
 
     /** A type-appropriate default literal, or null when the type has no sensible one. */
-    static String defaultLiteralFor(String type) {
+    public static String defaultLiteralFor(String type) {
         String base = type.toUpperCase();
         if (base.startsWith("VARCHAR") || base.startsWith("TEXT") || base.startsWith("CHAR")) {
             return "''";

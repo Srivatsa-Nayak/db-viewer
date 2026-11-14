@@ -1,4 +1,4 @@
-package com.dbviewer.app.service.impl;
+package com.dbviewer.app.service.helper;
 
 import com.dbviewer.app.common.Constants;
 import com.dbviewer.app.config.DatabaseConfig;
@@ -203,7 +203,7 @@ public class FileImporter {
             "^\\s*(BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|START\\s+TRANSACTION)\\b",
             Pattern.CASE_INSENSITIVE);
 
-    static boolean managesItsOwnTransactions(List<String> statements) {
+    public static boolean managesItsOwnTransactions(List<String> statements) {
         return statements.stream().anyMatch(sql -> TRANSACTION_CONTROL.matcher(sql).find());
     }
 

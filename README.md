@@ -124,7 +124,7 @@ db-viewer/
 │   │   ├── config/             CORS, default DB bootstrap, OpenAPI
 │   │   ├── controller/         Every REST endpoint + global exception handler
 │   │   ├── dto/                Request/response POJOs
-│   │   ├── service/            One interface per service; impl/ holds the classes
+│   │   ├── service/            One interface per service; impl/ the classes, helper/ their parts
 │   │   ├── exception/          Every custom exception
 │   │   ├── auth/               Request identity + auth filter
 │   │   ├── template/           CREATE TABLE parser for template previews

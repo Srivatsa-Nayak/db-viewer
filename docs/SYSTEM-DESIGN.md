@@ -204,7 +204,10 @@ and formatting live in `DatabaseServiceImpl`.
 
 Every service is an interface in `service/` with its implementation in `service/impl/`:
 `DatabaseService`, `AuthService`, `JwtService`, `ShareService`, `TemplateService`,
-`ChatService`, `ApiKeyService`. Nothing is
+`ChatService`, `ApiKeyService`. `service/impl/` holds only those `*Impl` classes; the parts an
+implementation delegates to live in `service/helper/` — `SchemaReader`, `FileImporter`,
+`ScratchpadRunner` and `SqliteTableRebuilder` are Spring components `DatabaseServiceImpl` is built
+from, and `SqliteDdlText`, `StatementText` and `SqlIdentifiers` are static text helpers. Nothing is
 typed against a `*Impl` — controllers and services depend on the contract, so Spring injects the
 implementation and a collaborator can be substituted without touching the caller. Shapes that are
 part of a contract live on the interface too: `TemplateService.Template` and its nested records are

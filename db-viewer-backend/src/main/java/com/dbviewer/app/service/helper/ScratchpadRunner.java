@@ -1,4 +1,4 @@
-package com.dbviewer.app.service.impl;
+package com.dbviewer.app.service.helper;
 
 import com.dbviewer.app.sql.SqlScriptSplitter;
 import com.dbviewer.app.workspace.WorkspaceManager;
@@ -188,7 +188,7 @@ public class ScratchpadRunner {
      * naming one is either a mistake or an attempt to reach behind the UI, and neither should be
      * allowed to corrupt the notes or the canvas annotations.
      */
-    static void refuseInternalTables(String statement) {
+    public static void refuseInternalTables(String statement) {
         java.util.regex.Matcher matcher =
                 java.util.regex.Pattern.compile("(?<![A-Za-z0-9_])__[A-Za-z0-9_]+")
                         .matcher(statement);

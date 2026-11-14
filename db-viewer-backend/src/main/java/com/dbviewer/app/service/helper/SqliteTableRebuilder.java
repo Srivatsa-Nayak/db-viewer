@@ -1,4 +1,4 @@
-package com.dbviewer.app.service.impl;
+package com.dbviewer.app.service.helper;
 
 import com.dbviewer.app.common.Constants;
 import com.dbviewer.app.workspace.WorkspaceManager;

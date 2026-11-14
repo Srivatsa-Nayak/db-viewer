@@ -1,7 +1,7 @@
-package com.dbviewer.app.service.impl;
+package com.dbviewer.app.service.helper;
 
 /** Validation for the table and column names clients send. */
-final class SqlIdentifiers {
+public final class SqlIdentifiers {
 
     private SqlIdentifiers() { }
 
@@ -10,7 +10,7 @@ final class SqlIdentifiers {
      * bound as JDBC parameters, so anything outside {@code [A-Za-z0-9_]} is rejected outright
      * rather than escaped.
      */
-    static String safe(String raw, String what) {
+    public static String safe(String raw, String what) {
         if (raw == null || raw.isBlank()) {
             throw new IllegalArgumentException("Missing " + what);
         }
