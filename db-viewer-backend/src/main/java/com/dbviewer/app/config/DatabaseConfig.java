@@ -63,6 +63,9 @@ public class DatabaseConfig {
             }
         }
 
+        String bigText = "mysql".equalsIgnoreCase(dbDriver) ? "LONGTEXT" : "TEXT";
+        jdbcTemplate.execute(Constants.Snapshots.CREATE_TABLE.formatted(autoIncrementKey, bigText, bigText));
+
         jdbcTemplate.execute(Constants.Ddl.CREATE_WORKSPACE_OWNERS_TABLE);
         try {
             jdbcTemplate.execute(Constants.Ddl.ADD_WORKSPACE_OWNERS_FILE_NAME);

@@ -55,3 +55,72 @@ jobs:
         run: npm test
       - name: Build
         run: npm run build
+
+  # A real browser against the real UI and backend: land, load the example, see the tables.
+  # Also fails on any Content-Security-Policy report, which is how a policy change is checked
+  # before it is enforced.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: db-viewer-ui/package-lock.json
+
+      - name: Build the backend
+        working-directory: db-viewer-backend
+        run: |
+          chmod +x mvnw
+          ./mvnw -B -q package -DskipTests
+
+      - name: Start the backend
+        working-directory: db-viewer-backend
+        run: |
+          mkdir -p "$RUNNER_TEMP/e2e"
+          nohup java -jar target/db-viewer-*.jar             --DB_PATH="$RUNNER_TEMP/e2e/app.db"             --WORKSPACE_DIR="$RUNNER_TEMP/e2e/workspaces"             --AUTH_SECRET=e2e-only-signing-secret-0123456789abcdef             > "$RUNNER_TEMP/e2e/backend.log" 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fsS http://localhost:8080/actuator/health && exit 0
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/e2e/backend.log"
+          exit 1
+
+      - name: Build the UI
+        working-directory: db-viewer-ui
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8080
+        run: |
+          npm ci
+          npm run build
+          cp -r public .next/standalone/public
+          cp -r .next/static .next/standalone/.next/static
+
+      - name: Install Chromium
+        working-directory: db-viewer-ui
+        run: npx playwright install --with-deps chromium
+
+      - name: Smoke test
+        working-directory: db-viewer-ui
+        run: npm run test:e2e
+
+      - name: Keep the trace and backend log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results
+          path: |
+            db-viewer-ui/test-results
+            ${{ runner.temp }}/e2e/backend.log
+          retention-days: 7

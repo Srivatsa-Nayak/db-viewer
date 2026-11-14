@@ -104,7 +104,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
         return switch (path) {
             case "/auth/login" -> new Rule("login", loginPerTenMinutes, Duration.ofMinutes(10));
             case "/auth/signup" -> new Rule("signup", signupPerHour, HOUR);
-            case "/upload", "/import/analyze" -> new Rule("import", importPerHour, HOUR);
+            case "/upload", "/import/analyze", "/import/fetch" -> new Rule("import", importPerHour, HOUR);
             case "/scratchpad", "/query" -> new Rule("sql", sqlPerMinute, MINUTE);
             default -> null;
         };

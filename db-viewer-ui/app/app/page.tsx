@@ -2,7 +2,6 @@
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import dynamic from "next/dynamic";
-import { FileCode, Plus, Loader2, Sparkles } from 'lucide-react';
 
 import { Header } from "@/components/header/Header";
 import { Visualizer, RelationshipDraft } from "@/components/canvas/Visualizer";
@@ -23,16 +22,23 @@ import { clearSession, loadSession, saveSession } from "@/services/sessionStorag
 import { history } from "@/services/history";
 import { newWorkspaceId } from "@/services/workspaceId";
 import { downloadCanvasImage } from "@/services/exportImage";
-import { CanvasGroup, ImportPlan, Relationship, SqlDialectId, TableInfo, TagColour } from "@/types";
+import { CanvasGroup, ImportPlan, Relationship, SqlDialectId, TableInfo } from "@/types";
 import type { NodeDecoration, Workspace } from "@/types/workspace";
 import { useToast } from "@/hooks/useToast";
 import { useUndoRedo } from "@/hooks/useUndoRedo";
 import { useAssistantPanel } from "@/hooks/useAssistantPanel";
 import { useNodeDragHistory } from "@/hooks/useNodeDragHistory";
-import {
-    defaultPosition, groupNodes, junctionTables,
-    keyColumnsByTable, transformRelationshipsToEdges,
-} from "@/services/schemaGraph";
+import { groupNodes, transformRelationshipsToEdges } from "@/services/schemaGraph";
+import { buildTableNodes, canvasMetaToState, type TableNodeHandlers } from "@/services/workspaceNodes";
+import { autoLayout } from "@/services/autoLayout";
+import { prepareImport, type PreparedImport } from "@/services/textImport";
+import { forgetAllHistory, forgetHistory } from "@/services/queryHistory";
+import { GHOST_MS, useTableGhosts } from "@/hooks/useTableGhosts";
+import { useTableColours } from "@/hooks/useTableColours";
+import { useDomainGroups } from "@/hooks/useDomainGroups";
+import { EmptyEditorState } from "@/components/editor/EmptyEditorState";
+import { TableListView } from "@/components/editor/TableListView";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { errorMessage } from "@/services/errors";
 
 /**
@@ -51,17 +57,13 @@ const ShareModal = dynamic(() => import('@/components/modal/ShareModal').then(m 
 const ExportModal = dynamic(() => import('@/components/modal/ExportModal').then(m => m.ExportModal), { ssr: false });
 const ImportPreviewModal = dynamic(
     () => import('@/components/modal/ImportPreviewModal').then(m => m.ImportPreviewModal), { ssr: false });
+const ImportTextModal = dynamic(
+    () => import('@/components/modal/ImportTextModal').then(m => m.ImportTextModal), { ssr: false });
+const VersionsModal = dynamic(
+    () => import('@/components/modal/VersionsModal').then(m => m.VersionsModal), { ssr: false });
 const ProfileModal = dynamic(() => import('@/components/modal/ProfileModal').then(m => m.ProfileModal), { ssr: false });
 
 
-/**
- * How long a dropped table lingers as a ghost before the delete is really sent.
- *
- * Long enough to notice the mistake and reach the button, short enough that the canvas is not
- * lying about what the database contains for any length of time. The same number drives the
- * drain bar on the node, passed down rather than duplicated in CSS.
- */
-const GHOST_MS = 7000;
 
 export default function Home() {
     const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -99,54 +101,17 @@ export default function Home() {
     const [pendingImport, setPendingImport] = useState<{ file: File; plan: ImportPlan } | null>(null);
     const [isProfileOpen, setProfileOpen] = useState(false);
     const [isScratchpadOpen, setScratchpadOpen] = useState(false);
+    const [isImportTextOpen, setImportTextOpen] = useState(false);
+    const [isVersionsOpen, setVersionsOpen] = useState(false);
+    /**
+     * Diagram or list, on a phone. The list is the default there: at 375px the fitted diagram
+     * is legible only as a shape. Wider screens always get the diagram, so a window resized
+     * past the breakpoint cannot be left on a list with no switch to leave it by.
+     */
+    const isPhone = useMediaQuery('(max-width: 639px)');
+    const [phoneView, setPhoneView] = useState<'list' | 'diagram'>('list');
+    const showTableList = isPhone && phoneView === 'list';
     const [notes, setNotes] = useState<TableNote[]>([]);
-    const [tableToDelete, setTableToDelete] = useState<string | null>(null);
-    /**
-     * Tables whose delete has been agreed to but not yet sent.
-     *
-     * The node stays on the canvas, greyed, with an Undo button, and `DELETE /table/{name}`
-     * only goes out when the timer expires. Nothing is snapshotted and nothing is restored,
-     * because until then nothing has happened — which also means closing the tab, navigating
-     * away or losing the network all fail in the direction of *not* dropping the table.
-     *
-     * Keyed by table name and carrying the workspace it belongs to, because the delete is
-     * workspace-scoped through a request header: a timer that fired after the user switched
-     * files would otherwise drop a same-named table in the wrong database.
-     */
-    const [ghosts, setGhosts] = useState<{ table: string; workspaceId: string }[]>([]);
-    /**
-     * The pending `setTimeout` per ghosted table.
-     *
-     * A ref rather than state: nothing renders from it, and storing timer ids in state would
-     * re-render the canvas twice for every delete.
-     */
-    const ghostTimers = useRef<Map<string, number>>(new Map());
-
-    /*
-     * Leaving the page cancels every pending drop.
-     *
-     * This is the fail-safe direction and it is deliberate. A user who closes the tab three
-     * seconds after pressing Delete has not confirmed anything a second time, and a table that
-     * is still there can be deleted again — a table that is gone cannot be brought back.
-     */
-    useEffect(() => {
-        const timers = ghostTimers.current;
-        return () => {
-            timers.forEach(id => window.clearTimeout(id));
-            timers.clear();
-        };
-    }, []);
-
-    /** Cancels the countdown. Nothing to restore — the drop was never sent. */
-    const handleUndoDelete = useCallback((tableName: string) => {
-        const timer = ghostTimers.current.get(tableName);
-        if (timer !== undefined) {
-            window.clearTimeout(timer);
-            ghostTimers.current.delete(tableName);
-        }
-        setGhosts(prev => prev.filter(g => g.table !== tableName));
-    }, []);
-
     const [isLoadingExample, setLoadingExample] = useState(false);
 
     /**
@@ -177,6 +142,12 @@ export default function Home() {
      * changes — they are passed into node `data`, and a new identity there re-renders the canvas.
      */
     const activeWorkspaceRef = useRef<Workspace | null>(null);
+
+    /** What a confirmed table drop runs once it has gone through; set below, once both exist. */
+    const afterDropRef = useRef<() => Promise<void>>(async () => {});
+    const {
+        ghosts, tableToDelete, requestTableDelete, cancelTableDelete, confirmTableDelete, handleUndoDelete,
+    } = useTableGhosts(activeWorkspaceIdRef, activeWorkspaceRef, setNotice, afterDropRef);
 
     const activeWorkspace = useMemo(
         () => workspaces.find(w => w.id === activeWorkspaceId) ?? null,
@@ -307,71 +278,7 @@ export default function Home() {
         }
     }, [requireAccount]);
 
-    const requestTableDelete = useCallback((tableName: string) => setTableToDelete(tableName), []);
-
-    /**
-     * Sets or clears a table's colour, optimistically.
-     *
-     * Optimistic because the alternative is a visible lag on what reads as a pure UI gesture, and
-     * the cost of being wrong is one wrong colour until the next refresh — not lost work. On
-     * failure the previous decoration goes back, so the canvas never disagrees with the server
-     * for longer than the round trip.
-     */
-    const handleColourChange = useCallback(async (
-        tableName: string, colour: TagColour | undefined, record = true,
-    ) => {
-        const workspaceId = activeWorkspaceIdRef.current;
-        if (!workspaceId) return;
-
-        let previous: NodeDecoration | undefined;
-        setWorkspaces(prev => prev.map(w => {
-            if (w.id !== workspaceId) return w;
-            previous = w.decorations[tableName];
-            const next = { ...w.decorations };
-            const decoration = { ...next[tableName], colour };
-            if (!decoration.colour && !decoration.tag) delete next[tableName];
-            else next[tableName] = decoration;
-            return { ...w, decorations: next };
-        }));
-
-        try {
-            const decoration = { ...previous, colour };
-            if (!decoration.colour && !decoration.tag) {
-                await dbService.deleteCanvasMeta('table', tableName);
-            } else {
-                await dbService.setCanvasMeta('table', tableName, decoration);
-            }
-            // `record` is false when the call *is* an undo, so reversing a colour does not push
-            // a fresh entry and leave Ctrl+Z toggling between two colours for ever.
-            if (record) {
-                const before = previous?.colour;
-                history.push({
-                    label: colour ? `Colour ${tableName}` : `Clear colour on ${tableName}`,
-                    undo: async () => { await handleColourChangeRef.current(tableName, before, false); },
-                    redo: async () => { await handleColourChangeRef.current(tableName, colour, false); },
-                });
-            }
-        } catch (e) {
-            console.error('Could not save the table colour', e);
-            setWorkspaces(prev => prev.map(w => {
-                if (w.id !== workspaceId) return w;
-                const next = { ...w.decorations };
-                if (previous) next[tableName] = previous;
-                else delete next[tableName];
-                return { ...w, decorations: next };
-            }));
-        }
-    }, []);
-
-    /**
-     * The handler reaching itself, for the undo it registers.
-     *
-     * A `useCallback` cannot close over itself, and giving it a dependency on itself is circular.
-     * The ref is written in an effect, which is the sanctioned place — writing one during render
-     * is what `react-hooks/refs` forbids.
-     */
-    const handleColourChangeRef = useRef(handleColourChange);
-    useEffect(() => { handleColourChangeRef.current = handleColourChange; }, [handleColourChange]);
+    const handleColourChange = useTableColours(activeWorkspaceIdRef, setWorkspaces);
 
     /** Drops a file that is no longer ours, rather than leaving a tab that 403s on every action. */
     const closeForeignWorkspace = useCallback((workspaceId: string) => {
@@ -394,6 +301,16 @@ export default function Home() {
         });
     }, []);
 
+    /** The callbacks every table node carries. Read at call time, so each is defined by then. */
+    const nodeHandlers = (): TableNodeHandlers => ({
+        onRefresh: refreshActiveSchema,
+        onEdit: setEditingTable,
+        onDelete: requestTableDelete,
+        onDownloadCsv: handleDownloadCsv,
+        onNotesChanged: refreshNotes,
+        onColourChange: handleColourChange,
+    });
+
     // Deliberately dependency-free so the reference stays stable for the lifetime of the page
     // and the copy stored in every node's `data.onRefresh` is never stale.
     const refreshActiveSchema = useCallback(async () => {
@@ -403,35 +320,13 @@ export default function Home() {
             const response = await dbService.getSchema();
             const tables = response.tables;
             const edges = transformRelationshipsToEdges(response.relationships, tables);
-            const keys = keyColumnsByTable(response.relationships);
-            const junctions = junctionTables(tables, response.relationships);
 
             setWorkspaces(prev => prev.map(w => {
                 if (w.id !== workspaceId) return w;
 
-                const nodes: Node[] = tables.map((tbl, index) => {
-                    const existing = w.nodes.find(n => n.id === tbl.name);
-                    return {
-                        id: tbl.name,
-                        type: "tableNode",
-                        position: existing ? existing.position : defaultPosition(index, tables.length),
-                        data: {
-                            label: tbl.name,
-                            columns: tbl.columns,
-                            foreignKeyColumns: keys.foreignKeys[tbl.name] ?? [],
-                            referencedColumns: keys.referenced[tbl.name] ?? [],
-                            references: keys.references[tbl.name],
-                            isJunction: junctions.has(tbl.name),
-                            isView: tbl.isView,
-                            openNotes: existing?.data?.openNotes ?? 0,
-                            onRefresh: refreshActiveSchema,
-                            onEdit: setEditingTable,
-                            onDelete: requestTableDelete,
-                            onDownloadCsv: handleDownloadCsv,
-                            onNotesChanged: refreshNotes,
-                            onColourChange: handleColourChange,
-                        },
-                    };
+                const nodes: Node[] = buildTableNodes(tables, response.relationships, nodeHandlers(), {
+                    positionOf: name => w.nodes.find(n => n.id === name)?.position,
+                    openNotesOf: name => w.nodes.find(n => n.id === name)?.data?.openNotes ?? 0,
                 });
 
                 return {
@@ -449,8 +344,9 @@ export default function Home() {
             }
             console.error("Refresh failed", e);
         }
-        // All four are stable useCallbacks, so this array never actually changes - it is
-        // declared so the dependency is explicit rather than silently captured.
+        // All stable useCallbacks, so this array never actually changes - it is declared so the
+        // dependency is explicit rather than silently captured. nodeHandlers() reads only these.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [handleDownloadCsv, requestTableDelete, refreshNotes, closeForeignWorkspace, handleColourChange]);
 
     const transformSchemaToWorkspace = useCallback((
@@ -462,36 +358,15 @@ export default function Home() {
         savedPositions: Record<string, { x: number; y: number }> = {},
         decorations: Record<string, NodeDecoration> = {},
         groups: CanvasGroup[] = []
-    ): Workspace => {
-        const keys = keyColumnsByTable(relationships);
-        const junctions = junctionTables(tables, relationships);
-        return {
+    ): Workspace => ({
         id,
         name: fileName,
         isImported,
-        nodes: tables.map((tbl, index) => ({
-            id: tbl.name,
-            type: "tableNode",
-            // Restore the layout the user arranged; fall back to the default grid for a table
-            // that did not exist when the session was saved.
-            position: savedPositions[tbl.name] ?? defaultPosition(index, tables.length),
-            data: {
-                label: tbl.name,
-                columns: tbl.columns,
-                foreignKeyColumns: keys.foreignKeys[tbl.name] ?? [],
-                referencedColumns: keys.referenced[tbl.name] ?? [],
-                references: keys.references[tbl.name],
-                isJunction: junctions.has(tbl.name),
-                isView: tbl.isView,
-                openNotes: 0,
-                onRefresh: refreshActiveSchema,
-                onEdit: setEditingTable,
-                onDelete: requestTableDelete,
-                onDownloadCsv: handleDownloadCsv,
-                onNotesChanged: refreshNotes,
-                onColourChange: handleColourChange,
-            },
-        })),
+        // Restore the layout the user arranged; a table that did not exist when the session
+        // was saved goes on the default grid.
+        nodes: buildTableNodes(tables, relationships, nodeHandlers(), {
+            positionOf: name => savedPositions[name],
+        }),
         edges: transformRelationshipsToEdges(relationships, tables),
         relationships,
         fileData: {
@@ -501,8 +376,13 @@ export default function Home() {
         },
         decorations,
         groups,
-        };
-    }, [refreshActiveSchema, requestTableDelete, handleDownloadCsv, refreshNotes, handleColourChange]);
+    // nodeHandlers() reads only these, all stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }), [refreshActiveSchema, requestTableDelete, handleDownloadCsv, refreshNotes, handleColourChange]);
+
+    useEffect(() => {
+        afterDropRef.current = async () => { await refreshActiveSchema(); refreshNotes(); };
+    }, [refreshActiveSchema, refreshNotes]);
 
     /**
      * Rebuilds the open-file list for whoever is signed in now.
@@ -528,22 +408,7 @@ export default function Home() {
         groups: CanvasGroup[];
     }> => {
         try {
-            const meta = await dbService.getCanvasMeta();
-            const decorations = Object.fromEntries(meta
-                .filter(m => m.kind === 'table')
-                .map(m => [m.ref, {
-                    colour: m.payload.colour as TagColour | undefined,
-                    tag: typeof m.payload.tag === 'string' ? m.payload.tag : undefined,
-                }]));
-            const groups = meta
-                .filter(m => m.kind === 'group')
-                .map(m => ({
-                    id: m.ref,
-                    name: typeof m.payload.name === 'string' ? m.payload.name : 'Group',
-                    colour: m.payload.colour as TagColour | undefined,
-                    tables: Array.isArray(m.payload.tables) ? m.payload.tables as string[] : [],
-                }));
-            return { decorations, groups };
+            return canvasMetaToState(await dbService.getCanvasMeta());
         } catch (e) {
             console.error('Could not read canvas annotations', e);
             return { decorations: {}, groups: [] };
@@ -660,9 +525,16 @@ export default function Home() {
      * Nothing is created here and no workspace is opened, so cancelling the dialog leaves
      * exactly as much behind as never having picked the file.
      */
-    const handleFileChosen = async (file: File) => {
+    const handleFileChosen = async (chosen: File) => {
         setIsUploading(true);
         try {
+            // A .dbml file is converted to SQL in the browser and then imported like one.
+            let file = chosen;
+            if (/\.dbml$/i.test(chosen.name)) {
+                const prepared = prepareImport(chosen.name, await chosen.text(), 'dbml');
+                file = prepared.file;
+                announceConversionNotes(prepared.warnings);
+            }
             const plan = await dbService.analyzeUpload(file);
             setPendingImport({ file, plan });
         } catch (err: unknown) {
@@ -670,11 +542,30 @@ export default function Home() {
                 isOpen: true,
                 severity: 'error',
                 title: 'That file could not be read',
-                message: errorMessage(err) || `"${file.name}" could not be parsed as CSV or SQL.`,
+                message: errorMessage(err) || (err instanceof Error ? err.message : '')
+                    || `"${chosen.name}" could not be parsed as CSV, SQL or DBML.`,
             });
         } finally {
             setIsUploading(false);
         }
+    };
+
+    /** DBML that could not be carried across completely says what was left out. */
+    const announceConversionNotes = (warnings: string[]) => {
+        if (warnings.length === 0) return;
+        setNotice({
+            isOpen: true,
+            severity: 'warning',
+            title: 'Some of the DBML was left out',
+            message: 'The rest was converted to SQL and is shown in the preview.',
+            details: warnings,
+        });
+    };
+
+    /** Pasted or fetched text, already turned into a file: on to the same preview. */
+    const handleTextPrepared = (prepared: PreparedImport) => {
+        announceConversionNotes(prepared.warnings);
+        void handleFileChosen(prepared.file);
     };
 
     /** Step two: the user has seen the plan and corrected whatever the inference got wrong. */
@@ -785,16 +676,22 @@ export default function Home() {
             await dbService.loadExampleSchema();
 
             if (isNewFile) {
-                const schema = await dbService.getSchema();
-                await dbService.setWorkspaceName('example-store.sql');
+                // In parallel: neither depends on the other, and one after the other they were
+                // most of the wait after the example itself had been created.
+                const [schema] = await Promise.all([
+                    dbService.getSchema(),
+                    dbService.setWorkspaceName('example-store.sql'),
+                ]);
                 setWorkspaces(prev => [...prev, transformSchemaToWorkspace(
                     schema.tables, schema.relationships, 'example-store.sql', workspaceId!, false
                 )]);
+                // Changing the active file runs the notes effect, so no refreshNotes() here —
+                // calling it as well fetched the same notes twice.
                 setActiveWorkspaceId(workspaceId);
             } else {
                 await refreshActiveSchema();
+                refreshNotes();
             }
-            refreshNotes();
         } catch (err: unknown) {
             setNotice({
                 isOpen: true, severity: 'error', title: 'Could not load the example',
@@ -805,90 +702,6 @@ export default function Home() {
         }
     };
 
-    /**
-     * The delete, finally sent.
-     *
-     * Re-checks which file is open first. The workspace id travels as a request header, so a
-     * timer that outlived a file switch would drop a table of that name in whichever database
-     * is open *now*. Abandoning is the right answer: the user has moved on, and not deleting
-     * is the recoverable half of the two mistakes.
-     */
-    const commitTableDelete = useCallback(async (tableName: string, workspaceId: string) => {
-        if (activeWorkspaceIdRef.current !== workspaceId) {
-            setGhosts(prev => prev.filter(g => g.table !== tableName));
-            return;
-        }
-        try {
-            await dbService.dropTable(tableName);
-            setGhosts(prev => prev.filter(g => g.table !== tableName));
-            await refreshActiveSchema();
-            refreshNotes();
-        } catch (err: unknown) {
-            const response = err && typeof err === 'object' && 'response' in err
-                ? (err as { response?: { status?: number; data?: { error?: string; referencedBy?: string[] } } }).response
-                : undefined;
-            // The node comes back to life rather than staying a ghost over a table that is
-            // still there — the canvas must not go on claiming something the database denies.
-            setGhosts(prev => prev.filter(g => g.table !== tableName));
-            setNotice({
-                isOpen: true,
-                // 409 is the expected, meaningful case: another table depends on this one.
-                severity: response?.status === 409 ? 'warning' : 'error',
-                title: response?.status === 409 ? 'Table is still referenced' : 'Could not delete the table',
-                message: response?.data?.error || `${tableName} could not be deleted.`,
-                details: response?.data?.referencedBy?.map(t => `${t} has a foreign key pointing at this table`),
-            });
-        }
-    }, [refreshActiveSchema, refreshNotes]);
-
-    /**
-     * Confirming a delete starts a countdown; it does not call the backend.
-     *
-     * The alternative — drop it now and offer to put it back — means snapshotting every row,
-     * every index and every constraint, then replaying them in an order that satisfies the
-     * foreign keys. Deferring needs none of that, and it is the version that fails safely: a
-     * closed tab, a dead network or a reloaded page all leave the table exactly where it was.
-     */
-    const confirmTableDelete = () => {
-        const tableName = tableToDelete;
-        const workspaceId = activeWorkspaceIdRef.current;
-        if (!tableName || !workspaceId) return;
-        setTableToDelete(null);
-
-        /*
-         * Refused here rather than seven seconds from here.
-         *
-         * The backend is still the authority and answers 409 for this, but it would answer it
-         * *after* the countdown — so the user would watch a table fade out and then be told it
-         * was never going anywhere. Everything needed to know the answer is already on screen.
-         */
-        const referencedBy = Array.from(new Set(
-            (activeWorkspaceRef.current?.relationships ?? [])
-                .filter(rel => rel.targetTable === tableName && rel.sourceTable !== tableName)
-                .map(rel => rel.sourceTable)
-        ));
-        if (referencedBy.length > 0) {
-            setNotice({
-                isOpen: true,
-                severity: 'warning',
-                title: 'Table is still referenced',
-                message: `${tableName} cannot be deleted while other tables point at it. `
-                    + 'Remove those foreign keys first, or delete those tables.',
-                details: referencedBy.map(t => `${t} has a foreign key pointing at this table`),
-            });
-            return;
-        }
-
-        setGhosts(prev => prev.some(g => g.table === tableName && g.workspaceId === workspaceId)
-            ? prev
-            : [...prev, { table: tableName, workspaceId }]);
-
-        const timer = window.setTimeout(() => {
-            ghostTimers.current.delete(tableName);
-            void commitTableDelete(tableName, workspaceId);
-        }, GHOST_MS);
-        ghostTimers.current.set(tableName, timer);
-    };
 
 
     const confirmClear = async () => {
@@ -902,7 +715,10 @@ export default function Home() {
         }
         // The schema this conversation was about no longer exists, so neither should the
         // conversation. Every other file's is untouched.
-        if (closingId) chatStore.forget(closingId);
+        if (closingId) {
+            chatStore.forget(closingId);
+            forgetHistory(closingId);
+        }
 
         const remaining = workspaces.filter(w => w.id !== closingId);
         const nextId = remaining.length > 0 ? remaining[remaining.length - 1].id : null;
@@ -996,6 +812,7 @@ export default function Home() {
         // open-file list: those workspaces are no longer this caller's, and a second user on a
         // shared browser must not find the first one's talk waiting for them.
         chatStore.forgetAll();
+        forgetAllHistory();
         clearSession();
     };
 
@@ -1075,92 +892,8 @@ export default function Home() {
 
     /* ── Domain groups ───────────────────────────────────────────────────── */
 
-    /**
-     * Writes a group, or removes it when `group` is null, and keeps the canvas in step.
-     *
-     * One function for all four operations — create, rename, recolour, ungroup — because they are
-     * the same write with a different payload, and because that makes each one's inverse another
-     * call to this with the previous value. `record: false` is how an undo avoids pushing an
-     * entry of its own and leaving Ctrl+Z toggling for ever.
-     */
-    const writeGroup = useCallback(async (
-        id: string, group: CanvasGroup | null, label: string, record = true,
-    ) => {
-        const workspaceId = activeWorkspaceIdRef.current;
-        if (!workspaceId) return;
-
-        let previous: CanvasGroup | undefined;
-        setWorkspaces(prev => prev.map(w => {
-            if (w.id !== workspaceId) return w;
-            previous = w.groups.find(g => g.id === id);
-            const others = w.groups.filter(g => g.id !== id);
-            return { ...w, groups: group ? [...others, group] : others };
-        }));
-
-        try {
-            if (group) await dbService.setCanvasMeta('group', id, group);
-            else await dbService.deleteCanvasMeta('group', id);
-
-            if (record) {
-                const before = previous;
-                history.push({
-                    label,
-                    undo: async () => { await writeGroupRef.current(id, before ?? null, label, false); },
-                    redo: async () => { await writeGroupRef.current(id, group, label, false); },
-                });
-            }
-        } catch (e) {
-            console.error('Could not save the group', e);
-            setWorkspaces(prev => prev.map(w => {
-                if (w.id !== workspaceId) return w;
-                const others = w.groups.filter(g => g.id !== id);
-                return { ...w, groups: previous ? [...others, previous] : others };
-            }));
-        }
-    }, []);
-
-    /** As with `handleColourChange`: a useCallback cannot close over itself. */
-    const writeGroupRef = useRef(writeGroup);
-    useEffect(() => { writeGroupRef.current = writeGroup; }, [writeGroup]);
-
-    const handleCreateGroup = useCallback((tables: string[]) => {
-        // Pressing the toolbar button with nothing selected is how most people will first meet
-        // this, so it answers rather than doing nothing: the gesture that selects tables is
-        // invisible, and a button that silently ignores you teaches nothing.
-        if (tables.length < 2) {
-            showToast({
-                message: 'Select two or more tables first — hold Shift and drag a box around them, '
-                    + 'or Ctrl-click each one.',
-                tone: 'error',
-            });
-            return;
-        }
-        // Letters, digits and underscores only: the backend validates the reference as an
-        // identifier and would rewrite a hyphen, leaving the two sides naming different groups.
-        const id = `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-        const existing = activeWorkspaceRef.current?.groups.length ?? 0;
-        void writeGroup(id, { id, name: `Group ${existing + 1}`, tables }, `Group ${tables.length} tables`);
-        showToast({ message: `Grouped ${tables.length} tables`, tone: 'ok' });
-    }, [writeGroup, showToast]);
-
-    const handleRenameGroup = useCallback((id: string, name: string) => {
-        const group = activeWorkspaceRef.current?.groups.find(g => g.id === id);
-        if (!group) return;
-        void writeGroup(id, { ...group, name }, `Rename group to ${name}`);
-    }, [writeGroup]);
-
-    const handleGroupColour = useCallback((id: string, colour: TagColour | undefined) => {
-        const group = activeWorkspaceRef.current?.groups.find(g => g.id === id);
-        if (!group) return;
-        void writeGroup(id, { ...group, colour }, `Colour group ${group.name}`);
-    }, [writeGroup]);
-
-    const handleUngroup = useCallback((id: string) => {
-        const group = activeWorkspaceRef.current?.groups.find(g => g.id === id);
-        if (!group) return;
-        void writeGroup(id, null, `Ungroup ${group.name}`);
-        showToast({ message: `Removed the ${group.name} box. The tables are untouched.`, tone: 'ok' });
-    }, [writeGroup, showToast]);
+    const { handleCreateGroup, handleRenameGroup, handleGroupColour, handleUngroup } =
+        useDomainGroups(activeWorkspaceIdRef, activeWorkspaceRef, setWorkspaces, showToast);
 
     /**
      * Everything the canvas draws: the tables, and the boxes derived from wherever they are.
@@ -1184,8 +917,33 @@ export default function Home() {
         ];
     }, [activeWorkspace, nodesWithNotes, handleRenameGroup, handleGroupColour, handleUngroup]);
 
-    const { handleNodeDragStart, handleNodeDrag, handleNodeDragStop } =
+    const { handleNodeDragStart, handleNodeDrag, handleNodeDragStop, placeNodes } =
         useNodeDragHistory(activeWorkspaceIdRef, activeWorkspaceRef, setWorkspaces);
+
+    /**
+     * Arranges the tables by their relationships, as one undoable step.
+     *
+     * Sizes come from React Flow's own measurements where it has them, so a forty-column table
+     * gets the room it actually takes; the estimate is only for a node not yet drawn.
+     */
+    const handleAutoLayout = useCallback(() => {
+        const workspace = activeWorkspaceRef.current;
+        if (!workspace || workspace.nodes.length === 0) return;
+        const byId = new Map(workspace.nodes.map(n => [n.id, n]));
+        const after = autoLayout(workspace.nodes.map(n => n.id), workspace.relationships, id => {
+            const node = byId.get(id);
+            const columns = (node?.data?.columns as unknown[] | undefined)?.length ?? 4;
+            return { width: node?.width ?? 265, height: node?.height ?? 56 + columns * 22 };
+        });
+        const before = Object.fromEntries(workspace.nodes.map(n => [n.id, { ...n.position }]));
+        placeNodes(after);
+        history.push({
+            label: 'Tidy layout',
+            undo: async () => placeNodes(before),
+            redo: async () => placeNodes(after),
+        });
+        showToast({ message: 'Arranged the tables by their relationships', tone: 'ok' });
+    }, [placeNodes, showToast]);
 
     const closeExplorer = useCallback(() => setIsExplorerOpen(false), []);
     const openScratchpad = useCallback(() => setScratchpadOpen(true), []);
@@ -1208,6 +966,8 @@ export default function Home() {
         <div className="h-[100dvh] w-full bg-surface text-ink-800 flex flex-col overflow-hidden">
             <Header
                 onUpload={handleFileChosen}
+                onImportText={() => setImportTextOpen(true)}
+                onVersions={() => setVersionsOpen(true)}
                 onNewFile={() => setNewFileModalOpen(true)}
                 isUploading={isUploading}
                 fileName={activeWorkspace?.name || null}
@@ -1247,7 +1007,33 @@ export default function Home() {
                 />
 
                 <main className="flex-1 flex flex-col relative h-full min-w-0">
-                    {activeWorkspace ? (
+                    {activeWorkspace && isPhone && (
+                        <div role="tablist" aria-label="How to show the file"
+                             className="flex shrink-0 gap-1 border-b border-line bg-surface p-1.5">
+                            {(['list', 'diagram'] as const).map(mode => (
+                                <button
+                                    key={mode}
+                                    type="button"
+                                    role="tab"
+                                    aria-selected={phoneView === mode}
+                                    onClick={() => setPhoneView(mode)}
+                                    className={`flex-1 rounded-md py-1.5 text-xs font-semibold transition-colors ${
+                                        phoneView === mode ? 'bg-brand-50 text-brand-700' : 'text-ink-500'}`}
+                                >
+                                    {mode === 'list' ? 'Tables' : 'Diagram'}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                    {activeWorkspace && showTableList ? (
+                        <TableListView
+                            tables={activeWorkspace.nodes.map(n => ({
+                                name: n.id, columns: n.data.columns, isView: n.data.isView,
+                            }))}
+                            relationships={activeWorkspace.relationships}
+                            onEditTable={setEditingTable}
+                        />
+                    ) : activeWorkspace ? (
                         <Visualizer
                             key={activeWorkspace.id}
                             nodes={canvasNodes}
@@ -1262,46 +1048,18 @@ export default function Home() {
                             onRedo={requestRedo}
                             onCreateRelationship={handleCreateRelationship}
                             onCreateGroup={handleCreateGroup}
+                            onAutoLayout={handleAutoLayout}
                             toast={<ActionToast toast={toast} onDismiss={dismissToast} />}
                             chat={<ChatLauncher isOpen={isChatOpen} onToggle={toggleChat}
                                                 hasConversation={hasConversation} />}
                         />
-                    ) : isRestoring ? (
-                        <div className="flex-1 flex flex-col items-center justify-center bg-surface text-ink-400 gap-3">
-                            <Loader2 size={28} className="animate-spin text-brand-500" />
-                            <p className="text-sm text-ink-500">Restoring your files...</p>
-                        </div>
                     ) : (
-                        <div className="flex-1 flex flex-col items-center justify-center bg-surface text-ink-400 gap-4 px-6">
-                            <div className="w-16 h-16 bg-ink-100 rounded-full flex items-center justify-center shadow-inner">
-                                <FileCode size={32} className="opacity-40" />
-                            </div>
-                            <div className="text-center max-w-sm">
-                                <p className="text-base font-semibold text-ink-700 mb-1">Nothing open yet</p>
-                                <p className="text-sm text-ink-500 mb-5 leading-relaxed">
-                                    Load the example to see what a schema looks like here, or start
-                                    an empty file of your own.
-                                </p>
-                                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-3">
-                                    <button
-                                        onClick={handleLoadExample}
-                                        disabled={isLoadingExample}
-                                        className="px-4 py-2.5 brand-gradient brand-gradient-hover disabled:opacity-60 text-white rounded-md text-sm font-semibold flex items-center justify-center gap-2 shadow-glow-sm transition-all"
-                                    >
-                                        {isLoadingExample
-                                            ? <Loader2 size={16} className="animate-spin" />
-                                            : <Sparkles size={16} />}
-                                        Show me an example
-                                    </button>
-                                    <button
-                                        onClick={() => setNewFileModalOpen(true)}
-                                        className="px-4 py-2.5 bg-surface border border-ink-300 hover:bg-ink-50 text-ink-700 rounded-md text-sm font-semibold flex items-center justify-center gap-2 transition-colors"
-                                    >
-                                        <Plus size={16} /> New file
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
+                        <EmptyEditorState
+                            isRestoring={isRestoring}
+                            isLoadingExample={isLoadingExample}
+                            onLoadExample={handleLoadExample}
+                            onNewFile={() => setNewFileModalOpen(true)}
+                        />
                     )}
                     {/* A sibling of the canvas, never a child of it: the visualiser should not
                         own a text editor, and a scrolling editor inside a zoomable transformed
@@ -1309,7 +1067,9 @@ export default function Home() {
                         against otherwise. */}
                     {activeWorkspace && (
                         <SqlScratchpad
-                            key={scratchpadSeed?.n ?? 'blank'}
+                            // Per file as well as per seed: each file has its own history.
+                            key={`${activeWorkspace.id}:${scratchpadSeed?.n ?? 'blank'}`}
+                            workspaceId={activeWorkspace.id}
                             initialSql={scratchpadSeed?.sql}
                             isOpen={isScratchpadOpen}
                             onToggle={() => setScratchpadOpen(v => !v)}
@@ -1423,7 +1183,7 @@ export default function Home() {
                 detail="The table stays on the canvas for a few seconds with an Undo button before the delete is sent. If another table's foreign key points at it, the delete is refused instead of leaving broken references behind."
                 confirmLabel="Delete table"
                 onConfirm={confirmTableDelete}
-                onClose={() => setTableToDelete(null)}
+                onClose={cancelTableDelete}
             />
 
             <ConfirmDialog
@@ -1452,6 +1212,33 @@ export default function Home() {
             )}
 
             {isInfoOpen && <InfoModal isOpen onClose={() => setInfoOpen(false)} />}
+
+            {isVersionsOpen && activeWorkspace && (
+                <VersionsModal
+                    isOpen
+                    onClose={() => setVersionsOpen(false)}
+                    fileName={activeWorkspace.name}
+                    current={{ tables: activeWorkspace.fileData.tables, relationships: activeWorkspace.relationships }}
+                    otherFiles={workspaces.filter(w => w.id !== activeWorkspace.id).map(w => ({ id: w.id, name: w.name }))}
+                    hasAccount={!!user}
+                    onNeedsAccount={() => requireAccount('Saving versions of a file')}
+                    onRestored={async () => {
+                        // Every undo entry before this describes a file that no longer exists.
+                        await handleScratchpadRanDdl();
+                        refreshNotes();
+                    }}
+                    onOpenInScratchpad={sendToScratchpad}
+                />
+            )}
+
+            {isImportTextOpen && (
+                <ImportTextModal
+                    isOpen
+                    onClose={() => setImportTextOpen(false)}
+                    onPrepared={handleTextPrepared}
+                    defaultName={`Untitled-${workspaces.length + 1}.sql`}
+                />
+            )}
 
             {isNewFileModalOpen && (
                 <NewFileModal

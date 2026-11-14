@@ -17,6 +17,13 @@ import com.dbviewer.app.sql.SqlScriptSplitter;
 import com.dbviewer.app.sql.SqlTypeMapper;
 import com.dbviewer.app.workspace.WorkspaceContext;
 import com.dbviewer.app.service.WorkspaceOwnershipService;
+import com.dbviewer.app.service.helper.FileImporter;
+import com.dbviewer.app.service.helper.SchemaReader;
+import com.dbviewer.app.service.helper.ScratchpadRunner;
+import com.dbviewer.app.service.helper.SqlIdentifiers;
+import com.dbviewer.app.service.helper.SqliteDdlText;
+import com.dbviewer.app.service.helper.SqliteTableRebuilder;
+import com.dbviewer.app.service.helper.SqliteTableRebuilder.RebuildSpec;
 import com.dbviewer.app.workspace.WorkspaceManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -38,6 +45,10 @@ public class DatabaseServiceImpl implements DatabaseService {
     private final WorkspaceManager workspaceManager;
     private final DatabaseConfig databaseConfig;
     private final WorkspaceOwnershipService ownershipService;
+    private final SqliteTableRebuilder tableRebuilder;
+    private final ScratchpadRunner scratchpadRunner;
+    private final FileImporter fileImporter;
+    private final SchemaReader schemaReader;
 
     /**
      * Every statement below runs against the workspace bound to the current request,
@@ -59,303 +70,35 @@ public class DatabaseServiceImpl implements DatabaseService {
         return q + identifier + q;
     }
 
-    /**
-     * Handles CSV and SQL file uploads. Mirrors HandleFileUpload in Go.
-     */
+    // ─── Import ───────────────────────────────────────────────────────────────────
+
+    /** Handles CSV and SQL file uploads; see {@link FileImporter}. */
     @Override
     public Map<String, Object> handleFileUpload(MultipartFile file) throws Exception {
-        return handleFileUpload(file, Map.of());
+        return fileImporter.importFile(file, Map.of());
     }
 
     /**
      * Runs an import the user has already seen and approved.
      *
      * @param typeOverrides the types the user corrected in the pre-flight dialog, keyed by
-     *                      column name for a CSV and by {@code table.column} for a script. An
-     *                      empty map means "use what was inferred", which is what the plain
-     *                      upload path passes.
+     *                      column name for a CSV and by {@code table.column} for a script
      */
     @Override
     public Map<String, Object> handleFileUpload(MultipartFile file,
                                                 Map<String, String> typeOverrides) throws Exception {
-        String filename = file.getOriginalFilename() != null
-                ? file.getOriginalFilename().toLowerCase() : "";
-        Map<String, String> overrides = typeOverrides == null ? Map.of() : typeOverrides;
-
-        if (filename.endsWith(".sql")) {
-            return handleSqlUpload(file, overrides);
-        } else if (filename.endsWith(".csv")) {
-            return handleCsvUpload(file, overrides);
-        } else {
-            throw new IllegalArgumentException("Only .csv and .sql files are supported");
-        }
+        return fileImporter.importFile(file, typeOverrides);
     }
 
-    /**
-     * Reports what an upload would create, without creating any of it.
-     *
-     * <p>Deliberately free of side effects — it never touches the workspace database — so the
-     * dialog it feeds can be cancelled with nothing to undo.
-     */
-    /**
-     * The most statements one {@code .sql} import may run, and the most rows one CSV may load.
-     * An import runs on a request thread against a single free-tier instance; without a cap, one
-     * file can occupy it for minutes. Both are far above any schema dump a person uploads.
-     */
-    @org.springframework.beans.factory.annotation.Value("${app.import.max-statements:20000}")
-    private int maxImportStatements = 20_000;
-
-    @org.springframework.beans.factory.annotation.Value("${app.import.max-csv-rows:200000}")
-    private int maxCsvRows = 200_000;
-
-    private void checkStatementCount(int count) {
-        if (count > maxImportStatements) {
-            throw new IllegalArgumentException("That script has " + count + " statements; an import "
-                    + "can run at most " + maxImportStatements + ". Split it into smaller files.");
-        }
-    }
-
-    private void checkCsvRowCount(long rows) {
-        if (rows > maxCsvRows) {
-            throw new IllegalArgumentException("That CSV has about " + rows + " rows; an import can "
-                    + "load at most " + maxCsvRows + ". Split it into smaller files.");
-        }
-    }
-
+    /** Reports what an upload would create, without creating any of it. */
     @Override
     public ImportPlan analyzeUpload(MultipartFile file) throws Exception {
-        String filename = file.getOriginalFilename() == null ? "" : file.getOriginalFilename();
-        String lower = filename.toLowerCase();
-        if (!lower.endsWith(".sql") && !lower.endsWith(".csv")) {
-            throw new IllegalArgumentException("Only .csv and .sql files are supported");
-        }
-        String content = new String(file.getBytes(), StandardCharsets.UTF_8);
-        // Checked here as well as on upload, so the preview refuses a file the upload would.
-        if (lower.endsWith(".sql")) {
-            checkStatementCount(SqlScriptSplitter.split(content).size());
-        } else {
-            checkCsvRowCount(content.lines().count() - 1);
-        }
-        return ImportAnalyzer.analyze(filename, content);
-    }
-
-    /**
-     * Executes an uploaded .sql script one statement at a time, because JdbcTemplate cannot run
-     * a multi-statement string.
-     *
-     * <p>Returns a report rather than a bare success message: a dump is rarely 100% portable, and
-     * silently swallowing what could not be run is how an import ends up looking like it worked
-     * while producing an empty canvas.
-     */
-    private Map<String, Object> handleSqlUpload(MultipartFile file,
-                                                Map<String, String> typeOverrides) throws Exception {
-        String content = new String(file.getBytes(), StandardCharsets.UTF_8);
-
-        List<String> statements = SqlScriptSplitter.split(content);
-        checkStatementCount(statements.size());
-        List<String> warnings = new ArrayList<>();
-        SqlDialect dialect = SqlDialectDetector.detect(content);
-
-        if (isSqlite()) {
-            SqlDialectTranslator.Result translated =
-                    SqlDialectTranslator.translate(statements, dialect, typeOverrides);
-            statements = translated.statements();
-            warnings.addAll(translated.notes());
-        }
-
-        List<String> failures = new ArrayList<>();
-        List<String> toRun = statements;
-        java.util.function.IntSupplier runAll = () -> {
-            int count = 0;
-            for (String statement : toRun) {
-                try {
-                    jdbc().execute(statement);
-                    count++;
-                } catch (Exception e) {
-                    String reason = rootCauseMessage(e);
-                    failures.add(summarizeStatement(statement) + " - " + reason);
-                    log.warn("Skipping statement ({}): {}", reason, summarizeStatement(statement));
-                }
-            }
-            return count;
-        };
-        // On SQLite the whole import is one transaction: a crash halfway leaves the file as it
-        // was rather than with half its tables, and thousands of INSERTs commit once instead of
-        // once each. A statement that fails still only undoes itself, so skipping one and
-        // carrying on works exactly as before. A script with its own BEGIN/COMMIT is run as
-        // written, since a transaction cannot be nested inside another.
-        int executed = isSqlite() && !managesItsOwnTransactions(toRun)
-                ? workspaceManager.currentTransaction().execute(status -> runAll.getAsInt())
-                : runAll.getAsInt();
-
-        warnings.addAll(failures);
-
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("message", failures.isEmpty()
-                ? "SQL executed successfully"
-                : "SQL imported with " + failures.size() + " statement(s) skipped");
-        result.put("type", "sql");
-        // The engine the file was written for. Worth reporting even on a clean import: it is the
-        // difference between "nothing was skipped" and "nothing was skipped, and it read this as
-        // a PostgreSQL dump", which is what tells the user the translation was the right one.
-        result.put("dialect", dialect.id());
-        result.put("dialectLabel", dialect.label());
-        result.put("statementsExecuted", executed);
-        result.put("statementsSkipped", failures.size());
-        // Capped so a pathological dump cannot return a megabyte of warnings.
-        result.put("warnings", warnings.size() > 25 ? warnings.subList(0, 25) : warnings);
-        result.put("warningCount", warnings.size());
-        return result;
-    }
-
-    private static final Pattern TRANSACTION_CONTROL = Pattern.compile(
-            "^\\s*(BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|START\\s+TRANSACTION)\\b",
-            Pattern.CASE_INSENSITIVE);
-
-    private static boolean managesItsOwnTransactions(List<String> statements) {
-        return statements.stream().anyMatch(sql -> TRANSACTION_CONTROL.matcher(sql).find());
+        return fileImporter.analyze(file);
     }
 
     /** Runs {@code work} in one transaction on the current workspace's database. */
     private void inTransaction(Runnable work) {
         workspaceManager.currentTransaction().executeWithoutResult(status -> work.run());
-    }
-
-    private String summarizeStatement(String statement) {
-        String oneLine = statement.replaceAll("\\s+", " ").trim();
-        return oneLine.length() <= 80 ? oneLine : oneLine.substring(0, 80) + "...";
-    }
-
-    private String rootCauseMessage(Throwable error) {
-        Throwable cause = error;
-        while (cause.getCause() != null && cause.getCause() != cause) {
-            cause = cause.getCause();
-        }
-        String message = cause.getMessage();
-        return message == null || message.isBlank() ? cause.getClass().getSimpleName() : message.trim();
-    }
-
-    /**
-     * Creates a table from a CSV file and loads its rows.
-     *
-     * <p>Column types come from {@link ColumnTypeInference} unless the user corrected them in the
-     * pre-flight dialog, in which case their choice wins outright — the whole point of showing
-     * the plan is that the person looking at the data knows things the heuristic cannot.
-     */
-    private Map<String, Object> handleCsvUpload(MultipartFile file,
-                                                Map<String, String> typeOverrides) throws Exception {
-        String originalName = file.getOriginalFilename() != null
-                ? file.getOriginalFilename() : "upload.csv";
-        String tableName = safeIdentifier(CsvReader.tableNameFor(originalName), "table name");
-
-        CsvReader.CsvTable csv = CsvReader.read(
-                new String(file.getBytes(), StandardCharsets.UTF_8));
-        if (csv.isEmpty()) {
-            throw new IllegalArgumentException("CSV is empty");
-        }
-        checkCsvRowCount(csv.rows().size());
-
-        List<String> headers = csv.headers();
-        List<ColumnTypeInference.Proposal> proposals = ColumnTypeInference.propose(csv);
-
-        List<String> resolvedTypes = new ArrayList<>();
-        for (int i = 0; i < headers.size(); i++) {
-            String header = headers.get(i);
-            String chosen = firstNonBlank(
-                    typeOverrides.get(header),
-                    typeOverrides.get(tableName + "." + header),
-                    proposals.get(i).inferredType());
-            resolvedTypes.add(storageType(chosen));
-        }
-
-        jdbc().execute(buildCsvCreateTableSql(tableName, headers, resolvedTypes));
-
-        int inserted = csv.rows().isEmpty() ? 0 : insertCsvRows(tableName, csv);
-
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("message", "CSV uploaded successfully");
-        result.put("tableName", tableName);
-        result.put("columns", headers);
-        result.put("type", "csv");
-        result.put("rowsInserted", inserted);
-        result.put("statementsExecuted", inserted + 1);
-        result.put("statementsSkipped", csv.rows().size() - inserted);
-        result.put("warnings", List.of());
-        result.put("warningCount", 0);
-        return result;
-    }
-
-    private static String firstNonBlank(String... candidates) {
-        for (String candidate : candidates) {
-            if (candidate != null && !candidate.isBlank()) {
-                return candidate.trim();
-            }
-        }
-        return "VARCHAR(255)";
-    }
-
-    /**
-     * Validates a requested column type and renders it for the engine actually in use.
-     *
-     * <p>A type cannot be a bind parameter, so anything that is not a plain type name with an
-     * optional precision is rejected rather than escaped.
-     */
-    private String storageType(String requested) {
-        if (!requested.matches("(?i)[A-Za-z][A-Za-z0-9 ]*(\\(\\s*\\d+\\s*(,\\s*\\d+\\s*)?\\))?")) {
-            throw new IllegalArgumentException("Invalid column type: \"" + requested + "\"");
-        }
-        String sqliteForm = SqlTypeMapper.toSqlite(requested, SqlDialect.GENERIC);
-        return isMysql() ? SqlTypeMapper.fromSqlite(sqliteForm, SqlDialect.MYSQL) : sqliteForm;
-    }
-
-    private String buildCsvCreateTableSql(String tableName, List<String> headers, List<String> types) {
-        List<String> definitions = new ArrayList<>();
-        boolean hasId = headers.stream().anyMatch(h -> h.equalsIgnoreCase("id"));
-
-        // Row editing and deletion address a row by its id, so a CSV without one gets a key of
-        // its own rather than being read-only once it is imported.
-        if (!hasId) {
-            definitions.add(quote("id") + " " + (isMysql()
-                    ? Constants.Ddl.MYSQL_AUTO_INCREMENT_PK
-                    : Constants.Ddl.SQLITE_AUTO_INCREMENT_PK));
-        }
-
-        for (int i = 0; i < headers.size(); i++) {
-            String header = headers.get(i);
-            String type = header.equalsIgnoreCase("id")
-                    ? (isMysql() ? "INT AUTO_INCREMENT PRIMARY KEY" : "INTEGER PRIMARY KEY")
-                    : types.get(i);
-            definitions.add(quote(header) + " " + type);
-        }
-
-        return String.format(Constants.Tables.CREATE_TABLE_IF_NOT_EXISTS,
-                quote(tableName), String.join(", ", definitions));
-    }
-
-    /**
-     * Loads the rows in one batch.
-     *
-     * <p>An empty cell is written as NULL rather than as an empty string: on a column the user
-     * has just declared to be a number or a date, {@code ''} is neither missing nor valid.
-     */
-    private int insertCsvRows(String tableName, CsvReader.CsvTable csv) {
-        List<String> headers = csv.headers();
-        String columnList = headers.stream().map(this::quote).collect(Collectors.joining(", "));
-        String placeholders = headers.stream().map(h -> "?").collect(Collectors.joining(", "));
-        String sql = String.format(Constants.Rows.INSERT, quote(tableName), columnList, placeholders);
-
-        List<Object[]> batch = new ArrayList<>(csv.rows().size());
-        for (List<String> row : csv.rows()) {
-            Object[] args = new Object[headers.size()];
-            for (int i = 0; i < headers.size(); i++) {
-                String value = csv.valueAt(row, i);
-                args[i] = value == null || value.isEmpty() ? null : value;
-            }
-            batch.add(args);
-        }
-
-        int[] results = jdbc().batchUpdate(sql, batch);
-        return results.length;
     }
 
     // ─── Query Execution ──────────────────────────────────────────────────────────
@@ -369,7 +112,7 @@ public class DatabaseServiceImpl implements DatabaseService {
             throw new IllegalArgumentException("Nothing to run.");
         }
         // The scratchpad's guard. The application's bookkeeping tables are not the caller's.
-        refuseInternalTables(sql);
+        ScratchpadRunner.refuseInternalTables(sql);
         String trimmed = sql.trim().toUpperCase();
         if (trimmed.startsWith("SELECT") || trimmed.startsWith("PRAGMA") || trimmed.startsWith("SHOW")) {
             return jdbc().queryForList(sql);
@@ -427,7 +170,7 @@ public class DatabaseServiceImpl implements DatabaseService {
             tables.add(TableInfo.builder().name(tbl).columns(getColumnsForTable(tbl))
                     .rows(List.of()).build());
             relationships.addAll(getForeignKeys(tbl));
-            List<String> described = describeIndexes(tbl);
+            List<String> described = schemaReader.describeIndexes(tbl);
             if (!described.isEmpty()) {
                 indexes.put(tbl, described);
             }
@@ -435,7 +178,7 @@ public class DatabaseServiceImpl implements DatabaseService {
         for (String viewName : getViewNames()) {
             tables.add(TableInfo.builder().name(viewName).columns(getColumnsForTable(viewName))
                     .rows(List.of()).view(true).build());
-            String definition = viewDefinition(viewName);
+            String definition = schemaReader.viewDefinition(viewName);
             if (definition != null && !definition.isBlank()) {
                 views.put(viewName, definition.strip());
             }
@@ -444,108 +187,21 @@ public class DatabaseServiceImpl implements DatabaseService {
                 "indexes", indexes, "views", views);
     }
 
-    /**
-     * A table's indexes as one line each, for a reader that cannot run {@code PRAGMA}.
-     *
-     * <p>Leaves out what the column lines already say: the primary key, and a UNIQUE on a single
-     * column (rendered on the column itself). What remains is exactly what a question about
-     * indexing needs and the column list does not show — every {@code CREATE INDEX}, and each
-     * composite UNIQUE.
-     */
-    private List<String> describeIndexes(String tableName) {
-        List<String> lines = new ArrayList<>();
-        try {
-            if (isMysql()) {
-                Map<String, List<String>> columns = new LinkedHashMap<>();
-                Map<String, Boolean> unique = new HashMap<>();
-                jdbc().query(Constants.Introspection.MYSQL_INDEX_COLUMNS, rs -> {
-                    String index = rs.getString("INDEX_NAME");
-                    columns.computeIfAbsent(index, k -> new ArrayList<>()).add(rs.getString("COLUMN_NAME"));
-                    unique.put(index, rs.getInt("NON_UNIQUE") == 0);
-                }, tableName);
-                columns.forEach((index, cols) -> {
-                    if ("PRIMARY".equalsIgnoreCase(index)) return;
-                    boolean isUnique = unique.getOrDefault(index, false);
-                    if (isUnique && cols.size() == 1) return;
-                    lines.add((isUnique ? "UNIQUE INDEX " : "INDEX ") + index
-                            + " (" + String.join(", ", cols) + ")");
-                });
-                return lines;
-            }
-
-            record SqliteIndex(String name, boolean unique, String origin) { }
-            List<SqliteIndex> found = new ArrayList<>();
-            jdbc().query(String.format(Constants.Introspection.SQLITE_INDEX_LIST,
-                    escapeQuoted(tableName)), rs -> {
-                found.add(new SqliteIndex(rs.getString("name"), rs.getInt("unique") == 1,
-                        rs.getString("origin")));
-            });
-            for (SqliteIndex index : found) {
-                if ("pk".equalsIgnoreCase(index.origin())) continue;
-                List<String> cols = new ArrayList<>();
-                jdbc().query(String.format(Constants.Introspection.SQLITE_INDEX_INFO,
-                        escapeQuoted(index.name())), rs -> { cols.add(rs.getString("name")); });
-                if (cols.isEmpty()) continue;
-                if ("u".equalsIgnoreCase(index.origin())) {
-                    // A UNIQUE in the table definition. One column is already on the column line.
-                    if (cols.size() > 1) lines.add("UNIQUE (" + String.join(", ", cols) + ")");
-                    continue;
-                }
-                lines.add((index.unique() ? "UNIQUE INDEX " : "INDEX ") + index.name()
-                        + " (" + String.join(", ", cols) + ")");
-            }
-        } catch (Exception e) {
-            // The schema without its indexes is still the schema; refusing the read over it
-            // would not be an improvement.
-            log.debug("Could not describe indexes for {}: {}", tableName, e.getMessage());
-        }
-        return lines;
-    }
-
-    private String viewDefinition(String viewName) {
-        try {
-            List<String> sql = jdbc().queryForList(isMysql()
-                    ? Constants.Introspection.MYSQL_VIEW_DDL
-                    : Constants.Introspection.SQLITE_VIEW_DDL, String.class, viewName);
-            return sql.isEmpty() ? null : sql.get(0);
-        } catch (Exception e) {
-            log.debug("Could not read the definition of view {}: {}", viewName, e.getMessage());
-            return null;
-        }
-    }
-
-    /** For a name going inside a double-quoted identifier in a PRAGMA: a quote is doubled. */
-    private static String escapeQuoted(String name) {
-        return name == null ? "" : name.replace("\"", "\"\"");
-    }
-
-    /**
-     * User tables only. Internal bookkeeping (the `__` prefix) and the driver's own tables are
-     * filtered out so they never reach the canvas, an export, or a table listing.
-     */
+    /** User tables only; internal bookkeeping (the {@code __} prefix) is filtered out. */
     private List<String> getTableNames() {
-        List<String> names = isMysql()
-                ? jdbc().queryForList(Constants.Introspection.MYSQL_SHOW_TABLES, String.class)
-                : jdbc().queryForList(Constants.Introspection.SQLITE_SELECT_USER_TABLES, String.class);
-        return names.stream().filter(name -> !name.startsWith(INTERNAL_TABLE_PREFIX)).toList();
+        return schemaReader.tableNames();
     }
 
-    /**
-     * Views, which the canvas draws but nothing writes to.
-     *
-     * <p>Kept apart from {@link #getTableNames()} rather than folded into it, because almost every
-     * caller of that method goes on to do something only a table can take.
-     */
     private List<String> getViewNames() {
-        try {
-            List<String> names = isMysql()
-                    ? jdbc().queryForList(Constants.Introspection.MYSQL_SHOW_VIEWS, String.class)
-                    : jdbc().queryForList(Constants.Introspection.SQLITE_SELECT_VIEWS, String.class);
-            return names.stream().filter(name -> !name.startsWith(INTERNAL_TABLE_PREFIX)).toList();
-        } catch (Exception e) {
-            log.debug("Could not list views: {}", e.getMessage());
-            return List.of();
-        }
+        return schemaReader.viewNames();
+    }
+
+    private List<ColumnInfo> getColumnsForTable(String tableName) {
+        return schemaReader.columns(tableName);
+    }
+
+    private List<Relationship> getForeignKeys(String tableName) {
+        return schemaReader.foreignKeys(tableName);
     }
 
     private static final String INTERNAL_TABLE_PREFIX = Constants.Identifiers.INTERNAL_TABLE_PREFIX;
@@ -562,122 +218,6 @@ public class DatabaseServiceImpl implements DatabaseService {
     /** Likewise: a file nobody has annotated carries no annotations table. */
     private void ensureCanvasMetaTable() {
         jdbc().execute(String.format(Constants.Ddl.CREATE_CANVAS_META_TABLE, CANVAS_META_TABLE));
-    }
-
-    private List<ColumnInfo> getColumnsForTable(String tableName) {
-        List<ColumnInfo> columns = new ArrayList<>();
-        Set<String> unique = uniqueColumns(tableName);
-        if (isMysql()) {
-            jdbc().query(String.format(Constants.Introspection.MYSQL_DESCRIBE_TABLE, tableName), rs -> {
-                String name = rs.getString("Field");
-                boolean pk = "PRI".equalsIgnoreCase(rs.getString("Key"));
-                columns.add(ColumnInfo.builder()
-                        .name(name)
-                        .type(rs.getString("Type"))
-                        .pk(pk)
-                        .notNull("NO".equalsIgnoreCase(rs.getString("Null")))
-                        .unique(pk || unique.contains(name) || "UNI".equalsIgnoreCase(rs.getString("Key")))
-                        .defaultValue(rs.getString("Default"))
-                        .autoIncrement(rs.getString("Extra") != null
-                                && rs.getString("Extra").toLowerCase().contains("auto_increment"))
-                        .build());
-            });
-        } else {
-            boolean tableAutoIncrements = hasAutoIncrement(tableName);
-            jdbc().query(String.format(Constants.Introspection.SQLITE_TABLE_INFO, tableName), rs -> {
-                String type = rs.getString("type");
-                if (type == null || type.isEmpty()) type = "TEXT";
-                String name = rs.getString("name");
-                // PRAGMA table_info reports pk as a 1-based position, 0 meaning "not a key".
-                int pkPosition = rs.getInt("pk");
-                columns.add(ColumnInfo.builder()
-                        .name(name)
-                        .type(type)
-                        .pk(pkPosition > 0)
-                        .notNull(rs.getInt("notnull") == 1)
-                        // A *sole* primary key is unique; one column of a composite key is not,
-                        // and treating it as though it were would turn a one-to-many into a
-                        // one-to-one on the diagram.
-                        .unique(unique.contains(name))
-                        .defaultValue(rs.getString("dflt_value"))
-                        .autoIncrement(tableAutoIncrements && pkPosition > 0)
-                        .build());
-            });
-        }
-        return columns;
-    }
-
-    /**
-     * Columns that can hold at most one row's worth of a value: a sole primary key, or a column
-     * covered by a single-column UNIQUE index.
-     *
-     * <p>Composite keys and multi-column unique indexes are deliberately excluded. Neither makes
-     * any one of its columns unique, and the caller uses this to decide whether a relationship is
-     * one-to-one — a question only a single-column constraint can answer.
-     */
-    private Set<String> uniqueColumns(String tableName) {
-        Set<String> unique = new HashSet<>();
-        try {
-            if (isMysql()) {
-                unique.addAll(jdbc().queryForList(
-                        Constants.Introspection.MYSQL_UNIQUE_COLUMNS, String.class, tableName));
-                return unique;
-            }
-
-            List<String> pk = new ArrayList<>();
-            jdbc().query(String.format(Constants.Introspection.SQLITE_TABLE_INFO, tableName), rs -> {
-                if (rs.getInt("pk") > 0) pk.add(rs.getString("name"));
-            });
-            if (pk.size() == 1) unique.add(pk.get(0));
-
-            List<String> uniqueIndexes = new ArrayList<>();
-            jdbc().query(String.format(Constants.Introspection.SQLITE_INDEX_LIST, tableName), rs -> {
-                if (rs.getInt("unique") == 1) uniqueIndexes.add(rs.getString("name"));
-            });
-            for (String index : uniqueIndexes) {
-                List<String> cols = new ArrayList<>();
-                // Braces matter: `List.add` returns boolean, which makes the lambda match both
-                // `query(String, ResultSetExtractor)` and `query(String, RowCallbackHandler)`.
-                jdbc().query(String.format(Constants.Introspection.SQLITE_INDEX_INFO, index),
-                        rs -> { cols.add(rs.getString("name")); });
-                if (cols.size() == 1) unique.add(cols.get(0));
-            }
-        } catch (Exception e) {
-            // A diagram drawn without uniqueness is still a correct diagram, just a less precise
-            // one. Failing the whole schema read over it would not be.
-            log.debug("Could not read unique columns for {}: {}", tableName, e.getMessage());
-        }
-        return unique;
-    }
-
-    private List<Relationship> getForeignKeys(String tableName) {
-        List<Relationship> rels = new ArrayList<>();
-        if (isMysql()) {
-            jdbc().query(Constants.Introspection.MYSQL_FOREIGN_KEYS, rs -> {
-                rels.add(Relationship.builder()
-                        .sourceTable(tableName)
-                        .sourceColumn(rs.getString("COLUMN_NAME"))
-                        .targetTable(rs.getString("REFERENCED_TABLE_NAME"))
-                        .targetColumn(rs.getString("REFERENCED_COLUMN_NAME"))
-                        .build());
-            }, tableName);
-        } else {
-            jdbc().query(String.format(Constants.Introspection.SQLITE_FOREIGN_KEY_LIST, tableName), rs -> {
-                String onDelete = rs.getString("on_delete");
-                rels.add(Relationship.builder()
-                        .sourceTable(tableName)
-                        .sourceColumn(rs.getString("from"))
-                        .targetTable(rs.getString("table"))
-                        .targetColumn(rs.getString("to"))
-                        // Both were read and discarded before. The id is what groups the columns
-                        // of a composite key into one relationship.
-                        .constraintId(rs.getInt("id"))
-                        .onDelete(onDelete == null || onDelete.isBlank()
-                                || "NO ACTION".equalsIgnoreCase(onDelete) ? null : onDelete)
-                        .build());
-            });
-        }
-        return rels;
     }
 
     // ─── Table Data ───────────────────────────────────────────────────────────────
@@ -941,45 +481,17 @@ public class DatabaseServiceImpl implements DatabaseService {
     }
 
     private String defaultClauseFor(String type) {
-        String literal = defaultLiteralFor(type);
+        String literal = SqliteDdlText.defaultLiteralFor(type);
         return literal == null ? "" : " DEFAULT " + literal;
     }
 
-    /** A type-appropriate default literal, or null when the type has no sensible one. */
-    private String defaultLiteralFor(String type) {
-        String base = type.toUpperCase();
-        if (base.startsWith("VARCHAR") || base.startsWith("TEXT") || base.startsWith("CHAR")) {
-            return "''";
-        }
-        if (base.startsWith("INT") || base.startsWith("DECIMAL") || base.startsWith("NUMERIC")
-                || base.startsWith("REAL") || base.startsWith("FLOAT") || base.startsWith("DOUBLE")
-                || base.startsWith("BOOL") || base.startsWith("BIT")) {
-            return "0";
-        }
-        if (base.contains("DATE") || base.contains("TIME")) {
-            return "'1970-01-01'";
-        }
-        return null;
-    }
 
     private static boolean isBlank(String value) {
         return value == null || value.isBlank();
     }
 
-    /**
-     * Normalises and validates a client-supplied identifier. Table and column names cannot be
-     * bound as JDBC parameters, so anything outside {@code [A-Za-z0-9_]} is rejected outright
-     * rather than escaped.
-     */
     private String safeIdentifier(String raw, String what) {
-        if (isBlank(raw)) {
-            throw new IllegalArgumentException("Missing " + what);
-        }
-        String cleaned = raw.trim().replaceAll("[\\s\\-]+", "_");
-        if (!cleaned.matches("[A-Za-z0-9_]+")) {
-            throw new IllegalArgumentException("Invalid " + what + ": \"" + raw + "\"");
-        }
-        return cleaned;
+        return SqlIdentifiers.safe(raw, what);
     }
 
     // ─── Update Column ────────────────────────────────────────────────────────────
@@ -990,7 +502,7 @@ public class DatabaseServiceImpl implements DatabaseService {
      * <p>A pure rename is a one-statement {@code ALTER TABLE ... RENAME COLUMN} on both engines.
      * Anything else is engine-specific: MySQL has {@code CHANGE COLUMN}, but SQLite cannot alter
      * a column's type at all, so the table is rebuilt from its own metadata (the workaround
-     * SQLite itself documents) - see {@link #rebuildSqliteTable}.
+     * SQLite itself documents) - see {@link SqliteTableRebuilder}.
      */
     @Override
     public void updateColumn(UpdateColumnRequest req) {
@@ -1054,481 +566,10 @@ public class DatabaseServiceImpl implements DatabaseService {
                 quote(tableName), quote(from), quote(to)));
     }
 
-    /**
-     * Rebuilds a SQLite table so one column can change type or nullability, preserving the
-     * other columns, the primary key, defaults and foreign keys.
-     *
-     * <p>This is the sequence SQLite documents for unsupported ALTERs: create a replacement
-     * table, copy the rows across, drop the original, rename the replacement into place.
-     */
-    /**
-     * What a rebuild is being asked to change. Every field is optional: a rebuild that only adds
-     * a foreign key leaves the columns exactly as they were.
-     *
-     * @param oldColumn      the column being renamed or retyped, or null for no column change
-     * @param addForeignKeys table-level {@code FOREIGN KEY} clauses to append
-     * @param dropForeignKeys constraint ids (from {@code PRAGMA foreign_key_list}) to leave out
-     */
-    private record RebuildSpec(String oldColumn, String newColumn, String newType,
-                               boolean newNotNull, List<String> addForeignKeys,
-                               Set<Integer> dropForeignKeys) {
-        static RebuildSpec columnChange(String oldColumn, String newColumn, String newType,
-                                        boolean newNotNull) {
-            return new RebuildSpec(oldColumn, newColumn, newType, newNotNull, List.of(), Set.of());
-        }
-        static RebuildSpec foreignKeys(List<String> add, Set<Integer> drop) {
-            return new RebuildSpec(null, null, null, false, add, drop);
-        }
-    }
-
     private void rebuildSqliteTable(String tableName, String oldColumn, String newColumn,
                                     String newType, boolean newNotNull) {
-        rebuildSqliteTable(tableName,
+        tableRebuilder.rebuild(tableName,
                 RebuildSpec.columnChange(oldColumn, newColumn, newType, newNotNull));
-    }
-
-    /**
-     * Rebuilds a SQLite table to a new shape, preserving everything the old one carried.
-     *
-     * <p>SQLite cannot change a column's type, and cannot add or drop a constraint at all, so the
-     * documented workaround is to build a replacement, copy the rows across, and rename it into
-     * place. The risk in that is everything the replacement silently fails to carry over: this
-     * reconstructs the primary key, {@code AUTOINCREMENT}, defaults, {@code NOT NULL}, foreign
-     * keys, <strong>unique constraints, {@code CHECK} constraints and every index</strong>. The
-     * last three used to be lost on any column retype — quietly, and only noticeable later.
-     */
-    private void rebuildSqliteTable(String tableName, RebuildSpec spec) {
-        String oldColumn = spec.oldColumn();
-        String newColumn = spec.newColumn();
-        String newType = spec.newType();
-        boolean newNotNull = spec.newNotNull();
-
-        List<SqliteColumn> columns = readSqliteColumns(tableName);
-        Map<Integer, String> foreignKeyClauses = readSqliteForeignKeyClauses(tableName);
-        List<String> foreignKeys = new ArrayList<>();
-        foreignKeyClauses.forEach((id, clause) -> {
-            if (!spec.dropForeignKeys().contains(id)) foreignKeys.add(clause);
-        });
-        foreignKeys.addAll(spec.addForeignKeys());
-
-        // Everything below this line is the F3 fix: constraints and indexes that no PRAGMA
-        // reports as part of the table definition, and that a naive rebuild therefore drops.
-        Set<String> singleColumnUnique = new HashSet<>();
-        List<String> compositeUnique = new ArrayList<>();
-        readUniqueConstraints(tableName, singleColumnUnique, compositeUnique);
-        String createSql = getCreateTableSql(tableName);
-        List<String> checks = extractCheckConstraints(createSql);
-        // Collations are another thing PRAGMA table_info does not report, so a rebuild used to
-        // drop them — and a column declared COLLATE NOCASE quietly became case-sensitive.
-        Map<String, String> collations = extractCollations(createSql);
-        List<String> indexes = readCreatedIndexes(tableName);
-
-        boolean autoIncrement = hasAutoIncrement(tableName);
-        long pkCount = columns.stream().filter(c -> c.pkPosition() > 0).count();
-
-        List<String> definitions = new ArrayList<>();
-        List<String> targetColumns = new ArrayList<>();
-        List<String> sourceExpressions = new ArrayList<>();
-
-        for (SqliteColumn col : columns) {
-            boolean isTarget = col.name().equals(oldColumn);
-            String name = isTarget ? newColumn : col.name();
-            String type = isTarget ? newType : col.type();
-            boolean notNull = isTarget ? newNotNull : col.notNull();
-            String defaultValue = col.defaultValue();
-
-            // A column that is becoming NOT NULL needs a default, both for the column
-            // definition and to fill in rows that are currently null.
-            if (notNull && defaultValue == null) {
-                defaultValue = defaultLiteralFor(type);
-            }
-
-            StringBuilder def = new StringBuilder("\"" + name + "\" " + type);
-            String collation = collations.get(col.name());
-            if (collation != null) {
-                def.append(" COLLATE ").append(collation);
-            }
-            boolean soleKey = pkCount == 1 && col.pkPosition() > 0;
-            if (soleKey) {
-                def.append(" PRIMARY KEY");
-                if (autoIncrement && "INTEGER".equalsIgnoreCase(type)) {
-                    def.append(" AUTOINCREMENT");
-                }
-            } else {
-                if (notNull) def.append(" NOT NULL");
-                if (defaultValue != null) def.append(" DEFAULT ").append(defaultValue);
-                // A single-column UNIQUE is an auto-index, invisible to `PRAGMA table_info`, so it
-                // has to be put back by hand or the column quietly stops being unique — and
-                // uniqueness is what the diagram reads to tell a 1:1 from a 1:N.
-                if (singleColumnUnique.contains(col.name())) def.append(" UNIQUE");
-            }
-            definitions.add(def.toString());
-
-            targetColumns.add("\"" + name + "\"");
-            sourceExpressions.add(notNull && defaultValue != null
-                    ? "COALESCE(\"" + col.name() + "\", " + defaultValue + ")"
-                    : "\"" + col.name() + "\"");
-        }
-
-        if (pkCount > 1) {
-            String composite = columns.stream()
-                    .filter(c -> c.pkPosition() > 0)
-                    .sorted(Comparator.comparingInt(SqliteColumn::pkPosition))
-                    .map(c -> "\"" + (c.name().equals(oldColumn) ? newColumn : c.name()) + "\"")
-                    .collect(Collectors.joining(", "));
-            definitions.add("PRIMARY KEY (" + composite + ")");
-        }
-        definitions.addAll(compositeUnique);
-        definitions.addAll(checks);
-        definitions.addAll(foreignKeys);
-
-        String temp = tableName + Constants.Identifiers.REBUILD_TABLE_SUFFIX;
-        // Restore whatever the connection had rather than forcing ON: a workspace holds one
-        // long-lived connection, so flipping this permanently would change how every later
-        // insert behaves.
-        boolean foreignKeysWereOn = sqliteForeignKeysEnabled();
-        jdbc().execute(Constants.Session.SQLITE_FOREIGN_KEYS_OFF);
-        try {
-            // One transaction for the whole rebuild. Without it, a crash or a failure between
-            // DROP TABLE and RENAME left the data only in the temporary copy — the table the
-            // user was editing simply gone. PRAGMA foreign_keys is set outside, as SQLite
-            // ignores it inside a transaction.
-            inTransaction(() -> {
-            jdbc().execute(String.format(Constants.Tables.DROP_TABLE_IF_EXISTS_QUOTED, temp));
-            jdbc().execute(String.format(Constants.Tables.CREATE_TABLE,
-                    quote(temp), String.join(", ", definitions)));
-            jdbc().execute(String.format(Constants.Tables.COPY_ROWS,
-                    temp,
-                    String.join(", ", targetColumns),
-                    String.join(", ", sourceExpressions),
-                    tableName));
-            jdbc().execute(String.format(Constants.Tables.DROP_TABLE, quote(tableName)));
-            jdbc().execute(String.format(Constants.Tables.RENAME_TABLE, temp, tableName));
-
-            // Indexes belong to the table, so dropping it dropped them. They are recreated from
-            // their own DDL, with the renamed column substituted where one was renamed.
-            for (String indexSql : indexes) {
-                String sql = oldColumn != null && newColumn != null
-                        ? renameColumnInSql(indexSql, oldColumn, newColumn)
-                        : indexSql;
-                try {
-                    jdbc().execute(sql);
-                } catch (RuntimeException indexError) {
-                    // One index that will not rebuild must not roll back a successful migration
-                    // of the data; the table is correct either way.
-                    log.warn("Could not recreate index on {}: {}", tableName, indexError.getMessage());
-                }
-            }
-            });
-        } catch (RuntimeException e) {
-            // Leave the original table untouched rather than half-migrated.
-            try {
-                jdbc().execute(String.format(Constants.Tables.DROP_TABLE_IF_EXISTS_QUOTED, temp));
-            } catch (Exception ignored) {
-                // The cleanup failing must not mask the real error.
-            }
-            throw e;
-        } finally {
-            jdbc().execute(String.format(Constants.Session.SQLITE_SET_FOREIGN_KEYS,
-                    foreignKeysWereOn ? "ON" : "OFF"));
-        }
-    }
-
-    /** Reads the connection's current PRAGMA foreign_keys setting (SQLite defaults it to off). */
-    private boolean sqliteForeignKeysEnabled() {
-        try {
-            Integer enabled = jdbc().queryForObject(
-                    Constants.Session.SQLITE_READ_FOREIGN_KEYS, Integer.class);
-            return enabled != null && enabled == 1;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private List<SqliteColumn> readSqliteColumns(String tableName) {
-        List<SqliteColumn> columns = new ArrayList<>();
-        jdbc().query(String.format(Constants.Introspection.SQLITE_TABLE_INFO, tableName), rs -> {
-            String type = rs.getString("type");
-            if (type == null || type.isEmpty()) type = "TEXT";
-            columns.add(new SqliteColumn(
-                    rs.getString("name"),
-                    type,
-                    rs.getInt("notnull") == 1,
-                    rs.getString("dflt_value"),
-                    rs.getInt("pk")));
-        });
-        return columns;
-    }
-
-    /** Rebuilds each foreign key as a table-level constraint clause, grouping composite keys by id. */
-    /**
-     * Unique constraints on a table, split by whether they cover one column or several.
-     *
-     * <p>{@code PRAGMA table_info} does not report uniqueness at all, so the only trace is an
-     * auto-index with {@code origin = 'u'}. A single-column one is re-emitted on the column; a
-     * multi-column one has to become a table-level clause, because putting {@code UNIQUE} on
-     * either column separately would be a stronger constraint than the schema actually had.
-     */
-    private void readUniqueConstraints(String tableName, Set<String> singleColumn,
-                                       List<String> composite) {
-        List<String> uniqueIndexes = new ArrayList<>();
-        try {
-            jdbc().query(String.format(Constants.Introspection.SQLITE_INDEX_LIST, tableName), rs -> {
-                // 'u' is a UNIQUE constraint in the table definition; 'c' is a CREATE INDEX,
-                // recreated separately, and 'pk' is the primary key, already handled above.
-                if (rs.getInt("unique") == 1 && "u".equalsIgnoreCase(rs.getString("origin"))) {
-                    uniqueIndexes.add(rs.getString("name"));
-                }
-            });
-        } catch (Exception e) {
-            log.debug("Could not read unique constraints for {}: {}", tableName, e.getMessage());
-            return;
-        }
-
-        for (String index : uniqueIndexes) {
-            List<String> cols = new ArrayList<>();
-            jdbc().query(String.format(Constants.Introspection.SQLITE_INDEX_INFO, index),
-                    rs -> { cols.add(rs.getString("name")); });
-            if (cols.size() == 1) {
-                singleColumn.add(cols.get(0));
-            } else if (cols.size() > 1) {
-                composite.add("UNIQUE (" + cols.stream()
-                        .map(c -> QUOTE + c + QUOTE).collect(Collectors.joining(", ")) + ")");
-            }
-        }
-    }
-
-    /**
-     * Indexes created with {@code CREATE INDEX}, as their own DDL.
-     *
-     * <p>Only those: an auto-index backing a {@code UNIQUE} or a primary key has a null
-     * {@code sql} and is reconstructed from the column definitions instead. Recreating one of
-     * those by hand would fail anyway, because SQLite reserves the {@code sqlite_} name prefix.
-     */
-    private List<String> readCreatedIndexes(String tableName) {
-        List<String> statements = new ArrayList<>();
-        try {
-            jdbc().query(Constants.Introspection.SQLITE_TABLE_INDEX_DDL,
-                    rs -> { statements.add(rs.getString("sql")); }, tableName);
-        } catch (Exception e) {
-            log.debug("Could not read indexes for {}: {}", tableName, e.getMessage());
-        }
-        return statements;
-    }
-
-    /**
-     * Table- and column-level {@code CHECK} constraints, pulled out of the table's own DDL.
-     *
-     * <p>No PRAGMA reports these, so the stored {@code CREATE TABLE} text is the only source. Each
-     * is re-emitted as a table-level clause, which is equivalent in SQLite however it was
-     * originally written and much simpler than working out which column it belonged to.
-     *
-     * <p>The scan tracks quoting and nesting rather than using a regex, because a {@code CHECK}
-     * body can contain parentheses and the word itself can appear inside a string literal or a
-     * quoted column name.
-     */
-    private static final Pattern COLUMN_COLLATE =
-            Pattern.compile("(?i)\\bCOLLATE\\s+(\"[^\"]+\"|[A-Za-z_][A-Za-z0-9_]*)");
-
-    private static final Pattern TABLE_CONSTRAINT_START =
-            Pattern.compile("(?i)^(CONSTRAINT|PRIMARY|UNIQUE|CHECK|FOREIGN)\\b");
-
-    /** Each column's {@code COLLATE} clause in a stored CREATE TABLE, keyed by column name. */
-    private Map<String, String> extractCollations(String createSql) {
-        Map<String, String> collations = new HashMap<>();
-        if (createSql == null) {
-            return collations;
-        }
-        int open = createSql.indexOf('(');
-        int close = createSql.lastIndexOf(')');
-        if (open < 0 || close <= open) {
-            return collations;
-        }
-        for (String part : SqlDialectTranslator.splitTopLevel(createSql.substring(open + 1, close))) {
-            String item = part.trim();
-            if (item.isEmpty() || TABLE_CONSTRAINT_START.matcher(item).find()) {
-                continue;
-            }
-            String name = columnNameOf(item);
-            Matcher collate = COLUMN_COLLATE.matcher(item.replaceAll("'(?:[^']|'')*'", "''"));
-            if (name != null && collate.find()) {
-                collations.put(name, collate.group(1));
-            }
-        }
-        return collations;
-    }
-
-    /** The column name at the start of a column definition, without its quotes. */
-    private static String columnNameOf(String definition) {
-        String d = definition.trim();
-        if (d.isEmpty()) {
-            return null;
-        }
-        char first = d.charAt(0);
-        if (first == '"' || first == '`' || first == '[') {
-            char closing = first == '[' ? ']' : first;
-            int end = d.indexOf(closing, 1);
-            return end > 0 ? d.substring(1, end) : null;
-        }
-        int space = d.indexOf(' ');
-        return space > 0 ? d.substring(0, space) : d;
-    }
-
-    private List<String> extractCheckConstraints(String createSql) {
-        List<String> checks = new ArrayList<>();
-        if (createSql == null) {
-            return checks;
-        }
-        int bodyStart = createSql.indexOf('(');
-        if (bodyStart < 0) {
-            return checks;
-        }
-
-        int depth = 0;
-        char quote = 0;
-        for (int i = bodyStart; i < createSql.length(); i++) {
-            char c = createSql.charAt(i);
-
-            if (quote != 0) {
-                if (c == quote) {
-                    quote = 0;
-                }
-                continue;
-            }
-            if (c == SINGLE_QUOTE || c == DOUBLE_QUOTE || c == BACKTICK) {
-                quote = c;
-                continue;
-            }
-            if (c == '(') {
-                depth++;
-                continue;
-            }
-            if (c == ')') {
-                depth--;
-                if (depth == 0) {
-                    break;
-                }
-                continue;
-            }
-
-            // Only at the top level of the column list, and only as a whole word.
-            if (depth == 1 && matchesWord(createSql, i, "CHECK")) {
-                int open = createSql.indexOf('(', i);
-                if (open < 0) {
-                    break;
-                }
-                int close = matchingParen(createSql, open);
-                if (close < 0) {
-                    break;
-                }
-                checks.add("CHECK " + createSql.substring(open, close + 1));
-                i = close;
-            }
-        }
-        return checks;
-    }
-
-    private static final char SINGLE_QUOTE = '\'';
-    private static final char DOUBLE_QUOTE = '"';
-    private static final char BACKTICK = '`';
-    private static final String QUOTE = "\"";
-
-    /** True when {@code word} starts at {@code at} and is not part of a longer identifier. */
-    private static boolean matchesWord(String text, int at, String word) {
-        if (!text.regionMatches(true, at, word, 0, word.length())) {
-            return false;
-        }
-        int before = at - 1;
-        int after = at + word.length();
-        boolean leftClear = before < 0 || !isIdentifierChar(text.charAt(before));
-        boolean rightClear = after >= text.length() || !isIdentifierChar(text.charAt(after));
-        return leftClear && rightClear;
-    }
-
-    private static boolean isIdentifierChar(char c) {
-        return Character.isLetterOrDigit(c) || c == '_' || c == DOUBLE_QUOTE;
-    }
-
-    /** Index of the {@code )} closing the {@code (} at {@code open}, honouring quotes. */
-    private static int matchingParen(String text, int open) {
-        int depth = 0;
-        char quote = 0;
-        for (int i = open; i < text.length(); i++) {
-            char c = text.charAt(i);
-            if (quote != 0) {
-                if (c == quote) {
-                    quote = 0;
-                }
-                continue;
-            }
-            if (c == SINGLE_QUOTE || c == DOUBLE_QUOTE || c == BACKTICK) {
-                quote = c;
-                continue;
-            }
-            if (c == '(') {
-                depth++;
-            } else if (c == ')' && --depth == 0) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    /** Swaps a column name inside an index's DDL, so a rename does not orphan its indexes. */
-    private static String renameColumnInSql(String sql, String oldName, String newName) {
-        String quotedOld = Pattern.quote(QUOTE + oldName + QUOTE);
-        String quotedNew = Matcher.quoteReplacement(QUOTE + newName + QUOTE);
-        return sql
-                .replaceAll(quotedOld, quotedNew)
-                .replaceAll("\\b" + Pattern.quote(oldName) + "\\b",
-                        Matcher.quoteReplacement(newName));
-    }
-
-    private List<String> readSqliteForeignKeys(String tableName) {
-        return new ArrayList<>(readSqliteForeignKeyClauses(tableName).values());
-    }
-
-    /**
-     * The same clauses, keyed by the constraint id SQLite assigns them.
-     *
-     * <p>Dropping a foreign key means rebuilding the table without one of these, and the id is
-     * the only thing that identifies which — a composite key is several {@code PRAGMA} rows
-     * sharing one id, and two constraints can name the same column.
-     */
-    private Map<Integer, String> readSqliteForeignKeyClauses(String tableName) {
-        Map<Integer, List<String>> fromColumns = new LinkedHashMap<>();
-        Map<Integer, List<String>> toColumns = new LinkedHashMap<>();
-        Map<Integer, String> targetTables = new LinkedHashMap<>();
-        Map<Integer, String> onDelete = new LinkedHashMap<>();
-
-        jdbc().query(String.format(Constants.Introspection.SQLITE_FOREIGN_KEY_LIST, tableName), rs -> {
-            int id = rs.getInt("id");
-            fromColumns.computeIfAbsent(id, k -> new ArrayList<>()).add("\"" + rs.getString("from") + "\"");
-            toColumns.computeIfAbsent(id, k -> new ArrayList<>()).add("\"" + rs.getString("to") + "\"");
-            targetTables.putIfAbsent(id, rs.getString("table"));
-            onDelete.putIfAbsent(id, rs.getString("on_delete"));
-        });
-
-        Map<Integer, String> clauses = new LinkedHashMap<>();
-        for (Integer id : fromColumns.keySet()) {
-            String action = onDelete.get(id);
-            clauses.put(id, String.format(Constants.Tables.FOREIGN_KEY_CLAUSE,
-                    String.join(", ", fromColumns.get(id)),
-                    targetTables.get(id),
-                    String.join(", ", toColumns.get(id)),
-                    action == null || action.isBlank() || "NO ACTION".equalsIgnoreCase(action)
-                            ? "" : " ON DELETE " + action));
-        }
-        return clauses;
-    }
-
-    private boolean hasAutoIncrement(String tableName) {
-        String ddl = getCreateTableSql(tableName);
-        return ddl != null && ddl.toUpperCase().contains("AUTOINCREMENT");
-    }
-
-    /** Column metadata as reported by {@code PRAGMA table_info}. */
-    private record SqliteColumn(String name, String type, boolean notNull, String defaultValue, int pkPosition) {
     }
 
     // ─── Update Cell ─────────────────────────────────────────────────────────────
@@ -1635,7 +676,7 @@ public class DatabaseServiceImpl implements DatabaseService {
             }
             jdbc().execute(Constants.Session.MYSQL_FOREIGN_KEY_CHECKS_ON);
         } else {
-            boolean foreignKeysWereOn = sqliteForeignKeysEnabled();
+            boolean foreignKeysWereOn = tableRebuilder.foreignKeysEnabled();
             jdbc().execute(Constants.Session.SQLITE_FOREIGN_KEYS_OFF);
             try {
                 for (String t : tables) {
@@ -1725,8 +766,16 @@ public class DatabaseServiceImpl implements DatabaseService {
         if (isMysql()) {
             statements = MySqlToSqliteTranslator.translate(statements).statements();
         }
-        for (String statement : statements) {
-            jdbc().execute(statement);
+        List<String> toRun = statements;
+        Runnable runAll = () -> toRun.forEach(statement -> jdbc().execute(statement));
+        // One transaction on SQLite, as an import is. Each statement used to commit on its own,
+        // and a commit waits for the disk: a template's few dozen INSERTs took ~3s on the free
+        // plan's network-backed storage. It also means a template that fails halfway leaves
+        // the file empty rather than with half a schema.
+        if (isSqlite() && !FileImporter.managesItsOwnTransactions(toRun)) {
+            inTransaction(runAll);
+        } else {
+            runAll.run();
         }
 
         return Map.of("message", "Schema loaded", "tables", getTableNames());
@@ -1847,176 +896,10 @@ public class DatabaseServiceImpl implements DatabaseService {
 
     // ─── Raw SQL, run from the scratchpad ─────────────────────────────────────────
 
-    /** Enough statements for a real migration, few enough that a paste cannot run away. */
-    private static final int MAX_STATEMENTS = 50;
-    /** Rows returned to the UI per statement. The panel is not a data grid. */
-    private static final int MAX_RESULT_ROWS = 500;
-    /** A statement that has not finished in this long is not going to. */
-    private static final int STATEMENT_TIMEOUT_SECONDS = 15;
-
-    /**
-     * Runs a user's SQL, statement by statement, and reports what each one did.
-     *
-     * <p>Deliberately not {@link #executeQuery}, which runs a single statement and answers with
-     * either rows or a count. A scratchpad is used to run several at once, and the question that
-     * matters when something goes wrong is <em>which</em> one — a shape the old response could not
-     * express at all.
-     *
-     * <p>Execution stops at the first failure. A script is usually a sequence where the later
-     * statements assume the earlier ones worked, so carrying on past an error produces a cascade
-     * of confusing secondary failures and leaves the schema somewhere nobody intended.
-     */
+    /** Runs a user's SQL statement by statement and reports each one; see {@link ScratchpadRunner}. */
     @Override
     public Map<String, Object> runScratchpad(String script) {
-        if (script == null || script.isBlank()) {
-            throw new IllegalArgumentException("Nothing to run.");
-        }
-
-        List<String> statements = SqlScriptSplitter.split(script);
-        if (statements.isEmpty()) {
-            throw new IllegalArgumentException("Nothing to run.");
-        }
-        if (statements.size() > MAX_STATEMENTS) {
-            throw new IllegalArgumentException(
-                    "That is " + statements.size() + " statements. Run at most " + MAX_STATEMENTS
-                            + " at a time — use Import for a whole file.");
-        }
-        for (String statement : statements) {
-            refuseInternalTables(statement);
-        }
-
-        List<Map<String, Object>> report = new ArrayList<>();
-        boolean schemaChanged = false;
-        boolean stopped = false;
-
-        for (String statement : statements) {
-            if (stopped) {
-                report.add(statementReport(statement, "skipped", null, null, null,
-                        "Not run: an earlier statement failed.", false));
-                continue;
-            }
-            String kind = statementKind(statement);
-            try {
-                if (returnsRows(statement)) {
-                    List<Map<String, Object>> rows = queryWithLimit(statement);
-                    boolean truncated = rows.size() > MAX_RESULT_ROWS;
-                    if (truncated) rows = rows.subList(0, MAX_RESULT_ROWS);
-                    report.add(statementReport(statement, kind,
-                            rows.isEmpty() ? List.of() : new ArrayList<>(rows.get(0).keySet()),
-                            rows, rows.size(), null, truncated));
-                } else {
-                    int affected = updateWithTimeout(statement);
-                    report.add(statementReport(statement, kind, null, null, affected, null, false));
-                    if (!"SELECT".equals(kind)) schemaChanged = true;
-                }
-            } catch (Exception e) {
-                report.add(statementReport(statement, kind, null, null, null,
-                        rootCauseMessage(e), false));
-                stopped = true;
-            }
-        }
-
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("statements", report);
-        // Tells the UI whether the canvas needs re-reading. A SELECT changes nothing, and
-        // refreshing the whole schema after every one of those would be wasteful and jumpy.
-        result.put("schemaChanged", schemaChanged);
-        result.put("failed", stopped);
-        return result;
-    }
-
-    private Map<String, Object> statementReport(String sql, String kind, List<String> columns,
-                                                List<Map<String, Object>> rows, Integer count,
-                                                String error, boolean truncated) {
-        Map<String, Object> entry = new LinkedHashMap<>();
-        entry.put("sql", summarizeStatement(sql));
-        entry.put("kind", kind);
-        if (columns != null) entry.put("columns", columns);
-        if (rows != null) entry.put("rows", rows);
-        if (count != null) entry.put("rowCount", count);
-        if (error != null) entry.put("error", error);
-        entry.put("truncated", truncated);
-        return entry;
-    }
-
-    /**
-     * Whether a statement produces a result set.
-     *
-     * <p>{@code PRAGMA} is the awkward one: the read form returns rows and the assignment form
-     * does not, and sending the latter to a query call fails with "query does not return
-     * ResultSet" — which is exactly what {@link #executeQuery} still does.
-     */
-    private boolean returnsRows(String statement) {
-        String head = statement.stripLeading().toUpperCase();
-        if (head.startsWith("SELECT") || head.startsWith("WITH") || head.startsWith("EXPLAIN")
-                || head.startsWith("SHOW") || head.startsWith("VALUES")) {
-            return true;
-        }
-        // A read pragma is a bare name; `PRAGMA foreign_keys = ON` is an assignment.
-        return head.startsWith("PRAGMA") && !head.contains("=");
-    }
-
-    private String statementKind(String statement) {
-        String head = statement.stripLeading().toUpperCase();
-        for (String word : List.of("SELECT", "INSERT", "UPDATE", "DELETE", "CREATE VIEW",
-                "CREATE TABLE", "CREATE INDEX", "ALTER", "DROP", "PRAGMA", "WITH", "EXPLAIN")) {
-            if (head.startsWith(word)) return word;
-        }
-        int space = head.indexOf(' ');
-        return space > 0 ? head.substring(0, space) : head;
-    }
-
-    private List<Map<String, Object>> queryWithLimit(String sql) {
-        return jdbc().execute((org.springframework.jdbc.core.StatementCallback<List<Map<String, Object>>>) stmt -> {
-            stmt.setQueryTimeout(STATEMENT_TIMEOUT_SECONDS);
-            // One more than the cap, so the caller can tell "exactly 500" from "at least 500".
-            stmt.setMaxRows(MAX_RESULT_ROWS + 1);
-            try (java.sql.ResultSet rs = stmt.executeQuery(sql)) {
-                return readRows(rs);
-            }
-        });
-    }
-
-    private List<Map<String, Object>> readRows(java.sql.ResultSet rs) throws java.sql.SQLException {
-        java.sql.ResultSetMetaData meta = rs.getMetaData();
-        int columns = meta.getColumnCount();
-        List<Map<String, Object>> rows = new ArrayList<>();
-        while (rs.next()) {
-            Map<String, Object> row = new LinkedHashMap<>();
-            for (int i = 1; i <= columns; i++) {
-                row.put(meta.getColumnLabel(i), rs.getObject(i));
-            }
-            rows.add(row);
-        }
-        return rows;
-    }
-
-    private int updateWithTimeout(String sql) {
-        Integer affected = jdbc().execute((org.springframework.jdbc.core.StatementCallback<Integer>) stmt -> {
-            stmt.setQueryTimeout(STATEMENT_TIMEOUT_SECONDS);
-            stmt.execute(sql);
-            int count = stmt.getUpdateCount();
-            return count < 0 ? 0 : count;
-        });
-        return affected == null ? 0 : affected;
-    }
-
-    /**
-     * Refuses a statement that names one of the application's own tables.
-     *
-     * <p>They are filtered out of every listing, so nobody can see them to mean them; a statement
-     * naming one is either a mistake or an attempt to reach behind the UI, and neither should be
-     * allowed to corrupt the notes or the canvas annotations.
-     */
-    private void refuseInternalTables(String statement) {
-        java.util.regex.Matcher matcher =
-                java.util.regex.Pattern.compile("(?<![A-Za-z0-9_])__[A-Za-z0-9_]+")
-                        .matcher(statement);
-        if (matcher.find()) {
-            throw new IllegalArgumentException(
-                    "\"" + matcher.group() + "\" belongs to the application. Tables whose names "
-                            + "start with __ are not yours to change.");
-        }
+        return scratchpadRunner.run(script);
     }
 
     // ─── Foreign keys on an existing table ────────────────────────────────────────
@@ -2095,7 +978,7 @@ public class DatabaseServiceImpl implements DatabaseService {
 
         String clause = String.format(Constants.Tables.FOREIGN_KEY_CLAUSE,
                 "\"" + column + "\"", refTable, "\"" + refColumn + "\"", action);
-        rebuildSqliteTable(table, RebuildSpec.foreignKeys(List.of(clause), Set.of()));
+        tableRebuilder.rebuild(table, RebuildSpec.foreignKeys(List.of(clause), Set.of()));
     }
 
     /**
@@ -2142,7 +1025,7 @@ public class DatabaseServiceImpl implements DatabaseService {
                     "No relationship from \"" + table + "." + column + "\" to \"" + refTable + "\".");
         }
 
-        rebuildSqliteTable(table, RebuildSpec.foreignKeys(List.of(), Set.of(id)));
+        tableRebuilder.rebuild(table, RebuildSpec.foreignKeys(List.of(), Set.of(id)));
     }
 
     private ColumnInfo columnOf(String table, String column) {
@@ -2369,18 +1252,7 @@ public class DatabaseServiceImpl implements DatabaseService {
     }
 
     private String getCreateTableSql(String table) {
-        try {
-            if (isMysql()) {
-                return jdbc().queryForObject(
-                        String.format(Constants.Introspection.MYSQL_SHOW_CREATE_TABLE, table),
-                        (rs, n) -> rs.getString(2));
-            } else {
-                return jdbc().queryForObject(
-                        Constants.Introspection.SQLITE_SELECT_TABLE_SQL, String.class, table);
-            }
-        } catch (Exception e) {
-            return null;
-        }
+        return schemaReader.createTableSql(table);
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────────

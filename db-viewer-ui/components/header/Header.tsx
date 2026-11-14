@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import Link from 'next/link';
 import {
     Upload, FileText, Trash2, Database, HelpCircle, Download,
-    ChevronDown, Files, Share2, LogIn, LogOut, User, Plus, Lock, Settings,
+    ChevronDown, Files, Share2, LogIn, LogOut, User, Plus, Lock, Settings, ClipboardPaste, History,
 } from 'lucide-react';
 import { AuthUser } from '@/services/api';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
@@ -12,11 +12,15 @@ import { useDismissable } from '@/components/ui/useDismissable';
 
 interface HeaderProps {
     onUpload: (file: File) => void;
+    /** Opens the dialog for pasted SQL or DBML, or a link to a published file. */
+    onImportText: () => void;
     onNewFile: () => void;
     onClear: () => void;
     onShowInfo: () => void;
     /** Opens the export dialog, which owns every output format. */
     onExport: () => void;
+    /** Saved versions of the file, and comparing it with a version or another file. */
+    onVersions: () => void;
     onShare: () => void;
     onSignIn: () => void;
     onSignOut: () => void;
@@ -72,7 +76,7 @@ const HEADER_BUTTON = 'flex items-center gap-1.5 h-8 px-2.5 rounded-md text-[13p
 const HEADER_BUTTON_ACTIVE = 'bg-ink-100 text-ink-900';
 
 export const Header = ({
-    onUpload, onNewFile, onClear, onShowInfo, onExport,
+    onUpload, onImportText, onNewFile, onClear, onShowInfo, onExport, onVersions,
     onShare, onSignIn, onSignOut, onEditProfile, isUploading, fileName, hasData, user,
 }: HeaderProps) => {
     const [isFileOpen, setFileOpen] = useState(false);
@@ -146,8 +150,15 @@ export const Header = ({
                             <MenuItem
                                 icon={<Upload size={16} />}
                                 title={isUploading ? 'Reading the file...' : 'Import'}
-                                description="Pick a .csv or .sql file. You will see what it creates before it does."
+                                description="Pick a .csv, .sql or .dbml file. You will see what it creates before it does."
                                 onClick={() => { fileInputRef.current?.click(); setFileOpen(false); }}
+                            />
+
+                            <MenuItem
+                                icon={<ClipboardPaste size={16} />}
+                                title="Paste or link..."
+                                description="Paste SQL or DBML, or import a GitHub gist by its address."
+                                onClick={() => run(onImportText)}
                             />
 
                             <div className="h-px bg-ink-100" />
@@ -161,6 +172,14 @@ export const Header = ({
                                 title="Export..."
                                 description="SQL for a specific engine, a PNG, Mermaid or DBML."
                                 onClick={() => run(onExport)}
+                                disabled={!hasData}
+                            />
+
+                            <MenuItem
+                                icon={<History size={16} />}
+                                title="Versions and compare..."
+                                description="Save a version, restore one, or diff against another file."
+                                onClick={() => run(onVersions)}
                                 disabled={!hasData}
                             />
 
@@ -218,7 +237,7 @@ export const Header = ({
                     type="file"
                     id="fileUpload"
                     className="hidden"
-                    accept=".csv, .sql"
+                    accept=".csv, .sql, .dbml"
                     onChange={(e) => {
                         const file = e.target.files?.[0];
                         e.target.value = '';

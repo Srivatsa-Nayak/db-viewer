@@ -256,6 +256,15 @@ export const dbService = {
     },
 
     /**
+     * Downloads a published schema file (a GitHub gist or repository file) through the backend,
+     * which only fetches from GitHub. Imports nothing: the caller previews the text first.
+     */
+    fetchImport: async (url: string): Promise<{ fileName: string; content: string }> => {
+        const res = await api.post<{ fileName: string; content: string }>('/import/fetch', { url });
+        return res.data;
+    },
+
+    /**
      * Records what the user called this file, against the active workspace.
      *
      * Fire-and-forget on purpose: a file without a stored name still opens, and failing the
@@ -328,6 +337,13 @@ export const dbService = {
     // Get Schema & Relationships
     getSchema: async (): Promise<SchemaResponse> => {
         const res = await api.get<RawSchemaResponse>(`/db-info?_t=${new Date().getTime()}`);
+        return normaliseSchema(res.data);
+    },
+
+    /** Another open file's schema, without switching to it. */
+    getSchemaOf: async (workspaceId: string): Promise<SchemaResponse> => {
+        const res = await api.get<RawSchemaResponse>(`/db-info?_t=${new Date().getTime()}`,
+            { headers: { 'X-Workspace-Id': workspaceId } });
         return normaliseSchema(res.data);
     },
 

@@ -39,7 +39,17 @@ public interface AuthService {
      * should not be able to lock the owner out of their own account.
      *
      * @throws com.dbviewer.app.exception.UnauthorizedException if nobody is signed in
+     * <p>A password change signs out every other device: the response then carries a new
+     * {@code token}, which the caller must store, because the one it sent is no longer accepted.
+     *
      * @throws IllegalArgumentException if the current password is wrong or the new one is weak
      */
     Map<String, Object> updateProfile(String displayName, String currentPassword, String newPassword);
+
+    /**
+     * Whether a verified token is still valid for its account: the account exists and the
+     * password has not changed since the token was issued. A {@code null} stamp (a token from
+     * before stamps existed) is accepted until it expires.
+     */
+    boolean isSessionCurrent(String email, String passwordStamp);
 }

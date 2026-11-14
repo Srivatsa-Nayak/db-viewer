@@ -1,6 +1,7 @@
 package com.dbviewer.app.service.impl;
 
 import com.dbviewer.app.service.JwtService;
+import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import jakarta.annotation.PostConstruct;
@@ -21,6 +22,9 @@ import java.util.Date;
 public class JwtServiceImpl implements JwtService {
 
     private static final Duration TOKEN_LIFETIME = Duration.ofDays(30);
+
+    /** Fingerprint of the password hash the token was issued against; see {@link #issue}. */
+    private static final String PASSWORD_STAMP_CLAIM = "pws";
 
     @Value("${app.auth.secret:}")
     private String configuredSecret;
@@ -47,29 +51,34 @@ public class JwtServiceImpl implements JwtService {
     }
 
     @Override
-    public String issue(String email) {
+    public String issue(String email, String passwordStamp) {
         Instant now = Instant.now();
         return Jwts.builder()
                 .subject(email)
+                .claim(PASSWORD_STAMP_CLAIM, passwordStamp)
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(now.plus(TOKEN_LIFETIME)))
                 .signWith(signingKey)
                 .compact();
     }
 
-    /** Returns the email the token was issued for, or null when it is missing, forged or expired. */
+    /** Returns who the token was issued for, or null when it is missing, forged or expired. */
     @Override
-    public String verify(String token) {
+    public VerifiedToken verify(String token) {
         if (token == null || token.isBlank()) {
             return null;
         }
         try {
-            return Jwts.parser()
+            Claims claims = Jwts.parser()
                     .verifyWith(signingKey)
                     .build()
                     .parseSignedClaims(token)
-                    .getPayload()
-                    .getSubject();
+                    .getPayload();
+            String email = claims.getSubject();
+            if (email == null || email.isBlank()) {
+                return null;
+            }
+            return new VerifiedToken(email, claims.get(PASSWORD_STAMP_CLAIM, String.class));
         } catch (Exception e) {
             // Expired, tampered with, or signed by a previous run's key. All mean "anonymous".
             return null;

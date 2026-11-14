@@ -204,7 +204,10 @@ and formatting live in `DatabaseServiceImpl`.
 
 Every service is an interface in `service/` with its implementation in `service/impl/`:
 `DatabaseService`, `AuthService`, `JwtService`, `ShareService`, `TemplateService`,
-`ChatService`, `ApiKeyService`. Nothing is
+`ChatService`, `ApiKeyService`. `service/impl/` holds only those `*Impl` classes; the parts an
+implementation delegates to live in `service/helper/` — `SchemaReader`, `FileImporter`,
+`ScratchpadRunner` and `SqliteTableRebuilder` are Spring components `DatabaseServiceImpl` is built
+from, and `SqliteDdlText`, `StatementText` and `SqlIdentifiers` are static text helpers. Nothing is
 typed against a `*Impl` — controllers and services depend on the contract, so Spring injects the
 implementation and a collaborator can be substituted without touching the caller. Shapes that are
 part of a contract live on the interface too: `TemplateService.Template` and its nested records are
@@ -434,11 +437,19 @@ flowchart LR
 - `NEXT_PUBLIC_API_URL` is a **build-time** value in Next.js — changing the backend URL requires a
   frontend rebuild, not just a restart.
 
-**Deployment caveat.** On the F1 plan the App Service filesystem is not durable across restarts or
-scale events, and there is exactly one instance. Workspace SQLite files are therefore best treated
-as session-scoped: fine for the demo deployment, not a place to keep anything you care about. See
-[DATABASE-DESIGN.md §9](./DATABASE-DESIGN.md#9-operational-characteristics) for the durability
-discussion.
+**Deployment caveats.** The F1 (free) plan shapes three things:
+
+- **Storage.** Only `/home` is kept across restarts and redeploys; the folder the jar runs in may
+  be cleaned by a deploy. `DB_PATH` and `WORKSPACE_DIR` default to paths relative to that folder,
+  so the backend's app settings point them at `/home/data/visualizer.db` and
+  `/home/data/workspaces`. There is exactly one instance, which is what SQLite needs. See
+  [DATABASE-DESIGN.md §9](./DATABASE-DESIGN.md#9-operational-characteristics).
+- **Cold starts.** F1 has no "Always On", so an idle backend is stopped after about 20 minutes and
+  the next request waits ~30s for the JVM. `.github/workflows/keep-warm.yml` pings both apps every
+  10 minutes; the UI also allows a first request 90s instead of 30s, pings the backend once per tab
+  on every route, and shows a "waking up the server" notice if a request waits more than 3s
+  (`services/backendStatus.ts`, `ServerWakeNotice`).
+- **CPU.** The plan allows 60 CPU minutes a day, so background work stays cheap.
 
 ---
 
@@ -449,7 +460,7 @@ discussion.
 | ~~Accounts gate export/share but are not an authorisation model~~ | **Fixed** — `WorkspaceOwnershipFilter` checks ownership on every workspace-scoped route, and account-only routes are declared with `@RequiresAccount` (checked by `SecurityHardeningTest`, which walks the whole mapping table) | — |
 | ~~A request with no workspace header reached the application's own database~~ | **Fixed** — it used to fall back to the database holding `app_users`, so `/query`, `/table-data/app_users` and `DELETE /workspace` could read or wipe accounts. Header-less requests now use a reserved `__sandbox` workspace, and `__` ids are refused from clients | — |
 | ~~A workspace could be used with no identity at all~~ | **Fixed** — `WorkspaceOwnershipFilter` answers 401 (`identityRequired: true`) to a workspace request that carries neither `X-Client-Id` nor a token, instead of letting an unowned workspace be used by anyone who knew its id | — |
-| Workspace ids are guessable timestamps | Simplicity | UUIDv4 ids plus a server-side owner check |
+| ~~Workspace ids are guessable timestamps~~ | **Fixed** — ids are a timestamp plus a random suffix (`newWorkspaceId`), and `WorkspaceOwnershipFilter` refuses anyone but the owner, so knowing an id is not enough to open it | — |
 | ~~Workspaces are never garbage-collected unless closed in the UI~~ | **Fixed** — `WorkspaceJanitor` closes idle connections (`app.workspace.idle-close-minutes`, `max-open`) and deletes *anonymous* workspaces unused for `app.workspace.anonymous-retention-days` (default 30). A signed-in user's files are never swept | — |
 | SQLite files live on local disk | Zero-infrastructure default | Object storage or a managed MySQL/Postgres per tenant |
 | ~~Node positions are lost on reload~~ | **Fixed** — the open-file list and canvas layout are persisted to `localStorage` and reconciled against `GET /workspaces` on start | — |

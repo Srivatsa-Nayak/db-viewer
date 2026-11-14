@@ -1,5 +1,6 @@
 package com.dbviewer.app.auth;
 
+import com.dbviewer.app.service.AuthService;
 import com.dbviewer.app.service.JwtService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -29,6 +30,7 @@ public class AuthFilter extends OncePerRequestFilter {
     private static final String PREFIX = "Bearer ";
 
     private final JwtService jwtService;
+    private final AuthService authService;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
@@ -36,9 +38,11 @@ public class AuthFilter extends OncePerRequestFilter {
         try {
             String header = request.getHeader(HEADER);
             if (header != null && header.startsWith(PREFIX)) {
-                String email = jwtService.verify(header.substring(PREFIX.length()).trim());
-                if (email != null) {
-                    AuthContext.set(email);
+                JwtService.VerifiedToken token = jwtService.verify(header.substring(PREFIX.length()).trim());
+                // A token issued before the password last changed is treated like an expired
+                // one: the request carries on anonymously, and the UI asks the user to sign in.
+                if (token != null && authService.isSessionCurrent(token.email(), token.passwordStamp())) {
+                    AuthContext.set(token.email());
                 }
             }
             chain.doFilter(request, response);

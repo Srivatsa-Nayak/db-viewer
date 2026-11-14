@@ -18,7 +18,11 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -67,9 +71,10 @@ public class AuthServiceImpl implements AuthService {
                 ? email.substring(0, email.indexOf('@'))
                 : displayName.trim();
 
+        String hash = passwordEncoder.encode(password);
         try {
             jdbcTemplate.update(Constants.Auth.INSERT_USER,
-                    email, name, passwordEncoder.encode(password), Instant.now().toString());
+                    email, name, hash, Instant.now().toString());
         } catch (DataAccessException e) {
             // Backstop for two signups racing past the check above. The column is UNIQUE, so the
             // database refuses the second one - turn that into the same friendly message rather
@@ -82,7 +87,7 @@ public class AuthServiceImpl implements AuthService {
 
         log.info("Registered account {}", email);
         adoptAnonymousWork(email);
-        return session(email, name);
+        return session(email, name, hash);
     }
 
     /**
@@ -130,7 +135,8 @@ public class AuthServiceImpl implements AuthService {
             throw new IllegalArgumentException("Email or password is incorrect.");
         }
         adoptAnonymousWork(email);
-        return session(email, String.valueOf(user.get("display_name")));
+        return session(email, String.valueOf(user.get("display_name")),
+                String.valueOf(user.get("password_hash")));
     }
 
     /**
@@ -196,21 +202,67 @@ public class AuthServiceImpl implements AuthService {
             jdbcTemplate.update(Constants.Auth.UPDATE_DISPLAY_NAME, name, email);
         }
 
+        String newHash = null;
         if (changingPassword) {
-            jdbcTemplate.update(Constants.Auth.UPDATE_PASSWORD_HASH,
-                    passwordEncoder.encode(newPassword), email);
+            newHash = passwordEncoder.encode(newPassword);
+            jdbcTemplate.update(Constants.Auth.UPDATE_PASSWORD_HASH, newHash, email);
             log.info("Password changed for {}", email);
         }
 
         Map<String, Object> profile = new LinkedHashMap<>();
         profile.put("email", email);
         profile.put("displayName", name);
+        if (newHash != null) {
+            // The new hash has a new stamp, so every token issued before this moment - including
+            // the one that made this request - is now refused. This device gets a fresh one and
+            // stays signed in; every other device has to sign in again with the new password.
+            profile.put("token", jwtService.issue(email, passwordStamp(newHash)));
+        }
         return profile;
     }
 
-    private Map<String, Object> session(String email, String displayName) {
+    /**
+     * Whether a token's password stamp still matches the account.
+     *
+     * <p>A token with no stamp predates stamps and is accepted until it expires. A token whose
+     * account no longer exists is not current.
+     */
+    @Override
+    public boolean isSessionCurrent(String email, String passwordStamp) {
+        if (passwordStamp == null) {
+            return true;
+        }
+        try {
+            String hash = jdbcTemplate.queryForObject(Constants.Auth.SELECT_PASSWORD_HASH, String.class, email);
+            return hash != null && MessageDigest.isEqual(
+                    passwordStamp(hash).getBytes(StandardCharsets.UTF_8),
+                    passwordStamp.getBytes(StandardCharsets.UTF_8));
+        } catch (EmptyResultDataAccessException e) {
+            return false;
+        }
+    }
+
+    /**
+     * A short fingerprint of a password hash, carried in the session token.
+     *
+     * <p>Not secret, since the browser can read a token's payload: it is a truncated SHA-256 of a
+     * salted bcrypt hash, which says nothing usable about the password. What matters is that
+     * it changes whenever the password does, because bcrypt salts every hash afresh.
+     */
+    static String passwordStamp(String passwordHash) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(passwordHash.getBytes(StandardCharsets.UTF_8));
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(digest).substring(0, 16);
+        } catch (NoSuchAlgorithmException e) {
+            // Every JVM is required to provide SHA-256.
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private Map<String, Object> session(String email, String displayName, String passwordHash) {
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("token", jwtService.issue(email));
+        result.put("token", jwtService.issue(email, passwordStamp(passwordHash)));
         result.put("email", email);
         result.put("displayName", displayName);
         return result;

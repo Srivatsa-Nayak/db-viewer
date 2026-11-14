@@ -17,7 +17,7 @@ import ReactFlow, {
     Connection,
 } from 'reactflow';
 import "reactflow/dist/style.css";
-import { ZoomIn, Info, Plus, Search, Map as MapIcon, Spline, Undo2, Redo2, Boxes } from "lucide-react";
+import { ZoomIn, Info, Plus, Search, Map as MapIcon, Spline, Undo2, Redo2, Boxes, Network } from "lucide-react";
 import type { HistorySnapshot } from "@/services/history";
 import type { ColumnInfo } from "@/types";
 import TableNode from "@/components/tables/TableNode";
@@ -89,6 +89,11 @@ interface VisualizerProps {
     onCreateRelationship?: (link: RelationshipDraft) => void;
     /** Called with the table names to put in a new domain group. */
     onCreateGroup?: (tables: string[]) => void;
+    /**
+     * Rearranges the tables by their relationships (services/autoLayout.ts). The canvas fits the
+     * result into view once the page has moved the nodes.
+     */
+    onAutoLayout?: () => void;
     onNodeDrag?: (event: React.MouseEvent, node: Node, nodes: Node[]) => void;
 }
 
@@ -126,6 +131,7 @@ const DOCK_DIVIDER = 'w-px h-4 bg-line mx-1';
 export const Visualizer = ({
     nodes, edges, onNodesChange, onNodeDragStart, onNodeDragStop, onRefreshRequest,
     history, onUndo, onRedo, toast, chat, onCreateRelationship, onCreateGroup, onNodeDrag,
+    onAutoLayout,
 }: VisualizerProps) => {
     const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null);
     const [zoomLevel, setZoomLevel] = useState(1);
@@ -505,6 +511,24 @@ export const Visualizer = ({
                                             {selectedTables.length}
                                         </span>
                                     )}
+                                </button>
+                            )}
+
+                            {onAutoLayout && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        onAutoLayout();
+                                        // Two frames: one for the page to move the nodes, one for
+                                        // React Flow to measure them where they now are.
+                                        requestAnimationFrame(() => requestAnimationFrame(() =>
+                                            rfInstance?.fitView({ ...FIT_VIEW_OPTIONS, duration: 300 })));
+                                    }}
+                                    className={TOOL}
+                                    aria-label="Tidy layout"
+                                    title="Tidy layout — arrange the tables by their relationships (undo puts them back)"
+                                >
+                                    <Network size={15} />
                                 </button>
                             )}
 

@@ -25,6 +25,8 @@ const useIsClient = () =>
 /** Keeps the menu on screen when the button is near an edge. */
 const MARGIN = 8;
 const ESTIMATED_WIDTH = 210;
+/** A table node's menu, the tallest one, is about 290px. */
+const ESTIMATED_HEIGHT = 300;
 
 /**
  * Where the menu hangs from: the button, and its screen rect *at the moment it was opened*.
@@ -102,13 +104,15 @@ export const AnchoredMenu = ({ anchor, onClose, children, label }: AnchoredMenuP
     if (!isClient || !anchor) return null;
     const box = anchor.rect;
 
-    // Right-aligned with the button, flipped above it when there is no room below.
+    // Right-aligned with the button, flipped above it when there is more room there.
     const left = Math.min(
         Math.max(MARGIN, box.right - ESTIMATED_WIDTH),
         window.innerWidth - ESTIMATED_WIDTH - MARGIN
     );
     const below = box.bottom + 6;
-    const openUp = below + 260 > window.innerHeight && box.top > 280;
+    const spaceBelow = window.innerHeight - below - MARGIN;
+    const spaceAbove = box.top - 6 - MARGIN;
+    const openUp = spaceBelow < ESTIMATED_HEIGHT && spaceAbove > spaceBelow;
 
     return createPortal(
         <div
@@ -118,10 +122,18 @@ export const AnchoredMenu = ({ anchor, onClose, children, label }: AnchoredMenuP
             // `nodrag` so a mousedown in the menu does not drag the table out from under it.
             className="nodrag fixed z-[95] min-w-[13rem] rounded-lg border border-line bg-surface
                        py-1 shadow-glow-lg anim-menu-in cursor-default"
+            // Flipped with `bottom`, not `transform: translateY(-100%)`. The entrance animation
+            // animates `transform` and holds its last frame, which silently replaced the flip:
+            // a menu opened low on the canvas ran off the bottom of the window, and its last
+            // item — Delete table — could not be reached at all. The height cap covers a window
+            // too short for either direction; the menu scrolls instead of being cut off.
             style={{
                 left,
-                top: openUp ? box.top - 6 : below,
-                transform: openUp ? 'translateY(-100%)' : undefined,
+                ...(openUp
+                    ? { bottom: window.innerHeight - (box.top - 6) }
+                    : { top: below }),
+                maxHeight: Math.max(120, openUp ? spaceAbove : spaceBelow),
+                overflowY: 'auto',
             }}
             onClick={e => e.stopPropagation()}
         >

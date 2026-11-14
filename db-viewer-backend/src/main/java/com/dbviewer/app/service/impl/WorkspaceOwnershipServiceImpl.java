@@ -133,6 +133,10 @@ public class WorkspaceOwnershipServiceImpl implements WorkspaceOwnershipService 
             return;
         }
         try {
+            // The file's saved versions go with it. Here rather than in SnapshotService because
+            // this is the one place every delete path (the user's, and the janitor's sweep of
+            // abandoned files) passes through — and it keeps the dependency one-way.
+            jdbcTemplate.update(Constants.Snapshots.DELETE_ALL, workspaceId);
             jdbcTemplate.update(Constants.Ownership.DELETE_OWNER, workspaceId);
         } catch (DataAccessException e) {
             // The workspace itself is already gone; a stale owner row is harmless because the

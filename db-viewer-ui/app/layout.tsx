@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Inter, Geist_Mono } from "next/font/google";
 import { themeBootstrapScript } from "@/services/theme";
+import { ServerWakeNotice } from "@/components/ui/ServerWakeNotice";
+import { SITE_URL } from "@/services/site";
 import "./globals.css";
 
 /** The UI typeface, and its monospace counterpart. Geist Mono is used only for genuinely
@@ -28,11 +30,29 @@ const apiOrigin = (() => {
   }
 })();
 
+const title = "SQL Visualizer — see your database, not just your SQL";
+const description =
+  "Import a .csv or .sql file and get a live entity-relationship diagram you can edit. "
+  + "Start from a template, share a read-only link, and export SQL or a PNG.";
+
 export const metadata: Metadata = {
-  title: "SQL Visualizer — see your database, not just your SQL",
-  description:
-    "Import a .csv or .sql file and get a live entity-relationship diagram you can edit. "
-    + "Start from a template, share a read-only link, and export SQL or a PNG.",
+  // Absolute URLs for the preview image and canonical link; a link card needs a full URL.
+  metadataBase: new URL(SITE_URL),
+  title,
+  description,
+  // The image itself comes from app/opengraph-image.tsx, which Next attaches automatically.
+  openGraph: {
+    type: "website",
+    siteName: "SQL Visualizer",
+    title,
+    description,
+    url: "/",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title,
+    description,
+  },
 };
 
 export default function RootLayout({
@@ -59,6 +79,7 @@ export default function RootLayout({
       </head>
       <body>
         {children}
+        <ServerWakeNotice />
       </body>
     </html>
   );

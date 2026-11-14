@@ -36,7 +36,7 @@ Built with **Spring Boot 3.3 (Java 17)** on the backend and **Next.js 16** on th
 
 | Feature | Detail |
 |---|---|
-| **📂 CSV / SQL import** | Upload a `.csv` (types are inferred per column, a primary key is added if absent) or a `.sql` script. Nothing is created until you have seen what it would create — see **Pre-flight import** below. |
+| **📂 CSV / SQL / DBML import** | Upload a `.csv` (types are inferred per column, a primary key is added if absent), a `.sql` script or a `.dbml` file (dbdiagram.io's format, converted to SQL in the browser). Or skip the file: **File → Paste or link** takes pasted SQL or DBML, or the address of a public GitHub gist or repository file. Nothing is created until you have seen what it would create — see **Pre-flight import** below. |
 | **🗣️ Multi-dialect SQL** | A dump written for **MySQL, MariaDB, PostgreSQL or SQL Server** is detected by its own fingerprints and translated: vendor types are mapped, `SERIAL` / `IDENTITY(1,1)` / `AUTO_INCREMENT` all become a working key, `ALTER TABLE` keys and foreign keys are folded back into the `CREATE TABLE`, `GO` batches and pg_dump `COPY ... FROM stdin` blocks are understood. Anything that cannot be represented is skipped with a note rather than failing the import. |
 | **🛫 Pre-flight import** | An import is staged, not executed on drop. `POST /import/analyze` parses the file and creates nothing; a dialog shows the tables, the inferred types, *why* each was chosen and real sample values, and lets you correct any of them before the DDL runs. The type this exists for is a postcode column of `01234` — all digits, so the obvious answer is `INT`, and the leading zeros would be gone for good. |
 | **🗂️ Independent files** | Every SQL file you open is backed by its own database. Two files can each define a `users` table with different columns, and neither can see the other's data. |
@@ -57,6 +57,10 @@ Built with **Spring Boot 3.3 (Java 17)** on the backend and **Next.js 16** on th
 | **✦ Schema assistant** | A chat panel in the canvas's top-right corner that can read the file you have open. Ask what a schema does, what is wrong with it, how to model something new, or what the app itself can do. It answers from your actual tables, columns, keys and relationships — **never from your data**, which is not sent. When it writes SQL you get it as a block you can load straight into the SQL panel; it cannot run anything itself. |
 | **🔑 Bring your own model key** | The assistant runs on the app's key by default. Add an Anthropic, OpenAI or OpenRouter key in **Your profile** and it uses yours instead, with any model your account can reach. The key is stored encrypted without a provider call (so pasting one costs nothing; a wrong key says so on the first question), and the app will not show it to you again, only a masked hint. If the server's secret changes and a saved key can no longer be read, the profile says so and the assistant asks you to paste it again rather than quietly billing the app's key. |
 | **📝 Table notes** | A to-do list per table, stored with the file. Tick items off and come back to them later. |
+| **🕰️ Versions and compare** | Save a named version of a file (tables, keys and rows; up to 10 per file, account required) and restore it later — a restore that fails puts the file back as it was. Compare the file with a version or with another open file: the differences are listed and turned into a migration draft you can copy or open in the SQL panel. |
+| **🧹 Tidy layout** | One toolbar button arranges the tables by their relationships — each table left of the tables that reference it, ordered to keep lines from crossing. One undo step. |
+| **🕘 Query history** | The SQL panel remembers what was run against each file, in this browser only, and loads any of it back with a click. |
+| **📱 Phone view** | On a phone a file opens as a list of tables — columns, types, keys and what references what — with the diagram one tap away. |
 | **🔗 Share links** | Create a read-only link to a file. Anyone with the link can view the schema; nobody can edit it. |
 | **👤 Optional accounts** | Everything works signed out. Exporting, sharing, running SQL and asking the assistant need a free account (password: 8+ chars, a capital and a special character). Signed in, you can change your display name and password from **Edit profile**. |
 | **🔒 Private workspaces** | Every file belongs to whoever made it. A signed-in user's files follow their account to any browser; a signed-out visitor's files belong to that browser alone. Knowing a workspace id is no longer enough to open it — the API answers 403. |
@@ -66,7 +70,8 @@ Built with **Spring Boot 3.3 (Java 17)** on the backend and **Next.js 16** on th
 > ⚠️ **This is a developer tool, not a multi-tenant service.** Workspaces are now owned, so one
 > user's files are not readable by another, but the anonymous half of that ownership rests on an
 > `X-Client-Id` header the browser generates — a name for a session, not a credential, and
-> trivially forged by anything that is not a browser. CORS is also wide open. Treat it as
+> trivially forged by anything that is not a browser. CORS admits only the configured origins,
+> but that stops other web pages, not scripts. Treat it as
 > isolation between honest sessions, not as a security boundary: run it locally or behind your
 > own access control, and never expose the API to untrusted callers.
 
@@ -119,14 +124,14 @@ db-viewer/
 │   │   ├── config/             CORS, default DB bootstrap, OpenAPI
 │   │   ├── controller/         Every REST endpoint + global exception handler
 │   │   ├── dto/                Request/response POJOs
-│   │   ├── service/            One interface per service; impl/ holds the classes
+│   │   ├── service/            One interface per service; impl/ the classes, helper/ their parts
 │   │   ├── exception/          Every custom exception
 │   │   ├── auth/               Request identity + auth filter
 │   │   ├── template/           CREATE TABLE parser for template previews
 │   │   ├── sql/                Script splitter + MySQL→SQLite translator
 │   │   └── workspace/          Per-file database isolation
 │   ├── src/main/resources/     application.properties + mysql/prod profiles
-│   └── src/test/java/          275 JUnit 5 / MockMvc / AssertJ tests
+│   └── src/test/java/          301 JUnit 5 / MockMvc / AssertJ tests
 ├── db-viewer-ui/               Next.js 16 frontend
 │   ├── app/                    App Router: / landing, /app editor, /share/[token]
 │   ├── components/             header, canvas, editor, tables, modal
@@ -345,6 +350,11 @@ set headers.
 | `POST` | `/add-foreign-key` | Declare a relationship between two existing tables — what dragging a line does |
 | `POST` | `/drop-foreign-key` | Remove a relationship, identified by the two columns it joins |
 | `POST` | `/scratchpad` | Run a SQL script and report what each statement did **(account required)** |
+| `POST` | `/import/fetch` | Download a `.sql`, `.csv` or `.dbml` file from a GitHub gist or repository and return its text. GitHub only, HTTPS only, no redirects, 5 MB; imports nothing |
+| `GET` `POST` | `/snapshots` | List / save versions of the current file **(account required)** |
+| `GET` | `/snapshots/{id}/schema` | The schema a version recorded, for comparing **(account required)** |
+| `POST` | `/snapshots/{id}/restore` | Replace the file's tables and rows with a version's **(account required)** |
+| `DELETE` | `/snapshots/{id}` | Delete a version **(account required)** |
 | `DELETE` | `/workspace` | Delete the workspace's database entirely |
 | `GET` | `/export/{table}?workspaceId=` | Download the table as CSV |
 | `GET` | `/export-sql?filename=&dialect=&workspaceId=` | Download the workspace as a SQL script, written for `dialect` (`mysql` \| `mariadb` \| `postgres` \| `sqlserver` \| `sqlite` \| `generic`) |
@@ -376,18 +386,20 @@ curl localhost:8080/db-info -H 'X-Client-Id: me' -H 'X-Workspace-Id: fileA'   # 
 ## ✅ Testing and quality gates
 
 ```bash
-# Backend — 275 tests, in-memory SQLite, no setup required
+# Backend — 301 tests, in-memory SQLite, no setup required
 cd db-viewer-backend && ./mvnw test
 
 # Single class
 ./mvnw test -Dtest=WorkspaceIsolationTest
 
-# Frontend — 20 Vitest unit tests (parsers, the chat stream reader, schema→graph, exports)
+# Frontend — 52 Vitest unit tests (parsers, the chat stream reader, schema→graph, exports,
+#            layout, DBML import, schema diff, query history)
 cd db-viewer-ui
 npm test             # vitest run
 npx tsc --noEmit     # type check
 npm run lint         # eslint
 npm run build        # production build
+npm run test:e2e     # Playwright smoke tests (backend running on :8080; uses your installed Chrome)
 ```
 
 Every test asserts an *effect* — a handler that returns 200 without doing anything is the
@@ -436,6 +448,18 @@ redeploy the other:
 - `.github/workflows/deploy-frontend.yml` — builds the Next.js `standalone` output with
   `NEXT_PUBLIC_API_URL` baked in, and deploys it.
 - `.github/workflows/version-bump.yml` — bumps the version for merges that don't touch the backend.
+- `.github/workflows/keep-warm.yml` — pings both apps every 10 minutes so the free plan does not
+  stop them (see below).
+
+### Running on the free plan
+
+The F1 plan costs nothing, and three of its limits are handled on purpose:
+
+| Limit | What handles it |
+|---|---|
+| **No "Always On"** — an idle app is stopped after ~20 minutes, and the next request waits ~30s for the JVM | `keep-warm.yml` pings both apps every 10 minutes (free on a public repository). The UI also pings the backend once per tab, allows a first request 90s instead of 30s, and shows a "waking up the server" notice when a request waits more than 3s |
+| **Only `/home` survives a redeploy** | Set the backend's app settings `DB_PATH=/home/data/visualizer.db` and `WORKSPACE_DIR=/home/data/workspaces`. The defaults are relative to the folder the jar runs in, which a deploy may clean |
+| **Small memory, 60 CPU minutes a day** | Set `JAVA_OPTS=-XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Xss512k -XX:MaxRAMPercentage=60` on the backend: a single-threaded collector and C1-only compilation start faster and use less memory on one small core |
 
 ### Versioning
 

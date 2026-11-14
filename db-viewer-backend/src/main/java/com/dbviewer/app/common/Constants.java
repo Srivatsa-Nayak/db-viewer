@@ -191,6 +191,10 @@ public final class Constants {
         public static final String UPDATE_PASSWORD_HASH =
                 "UPDATE app_users SET password_hash = ? WHERE email = ?";
 
+        /** Read on every signed-in request, to check the token's password stamp. */
+        public static final String SELECT_PASSWORD_HASH =
+                "SELECT password_hash FROM app_users WHERE email = ?";
+
         /**
          * Stores the user's own model key. {@code llm_key_hint} is the masked tail shown back to
          * them — the ciphertext cannot be, and an input that renders as eight bullets gives no
@@ -220,6 +224,40 @@ public final class Constants {
      * <p>Lives in the default database beside accounts and share links, because the question
      * "may this caller open that workspace?" has to be answerable without opening it.
      */
+    /**
+     * Named versions of a file ({@code SnapshotService}), in the application database. %s: the
+     * auto-increment key, then a text type big enough for a whole script (TEXT on SQLite has no
+     * limit; on MySQL TEXT stops at 64KB, so it is LONGTEXT there).
+     */
+    public static final class Snapshots {
+        private Snapshots() { }
+
+        public static final String CREATE_TABLE = """
+                CREATE TABLE IF NOT EXISTS workspace_snapshots (
+                    id %s,
+                    workspace_id VARCHAR(64) NOT NULL,
+                    name VARCHAR(120) NOT NULL,
+                    created_at VARCHAR(40) NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    table_count INTEGER NOT NULL,
+                    script %s NOT NULL,
+                    schema_json %s NOT NULL
+                )
+                """;
+        public static final String LIST =
+                "SELECT id, name, created_at, size_bytes, table_count FROM workspace_snapshots "
+                        + "WHERE workspace_id = ? ORDER BY id DESC";
+        public static final String COUNT = "SELECT COUNT(*) FROM workspace_snapshots WHERE workspace_id = ?";
+        public static final String INSERT =
+                "INSERT INTO workspace_snapshots (workspace_id, name, created_at, size_bytes, table_count, "
+                        + "script, schema_json) VALUES (?, ?, ?, ?, ?, ?, ?)";
+        public static final String SELECT_ONE =
+                "SELECT id, name, created_at, script, schema_json FROM workspace_snapshots "
+                        + "WHERE id = ? AND workspace_id = ?";
+        public static final String DELETE_ONE = "DELETE FROM workspace_snapshots WHERE id = ? AND workspace_id = ?";
+        public static final String DELETE_ALL = "DELETE FROM workspace_snapshots WHERE workspace_id = ?";
+    }
+
     public static final class Ownership {
         private Ownership() { }
 

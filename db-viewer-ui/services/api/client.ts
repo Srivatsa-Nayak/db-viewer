@@ -6,6 +6,9 @@
 import axios from 'axios';
 import { getClientId } from '../clientId';
 import {
+    COLD_START_TIMEOUT_MS, isBackendAwake, markBackendAwake, requestFinished, requestStarted,
+} from '../backendStatus';
+import {
     ColumnInfo, RawColumnInfo, RawRelationship, RawSchemaResponse, Relationship, SchemaResponse,
     TableInfo,
 } from '@/types';
@@ -57,6 +60,10 @@ export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080
  * Every request gives up after this long. There was no timeout at all, so a backend that
  * accepted a connection and then stalled left spinners turning for ever. Imports pass their own,
  * longer one: a 50MB dump on a slow link legitimately takes minutes.
+ *
+ * Until the backend has answered once in this tab the limit is `COLD_START_TIMEOUT_MS` instead
+ * (see `services/backendStatus.ts`): the free hosting plan stops an idle backend, and starting
+ * it again was measured at 26s — too close to 30s to leave a visitor's first click to chance.
  */
 const REQUEST_TIMEOUT_MS = 30_000;
 export const IMPORT_TIMEOUT_MS = 5 * 60_000;
@@ -65,6 +72,45 @@ export const api = axios.create({
     baseURL: API_URL,
     timeout: REQUEST_TIMEOUT_MS,
 });
+
+api.interceptors.request.use((config) => {
+    if (!isBackendAwake() && (config.timeout ?? REQUEST_TIMEOUT_MS) < COLD_START_TIMEOUT_MS) {
+        config.timeout = COLD_START_TIMEOUT_MS;
+    }
+    requestStarted();
+    return config;
+});
+
+api.interceptors.response.use(
+    (response) => {
+        requestFinished(response.status);
+        return response;
+    },
+    (error) => {
+        requestFinished(axios.isAxiosError(error) ? error.response?.status : undefined);
+        return Promise.reject(error);
+    },
+);
+
+/**
+ * Starts the backend if the hosting plan has stopped it, without anyone waiting on the answer.
+ *
+ * Sent once per tab from the root layout, so a visitor who lands on the docs or a share link
+ * has a backend that is already starting by the time they click anything. Plain `fetch` with no
+ * custom headers: a simple GET needs no CORS preflight, and none of the interceptors' headers
+ * mean anything to a health check. It does not count as a request someone is waiting on, so it
+ * never brings up the "waking up" notice by itself.
+ */
+let wakeSent = false;
+export const wakeBackend = () => {
+    if (wakeSent || typeof window === 'undefined') return;
+    wakeSent = true;
+    fetch(`${API_URL}/actuator/health`, { cache: 'no-store' })
+        .then(res => { if (res.ok) markBackendAwake(); })
+        .catch(() => {
+            // Unreachable now; the first real request will say so in its own words.
+        });
+};
 
 /**
  * Gives a failure with no response — a timeout, the backend down, the network gone — the same
@@ -108,7 +154,9 @@ export const setActiveWorkspace = (workspaceId: string | null) => {
 export const getActiveWorkspace = () => activeWorkspaceId;
 
 api.interceptors.request.use((config) => {
-    if (activeWorkspaceId) {
+    // A call may name its own workspace — comparing two open files reads the other one — and
+    // that wins over the open file.
+    if (activeWorkspaceId && !config.headers.has('X-Workspace-Id')) {
         config.headers.set('X-Workspace-Id', activeWorkspaceId);
     }
     // Identifies the browser so the backend can keep two signed-out sessions apart. Sent on
