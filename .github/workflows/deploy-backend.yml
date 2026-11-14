@@ -24,7 +24,7 @@ jobs:
     # run today, so this is a safety net rather than the primary guard.
     if: "!startsWith(github.event.head_commit.message, 'chore(release):')"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history so the bump commit can be rebased onto master before pushing.
           fetch-depth: 0
@@ -34,7 +34,7 @@ jobs:
           ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: 'temurin'

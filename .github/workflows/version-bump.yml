@@ -24,7 +24,7 @@ jobs:
     # Never react to the bot's own release commit.
     if: "!startsWith(github.event.head_commit.message, 'chore(release):')"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           # Pushes the version bump with a deploy key rather than GITHUB_TOKEN: master is
@@ -33,7 +33,7 @@ jobs:
           ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: 'temurin'
